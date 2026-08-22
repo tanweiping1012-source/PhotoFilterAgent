@@ -16,6 +16,7 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { resolveVisionApiKey } from './apikey.ts'
 import { PhotoEngine, type Candidate } from './engine.ts'
+import { mapWithConcurrency } from './pool.ts'
 import { loadState, RunState, saveState, validateProposal, type Category } from './state.ts'
 import { VisionClient, weightedTotal } from './vision.ts'
 
@@ -33,6 +34,10 @@ export interface Config {
   allowKeychain: boolean
   /** 一次 inspect 最多几张，避免模型一次要走整池。 */
   maxInspectBatch: number
+  /** 打分的并发路数。开满会换来一串 429 再触发退避，反而更慢。 */
+  inspectConcurrency: number
+  /** analyze_folder 摘要里直接列出 ID 的上限；超过就只给区间，让模型去 list_candidates。 */
+  maxInlineIdList: number
   /** 单次视觉请求超时（毫秒）。 */
   visionTimeoutMs: number
   /** 一轮策展默认的保留目标。 */
@@ -46,6 +51,8 @@ export const Config: z<Config> = z.object({
   visionModel: z.string().default('MiniMax-M3'),
   allowKeychain: z.boolean().default(false),
   maxInspectBatch: z.number().step(1).min(1).max(32).default(8),
+  inspectConcurrency: z.number().step(1).min(1).max(16).default(4),
+  maxInlineIdList: z.number().step(1).min(0).default(80),
   visionTimeoutMs: z.number().step(1).min(1_000).default(90_000),
   defaultPeopleTarget: z.number().step(1).min(1).default(6),
   defaultSceneryTarget: z.number().step(1).min(1).default(6),
@@ -121,6 +128,18 @@ export function apply(ctx: Context, config: Config): void {
       if (args.scenery_target) state.targets.scenery = args.scenery_target
       await saveState(state, config.workdir)
       const multi = report.families.filter((f) => f.members.length > 1)
+      // 摘要里不给 ID，模型就只能凭空猜（实测它造出了 people_01 这种不存在的编号，
+      // 白白多花两步往返）。ID 是它下一步唯一能用的抓手，必须直接给出来。
+      const listing = (category: 'people' | 'scenery') => {
+        const ids = report.candidates.filter((c) => c.category === category).map((c) => c.id)
+        if (!ids.length) return ''
+        const label = category === 'people' ? '人物' : '风景'
+        if (ids.length <= config.maxInlineIdList) {
+          return `${label} ${ids.length} 张：${ids.join(' ')}\n`
+        }
+        return `${label} ${ids.length} 张：${ids[0]} … ${ids[ids.length - 1]}` +
+          `（太多不全列，用 list_candidates 取）\n`
+      }
       const resumed = restored && state.scores.size
         ? `\n已恢复上次的 ${state.scores.size} 张打分与 ${state.championByFamily.size} 个连拍组结论，不会重复计费。\n`
         : ''
@@ -129,7 +148,11 @@ export function apply(ctx: Context, config: Config): void {
         resumed +
         `发现 ${multi.length} 组连拍（同一组最终只保留一张）。\n` +
         `目标：人物 ${state.targets.people} 张 · 风景 ${state.targets.scenery} 张。\n\n` +
-        state.render()
+        listing('people') + listing('scenery') +
+        (multi.length
+          ? `连拍组：${multi.map((f) => `${f.id}[${f.members.join(' ')}]`).join('  ')}\n`
+          : '') +
+        `\n` + state.render()
       return {
         photo_count: report.photo_count,
         people_count: report.people_count,
@@ -207,32 +230,53 @@ export function apply(ctx: Context, config: Config): void {
         return '视觉模型不可用：没有找到 API Key。请设置环境变量 MINIMAX_API_KEY 后重试，或改用本地确定性选片（propose 会自动兜底）。'
       }
 
-      const lines: string[] = []
-      for (const id of ids) {
-        if (!state.candidates.has(id)) {
-          lines.push(`${id}  未知的照片 ID`)
-          continue
+      // 未知 ID 与缓存命中都不必联网，先在本地筛掉；剩下的才值得占一条并发。
+      const unknown = ids.filter((id) => !state.candidates.has(id))
+      const known = ids.filter((id) => state.candidates.has(id))
+      const cachedIds = known.filter((id) => state.cached(id, detail))
+      const pending = known.filter((id) => !state.cached(id, detail))
+      state.paidCalls.cached += cachedIds.length
+
+      // 这些请求彼此独立，串行等于把等待时间叠加（实测 8 张 37 秒）。
+      const scored = await mapWithConcurrency(
+        pending,
+        config.inspectConcurrency,
+        async (id) => {
+          try {
+            const preview = await engine.preview(id, detail, exec.signal)
+            const score = await client.score(id, preview.jpeg_base64, detail, exec.signal)
+            // 单线程事件循环下这两处自增没有竞态。
+            state.record(score, detail)
+            state.paidCalls.inspect += 1
+            return { id, ok: true as const }
+          } catch (error) {
+            return {
+              id,
+              ok: false as const,
+              message: error instanceof Error ? error.message : String(error),
+            }
+          }
+        },
+      )
+      const failure = new Map(scored.filter((r) => !r.ok).map((r) => [r.id, r.message!]))
+
+      // 输出顺序跟随模型给的顺序，不跟随完成顺序。
+      const lines = ids.map((id) => {
+        if (unknown.includes(id)) {
+          return `${id}  未知的照片 ID`
         }
-        const hit = state.cached(id, detail)
-        if (hit) {
-          state.paidCalls.cached += 1
-          lines.push(`${id}  总分 ${weightedTotal(hit.dimensions)}（缓存，未计费）${hit.summary}`)
-          continue
-        }
-        try {
-          const preview = await engine.preview(id, detail === 'high' ? 'high' : 'low', exec.signal)
-          const score = await client.score(id, preview.jpeg_base64, detail, exec.signal)
-          state.record(score, detail)
-          state.paidCalls.inspect += 1
-          const dimensions = score.dimensions
-          lines.push(
-            `${id}  总分 ${weightedTotal(dimensions)} ` +
-              `[瞬${dimensions.moment} 构${dimensions.composition} 主${dimensions.subject} ` +
-              `光${dimensions.lighting} 叙${dimensions.storytelling}]  ${score.summary}`,
-          )
-        } catch (error) {
-          lines.push(`${id}  打分失败：${error instanceof Error ? error.message : String(error)}`)
-        }
+        const message = failure.get(id)
+        if (message) return `${id}  打分失败：${message}`
+        const stored = state.scores.get(id)
+        if (!stored) return `${id}  没有分数`
+        const d = stored.dimensions
+        const suffix = cachedIds.includes(id) ? '（缓存，未计费）' : ''
+        return `${id}  总分 ${weightedTotal(d)} ` +
+          `[瞬${d.moment} 构${d.composition} 主${d.subject} 光${d.lighting} 叙${d.storytelling}]` +
+          `${suffix}  ${stored.summary}`
+      })
+      if (unknown.length) {
+        lines.push('', `⚠ ${unknown.length} 个 ID 不存在。用 list_candidates 取真实 ID，不要自己编。`)
       }
       await saveState(state, config.workdir)
       return [...lines, '', state.render()].join('\n')
