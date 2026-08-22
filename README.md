@@ -7,6 +7,61 @@
 
 ---
 
+## 安装
+
+```bash
+git clone https://github.com/tanweiping1012-source/photo-curator-agent.git
+cd photo-curator-agent
+./install.sh
+```
+
+脚本会依次:检查前置工具 → 克隆并构建 DeepSeek Harness(已有则复用)→ 构建 Swift 引擎
+→ 把两个 profile 装进 `$DSH_HOME/profiles/` → 链接插件 → 自检。**幂等**,重复执行只补缺的部分。
+
+默认把 harness 装在本仓库的上一级;要指定别处:`./install.sh /你的/harness/目录`。
+
+### 前置要求
+
+| | |
+|---|---|
+| 系统 | **macOS** —— 人物/风景分类走 Apple Vision,图像解码走 ImageIO |
+| Swift | 6.0+(`xcode-select --install`) |
+| Node | ^22.19 或 >=24 |
+| pnpm | `npm install -g pnpm` |
+
+### 视觉模型 Key
+
+没有 Key 也能跑,但只有本地确定性选片(`local_fallback_selection`),
+而实测**技术指标与人的口味几乎不相关**(见下文),所以强烈建议配上。
+
+写进 `$DSH_HOME/.credentials.yaml`:
+
+```yaml
+version: 1
+refs:
+  MINIMAX_CN_API_KEY: 你的key
+```
+
+harness 的循环模型走同一个 Key,在 `$DSH_HOME/settings.yaml`:
+
+```yaml
+llm-pi-ai:
+  providers:
+    minimax-cn:
+      apiKeyEnv: MINIMAX_CN_API_KEY
+agent-default-model:
+  provider: minimax-cn
+  model: MiniMax-M3
+```
+
+### harness 版本
+
+本仓库开发与验证对应 **`dsh-v0.1.1-rc.2`**(commit `b150a55`)。
+DeepSeek Harness 是 v0.1 developer preview,官方声明会有破坏性变更——
+换版本出问题先回到这个锚点。
+
+---
+
 ## 一条命令
 
 ```bash
@@ -257,8 +312,30 @@ agent/      TypeScript：cordis 插件
     engine.ts   CLI 封装
     apikey.ts   Key 解析
 bench/      评测脚本（分类准确率、选片重合度）
+profiles/   两个 profile 的模板（install.sh 会替换占位符后装进 $DSH_HOME）
+  photo/        headless
+  photo-web/    Web UI
+install.sh  从零装配
 run.sh      一键运行
 ```
+
+### profile 里做了什么
+
+除了挂载插件，两个 profile 都**关掉了 harness 的全部通用文件系统与 shell 工具**：
+
+```yaml
+- id: tool-bash            { disabled: true }
+- id: tool-fs              { disabled: true }   # 含 read_image
+- id: tool-fs-search       { disabled: true }   # glob / grep
+- id: skill-filesystem     { disabled: true }
+- id: tool-str-replace-editor { disabled: true }
+- id: tool-web             { disabled: true }
+```
+
+**这不是洁癖，是必须的。** 实测轨迹里模型尝试过 `read_image` 直接读原图——
+那会把全分辨率、带 EXIF 与 GPS 的原图直接送进对话，绕过引擎的匿名化、降采样和
+元数据剥离；`str_replace_editor` 则能改写磁盘文件。关掉之后，
+"原图只读"和"照片不外泄"由工具集本身保证，不再依赖 agent 自觉。
 
 ---
 
@@ -270,4 +347,7 @@ run.sh      一键运行
    插件对它的耦合面收窄在 `ctx.tools.register` + `defineTool` 上。
 3. **分级授权还没做**。设计里 `propose` / `export_selection` 属于高风险动作应当弹确认，
    目前是直接执行——不过 `export` 只复制，最坏情况是多了一份副本。
-4. **选片质量只在 50 张样本上量过**，命中 1/4，样本太小。
+4. **选片质量只在小样本上量过**，样本太小，不构成统计结论。
+5. **策略来自任务提示，不是 agent 自己规划的**。`run.sh` 把五步写进了任务文本。
+   没有测过：只说「帮我挑 3 张」而不给步骤时，它会不会自己想到按连拍组拆分、
+   只在切线花钱。这是判断它「是不是 agent」最大的未验证点。

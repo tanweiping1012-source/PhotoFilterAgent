@@ -1,0 +1,48 @@
+# 照片策展 profile 的补丁层。
+#
+# 分工：harness 提供循环、会话、工具管线与模型接入；photo-curator 插件提供领域能力
+# （本地分析引擎、视觉打分、连拍比较、提议校验、导出）。
+#
+# 视觉模型与循环模型是同一个 MiniMax-M3：循环通过 llm-pi-ai 走 settings.yaml 里
+# 配好的 minimax-cn 路由；插件里的 inspect/compare 自己发图，只把紧凑分数交回循环
+# ——图片一旦进对话历史，之后每一轮都要重发。
+
+- insert:
+    - id: photo-curator
+      name: '@photo-curator/dsh-photo-curator'
+      config:
+        engineBinary: @@PHOTO_CURATOR_HOME@@/engine/.build/release/photocurate
+        workdir: @@DSH_HOME@@/photo-curator
+        visionModel: MiniMax-M3
+        # Keychain 读取会弹图形授权框并阻塞；凭据走 .credentials.yaml。
+        allowKeychain: false
+        maxInspectBatch: 8
+        # 并发路数：开满会换来 429 再触发退避，反而更慢。
+        inspectConcurrency: 4
+        maxInlineIdList: 80
+        visionTimeoutMs: 120000
+        defaultPeopleTarget: 6
+        defaultSceneryTarget: 6
+
+# 关掉全部通用文件系统与 shell 能力。
+#
+# 这个 agent 只该做一件事：只读地看照片、复制出选中的那些。而 read_image 会把
+# **原图**（全分辨率、带 EXIF 与 GPS）直接读进对话，绕过引擎的匿名化、降采样和
+# 元数据剥离；glob/grep 则会泄露真实文件名。实测模型确实尝试过 read_image 与 glob。
+#
+# 需要的能力 photo-curator 都提供了：analyze_folder 看目录、preview 出无元数据缩略图、
+# export_selection 只复制。
+- id: tool-bash
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: skill-filesystem
+  disabled: true
+# 它能改写磁盘上的文件——"原图只读"这条承诺不能靠 agent 自觉遵守。
+- id: tool-str-replace-editor
+  disabled: true
+# 这个 agent 不需要联网搜索；少一条对外通路就少一条照片信息外泄的可能。
+- id: tool-web
+  disabled: true
