@@ -9,17 +9,23 @@
 set -euo pipefail
 
 FOLDER="${1:?用法: ./run.sh <照片目录> [取样张数] [人物数] [风景数] [导出目录]}"
+# 传进来的路径可能是相对的；agent 要的是绝对路径，在这里一次性解析掉。
+FOLDER="$(cd "${FOLDER}" 2>/dev/null && pwd || echo "${FOLDER}")"
 LIMIT="${2:-}"
 PEOPLE="${3:-6}"
 SCENERY="${4:-6}"
 EXPORT_TO="${5:-}"
+if [[ -n "${EXPORT_TO}" ]]; then
+  mkdir -p "${EXPORT_TO}"
+  EXPORT_TO="$(cd "${EXPORT_TO}" && pwd)"
+fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS="${DSH_HARNESS:-/private/tmp/claude-501/-Users-bytedance-Desktop-claude-PhotoFilter/47b65fa2-7c9d-4ef7-9c0d-f2dc64f39b00/scratchpad/deepseek-harness}"
 ENGINE="$ROOT/engine/.build/release/photocurate"
 
-[[ -d "$FOLDER" ]] || { echo "照片目录不存在：$FOLDER" >&2; exit 1; }
-[[ -d "$HARNESS" ]] || { echo "找不到 DeepSeek Harness：$HARNESS（可用 DSH_HARNESS 覆盖）" >&2; exit 1; }
+[[ -d "$FOLDER" ]] || { echo "照片目录不存在：${FOLDER}" >&2; exit 1; }
+[[ -d "$HARNESS" ]] || { echo "找不到 DeepSeek Harness：${HARNESS}（可用 DSH_HARNESS 覆盖）" >&2; exit 1; }
 
 # 引擎是本地分析的全部来源，缺了它 agent 连候选表都拿不到。
 if [[ ! -x "$ENGINE" ]]; then
@@ -28,9 +34,11 @@ if [[ ! -x "$ENGINE" ]]; then
 fi
 
 LIMIT_CLAUSE=""
-[[ -n "$LIMIT" ]] && LIMIT_CLAUSE="limit=$LIMIT，"
+if [[ -n "${LIMIT}" ]]; then
+  LIMIT_CLAUSE="limit=${LIMIT}，"
+fi
 
-TASK="完整策展 $FOLDER。${LIMIT_CLAUSE}人物保留 $PEOPLE 张、风景保留 $SCENERY 张。
+TASK="完整策展 ${FOLDER}。${LIMIT_CLAUSE}人物保留 ${PEOPLE} 张、风景保留 ${SCENERY} 张。
 
 按这个顺序做：
 1. analyze_folder（免费，本地分析：人物/风景分类、连拍组、清晰度与曝光）
@@ -41,7 +49,7 @@ TASK="完整策展 $FOLDER。${LIMIT_CLAUSE}人物保留 $PEOPLE 张、风景保
 
 if [[ -n "$EXPORT_TO" ]]; then
   TASK="$TASK
-6. export_selection 导出到 $EXPORT_TO"
+6. export_selection 导出到 ${EXPORT_TO}"
 fi
 
 TASK="$TASK
