@@ -1,9 +1,25 @@
 # 照片筛选 Agent
 
-跑在 **DeepSeek Harness** 上的照片策展 agent：给它一个照片目录和保留目标，它自己决定
-看哪些、看多细、什么时候够了，最后给出保留名单与理由。
+旅行回来 473 张照片，要挑出 6 张。这个 agent 跑在 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 上，
+自己决定看哪些、看多细、什么时候够了。
 
-原图全程只读——工具集里没有任何修改、移动或删除原图的能力，导出只有复制一条路径。
+原图全程只读。
+
+---
+
+## 解决什么问题
+
+挑照片真正难的不是"给照片打分"，是**注意力该花在哪**。
+
+- **本地算得出来的东西和"好照片"几乎无关。** 实测：按清晰度/宽容度/过曝排名，
+  系统选的 6 张与用户人工精选的 20 张**重合 0 张**，低于随机期望（0.39）。
+  人工精选散布在系统排名第 20 到第 302 名之间——你选的是表情、是瞬间，本地分析器看不见。
+- **但全部交给视觉模型看，又贵又慢。** 473 张全用高清档，是几十分钟和一笔不小的账单。
+
+所以真正的问题是：**哪些照片值得花钱看，值得看多细。**
+
+一条固定流水线回答不了——它只能对每张照片花掉完全等量的一次注意力。
+而这显然是错的：有些照片 2 秒就该毙掉，有些值得看三遍再定。
 
 ---
 
@@ -15,26 +31,11 @@ cd photo-curator-agent
 ./install.sh
 ```
 
-脚本会依次:检查前置工具 → 克隆并构建 DeepSeek Harness(已有则复用)→ 构建 Swift 引擎
-→ 把两个 profile 装进 `$DSH_HOME/profiles/` → 链接插件 → 自检。**幂等**,重复执行只补缺的部分。
+脚本幂等，会自动克隆并构建 harness（已有则复用）、构建 Swift 引擎、装配 profile、自检。
 
-默认把 harness 装在本仓库的上一级;要指定别处:`./install.sh /你的/harness/目录`。
+**要求**：macOS（分类走 Apple Vision）· Swift 6.0+ · Node ^22.19 或 >=24 · pnpm
 
-### 前置要求
-
-| | |
-|---|---|
-| 系统 | **macOS** —— 人物/风景分类走 Apple Vision,图像解码走 ImageIO |
-| Swift | 6.0+(`xcode-select --install`) |
-| Node | ^22.19 或 >=24 |
-| pnpm | `npm install -g pnpm` |
-
-### 视觉模型 Key
-
-没有 Key 也能跑,但只有本地确定性选片(`local_fallback_selection`),
-而实测**技术指标与人的口味几乎不相关**(见下文),所以强烈建议配上。
-
-写进 `$DSH_HOME/.credentials.yaml`:
+**视觉模型 Key** 写进 `~/.dsh/.credentials.yaml`：
 
 ```yaml
 version: 1
@@ -42,312 +43,148 @@ refs:
   MINIMAX_CN_API_KEY: 你的key
 ```
 
-harness 的循环模型走同一个 Key,在 `$DSH_HOME/settings.yaml`:
+harness 的循环模型走同一个 Key，`~/.dsh/settings.yaml`：
 
 ```yaml
 llm-pi-ai:
-  providers:
-    minimax-cn:
-      apiKeyEnv: MINIMAX_CN_API_KEY
-agent-default-model:
-  provider: minimax-cn
-  model: MiniMax-M3
+  providers: { minimax-cn: { apiKeyEnv: MINIMAX_CN_API_KEY } }
+agent-default-model: { provider: minimax-cn, model: MiniMax-M3 }
 ```
 
-### harness 版本
-
-本仓库开发与验证对应 **`dsh-v0.1.1-rc.2`**(commit `b150a55`)。
-DeepSeek Harness 是 v0.1 developer preview,官方声明会有破坏性变更——
-换版本出问题先回到这个锚点。
-
----
-
-## 一条命令
+### 用
 
 ```bash
-cd ~/deepseek-harness/photo-curator
-./run.sh ~/Desktop/照片测试 50 3 3 ~/Desktop/照片筛选结果
-#         照片目录          取样 人物 风景 导出目录
+./run.sh ~/Desktop/照片 50 3 3 ~/Desktop/精选
+#         目录          取样 人物 风景 导出目录
 ```
 
-省略后面的参数就是全量、人物 6 张、风景 6 张、不导出：
-
-```bash
-./run.sh ~/Desktop/照片测试
-```
-
-### 图形界面
+图形界面（前台常驻）：
 
 ```bash
 cd ~/deepseek-harness && pnpm dsh --profile photo-web
+# http://127.0.0.1:3080
 ```
-
-看到 `dsh web: http://127.0.0.1:3080` 后浏览器打开它，像聊天一样说
-「帮我从 ~/Desktop/照片测试 里挑 5 张最好的人物照」。
-
-⚠️ 这是**前台常驻进程**，终端窗口关掉服务就停。
-
-### 命令行对话
-
-```bash
-cd ~/deepseek-harness
-pnpm dsh --profile photo "帮我从 ~/Desktop/照片测试 里挑 5 张最好的人物照"
-```
-
-### 两个 profile
-
-| profile | 形态 | 说明 |
-|---|---|---|
-| `photo` | headless | 一个任务进、结果出、进程退出。`run.sh` 用的就是它 |
-| `photo-web` | Web UI | 常驻，浏览器操作，能看到工具一步步执行 |
-
-两者**共用同一个 `workdir`**（`~/.dsh/photo-curator`），命令行里打过的分，
-Web 里打开同一目录直接命中缓存，不会重复付费。
-
-`photo-web` 下 harness 会自动禁用 `tool-bash` / `tool-fs` / `skill-filesystem`，
-agent 只剩那 9 个照片工具——它本来就只该做一件事。
-
-### 位置
-
-整个项目住在 harness 目录里：
-
-```
-~/deepseek-harness/            DeepSeek Harness（v0.1 preview）
-└── photo-curator/             ← 本项目
-    ├── engine/                Swift 分析引擎 + CLI
-    ├── agent/                 cordis 插件（被 profile 软链引用）
-    ├── bench/                 评测脚本
-    └── run.sh
-```
-
-`photo-curator/` 不在 harness 的任何 pnpm workspace glob（`packages/*/*`、`apps/*`、
-`examples`）里，所以它既不会被 pnpm 接管，也不会进 harness 自己的构建与门禁。
-harness 的 `.git/info/exclude` 里也加了它，`git status` 保持干净。
-
-`run.sh` 的 harness 路径由自身位置推导（取上一级），换地方不用改代码；
-真要指向别处：`DSH_HARNESS=/别的/路径 ./run.sh ...`
 
 ---
 
-## 它是怎么工作的
+## 全流程
 
-### 分工
+以实际跑过的一次为例：30 张照片，人物留 2、风景留 2。
 
-| | 谁提供 |
+```
+① analyze_folder                              免费 · 本机 · 秒级
+   递归扫描 → 人物/风景分类 → 连拍相似组 → 清晰度与曝光
+   → 30 张：人物 19 / 风景 11，6 组连拍
+   输出只有匿名 ID（p001…）和相对秒数，没有文件名、路径、拍摄时间
+
+② compare + resolve_family                    付费 · 便宜（低档图）
+   6 组连拍各比一次定代表，同组其余退出候选 → 候选从 30 缩到 21
+   连拍的差别在表情、眼神、手的位置，绝对打分给不出这种区分度
+
+③ inspect detail=low                          付费 · 512px
+   剩余候选粗筛，五维分（瞬间/构图/主体/光线/叙事）
+
+④ status                                      免费
+   → 当前排名 + 切线分差
+   分差 ≥3 就别再花钱；<3 说明名次不稳
+
+⑤ inspect detail=high                         付费 · 1536px
+   只对切线附近那几张精看——这一次只在两处切线用了 high
+
+⑥ propose                                     免费
+   五项校验：都在候选池 · 不超目标 · 同组不超一张
+   · 每张都必须被看过（防幻觉） · 每张有理由
+   不过就把原因告诉模型，让它改了再提
+
+⑦ export_selection                            免费
+   只复制。原图不移动、不删除、不改名、不写回
+```
+
+**这一次花费**：26 次打分 + 6 次比较。
+
+**两个真实判断**：`p014` 在 low 档排第二（64），high 档跌到 51——典型纪念照，
+避免了一次错误入选。`p029` 本地清晰度只有 40，但视觉构图 72 最高，最终入选——
+视觉判断压过本地技术指标。
+
+---
+
+## 跟 App 版本的差别
+
+前身是 [PhotoFilter](https://github.com/tanweiping1012-source/PhotoFilter)，一个 macOS 原生 App。
+它是一条**流水线**，这个是 **agent**。区别不在界面：
+
+| | PhotoFilter（App） | 这个 agent |
+|---|---|---|
+| **谁决定看哪些** | 320 行写死的规则挑出 48 张 | 模型看着候选表自己决定 |
+| **每张看多细** | 全部同一档，第 1 名和第 48 名花一样的钱 | 按需 low/high，只在切线花贵的 |
+| **连拍组代表** | **最锐的赢**——技术指标选 | **真的比一次**——`compare` |
+| **循环形态** | `for`，计划在第一次联网前就冻结 | 下一步取决于上一步看到了什么 |
+| **模型知道目标吗** | 不知道，只收到"给这张打 5 个分" | 知道要留几张，还看得见切线分差 |
+| **比较** | 校验器主动拉黑"相比/更好/名次" | `compare` **主动解禁**——比较正是它存在的理由 |
+| **形态** | macOS 原生 App | harness 插件 + 独立 Swift CLI |
+
+最实质的是**连拍组代表**。App 用"谁最锐"糊弄过去了，但同一组连拍的差别根本不在清晰度，
+在一个眼神、一只手的位置。绝对打分给不出区分度，两张摆在一起比就可以。
+
+App 那套本地分析引擎原样移植了过来（感知哈希、相似聚类、Vision 人物分类、清晰度曝光），
+在这里降级成 agent 的**免费工具**——不再决定谁能进候选池，只回答"有哪些照片、各自什么底子"。
+
+---
+
+## 已验证
+
+在 473 张真实旅行照片上：
+
+| | |
 |---|---|
-| agent 循环、工具调度、会话、模型接入 | **DeepSeek Harness** |
-| 本地照片分析（分类/连拍组/清晰度曝光） | `engine/` —— Swift CLI，独立进程 |
-| 9 个模型可见工具、视觉打分、提议校验 | `agent/` —— cordis 插件 |
-
-harness 的 `dsh-base` + `dsh-headless` 两个 bundle 提供底座，我们的插件通过
-`~/.dsh/profiles/photo/cordis.patch.yml` 挂进去。
-
-### 策略
-
-问题的形状不是"给每张照片打分"，而是**带成本的 top-k 搜索**：要从 118 张里选 6 张，
-根本不需要知道全部 118 张的准确分数，只需要便宜地砍掉底部、把钱花在切线附近。
-
-而候选池不是一堆平的照片，它有结构——**连拍组**。这把问题拆成两个：
-
-| | 判断类型 | 用什么 |
-|---|---|---|
-| **组内**（3 张几乎一样的连拍） | 纯相对 | `compare` —— 摆在一起比 |
-| **组间**（海边 vs 山顶） | 需要绝对标尺 | `inspect` —— 五维打分 |
-
-连拍之间的差别在表情、眼神、手的位置，清晰度指标对此完全无能为力。所以组内一律用比较，
-不给每张都打绝对分——那是在为注定落选的照片付钱。
-
-实际跑下来 agent 就是这么做的：11 组连拍各比一次定代表，剩下的 low 档粗筛，
-只有切线咬得紧（分差 < 3）时才对那几张用 high 档。
-
-### 工具
-
-| 工具 | 花钱 | 说明 |
-|---|---|---|
-| `analyze_folder` | 免费 | 本地递归分析：分类、连拍组、清晰度曝光 |
-| `list_candidates` | 免费 | 仍在竞争的候选与本地指标（不含图像） |
-| `status` | 免费 | 排名、**切线分差**、待定连拍组、已花费 |
-| `inspect` | **付费** | 五维打分，low=512px / high=1536px |
-| `compare` | **付费** | 连拍组内 A/B，用低档图，很便宜 |
-| `resolve_family` | 免费 | 定下组代表，同组其余退出候选 |
-| `propose` | 免费 | 提交名单，过五项校验 |
-| `export_selection` | 免费 | **只复制**到目标目录 |
-| `local_fallback_selection` | 免费 | 无 Key 时的确定性选片 |
-
-`status` 里的 **切线分差** 是给 agent 的成本信号：差 15 分就别再看了，差 1 分说明名次不稳。
-
-### 提议校验（五条）
-
-1. 都在候选池里
-2. 不超过保留目标
-3. 同一连拍组不超过一张
-4. **每张都必须被 inspect 过** ← 防止推荐一张从没打开过的照片
-5. 每张有理由
-
-校验不过会把**原因**告诉模型，让它改了再提，而不是直接失败。
-
----
-
-## 已验证的结果
-
-在 `/Users/bytedance/Desktop/照片测试`（473 张真实照片）上实测：
-
-### 人物 vs 风景分类：**99.6%**
-
-真值取自目录结构（`me/` 是人物，其余是风景），不是我们标的。
-
-```
-                预测人物   预测风景
-真值人物            307          2
-真值风景              0        164
-
-总准确率  99.6% (471/473)   人物精确率 100%   人物召回 99.4%
-```
-
-全量 473 张本地分析耗时 **14 秒**，不联网、不花钱。
-
-### 端到端策展
-
-50 张取样、人物 3 + 风景 3：
-
-- 11 组连拍全部 `compare` 后定代表
-- 打分 29 次、比较 14 次、**命中缓存省下 6 次**
-- 只有切线附近用 high 档
-
-### 原图安全
-
-导出前后对 473 个源文件做全量 `shasum -a 256`：
-
-```
-✅ 473 个原文件逐字节完全一致 —— 未被移动、删除、改名或修改
-✅ 6 个导出副本与原图逐字节相同
-```
-
-### 跨会话不重复计费
-
-分数落盘在 `~/.dsh/photo-curator/state-*.json`，按「目录 + 取样上限」分片。
-再次运行同一目录时已打过的分直接命中缓存：
-
-```
-已花费：打分 2 次 · 比较 0 次 · 命中缓存省下 2 次
-```
-
-打分次数没有从 2 变成 4——同一张同档位永远只付一次钱。
-
----
-
-## 一个诚实的发现
-
-`local_fallback_selection` 用的纯本地技术指标（清晰度/宽容度/过曝），和人的口味
-**几乎不相关**。对着你自己的 `me-pick` / `景色pick` 实测：
-
-```
-人物：系统选 6 张 vs 人工精选 20 张 → 重合 0 张（随机期望 0.39）
-风景：系统选 6 张 vs 人工精选 14 张 → 重合 0 张（随机期望 0.51）
-人工精选在系统排名里散布在 20–302 名之间
-```
-
-这正是**视觉模型不可省**的证据：你选的是表情、是瞬间、是构图，本地分析器看不见这些。
-本地兜底是安全网，不是产品。
-
-接上视觉模型后，50 张样本（含 4 张你的人工精选）里 agent 选 6 张命中 1 张
-（随机期望 0.52）。样本太小不构成统计显著，但方向对了。
-
----
-
-## 配置
-
-`~/.dsh/profiles/photo/cordis.patch.yml`：
-
-```yaml
-- insert:
-    - id: photo-curator
-      name: '@photo-curator/dsh-photo-curator'
-      config:
-        engineBinary: .../engine/.build/release/photocurate
-        workdir: /Users/bytedance/.dsh/photo-curator
-        visionModel: MiniMax-M3
-        allowKeychain: false      # Keychain 读取会弹图形授权框并阻塞
-        maxInspectBatch: 8
-        visionTimeoutMs: 120000
-```
-
-### API Key
-
-按 **环境变量 → `~/.dsh/.credentials.yaml` → Keychain** 的顺序解析。
-
-当前用的是 `~/.dsh/.credentials.yaml` 里的 `MINIMAX_CN_API_KEY`（你已经配好的）。
-Key 只在内存里传递：不写文件、不进 session log、不进模型可见的任何一步。
-
-**Keychain 默认关闭**——从一个不拥有该条目的进程读取会弹出图形授权框并阻塞，
-无人值守运行时那等于挂死。
+| **人物/风景分类** | **99.6%**（471/473），人物精确率 100%。真值取自用户自己的目录结构 |
+| 全量本地分析 | **14 秒**，不联网、不花钱 |
+| **原图安全** | 导出前后 473 个源文件**逐字节完全一致** |
+| 打分并发 | 8 张从 37.2 秒降到 **11.8 秒** |
+| 跨会话缓存 | 同一张同档位**只付一次钱** |
 
 ---
 
 ## 隐私边界
 
-- **发出去的只有**引擎生成的无元数据缩放 JPEG（最长边 512 / 1024 / 1536px）
-- **不发**原图、文件名、绝对路径、GPS、绝对拍摄时间
-- 候选表里只有匿名 ID（`p001`…）和相对秒数；ID ↔ 路径的映射只存在于
-  `~/.dsh/photo-curator/index.json`，模型永远拿不到
+由**工具集本身**保证，不依赖 agent 自觉——两个 profile 都关掉了 harness 的全部通用
+文件系统与 shell 工具（`tool-bash` / `tool-fs` / `tool-fs-search` / `skill-filesystem`
+/ `str-replace-editor` / `tool-web`）。
 
----
+> 实测轨迹里模型尝试过 `read_image` 直接读原图。那会把全分辨率、带 EXIF 与 GPS 的
+> 原图送进对话，绕过引擎的匿名化、降采样和元数据剥离。
 
-## 目录结构
-
-```
-engine/     Swift：移植自 PhotoFilter 的分析引擎 + CLI
-  Sources/photocurate/
-    PhotoAnalysisPipeline.swift   单次解码流水线 + 并行调度
-    PeopleSubjectClassifier.swift Vision 人物主题判定
-    SimilarityGrouper.swift       连拍相似家族聚类
-    TechnicalQualityAnalyzer.swift 清晰度 / 反差 / 曝光
-    Selection.swift               确定性选片（分位数归一化）
-    main.swift                    analyze / select / preview / resolve / export
-agent/      TypeScript：cordis 插件
-  src/
-    index.ts    9 个模型可见工具
-    state.ts    RunState、切线分差、提议五项校验、跨会话持久化
-    vision.ts   MiniMax 视觉客户端
-    engine.ts   CLI 封装
-    apikey.ts   Key 解析
-bench/      评测脚本（分类准确率、选片重合度）
-profiles/   两个 profile 的模板（install.sh 会替换占位符后装进 $DSH_HOME）
-  photo/        headless
-  photo-web/    Web UI
-install.sh  从零装配
-run.sh      一键运行
-```
-
-### profile 里做了什么
-
-除了挂载插件，两个 profile 都**关掉了 harness 的全部通用文件系统与 shell 工具**：
-
-```yaml
-- id: tool-bash            { disabled: true }
-- id: tool-fs              { disabled: true }   # 含 read_image
-- id: tool-fs-search       { disabled: true }   # glob / grep
-- id: skill-filesystem     { disabled: true }
-- id: tool-str-replace-editor { disabled: true }
-- id: tool-web             { disabled: true }
-```
-
-**这不是洁癖，是必须的。** 实测轨迹里模型尝试过 `read_image` 直接读原图——
-那会把全分辨率、带 EXIF 与 GPS 的原图直接送进对话，绕过引擎的匿名化、降采样和
-元数据剥离；`str_replace_editor` 则能改写磁盘文件。关掉之后，
-"原图只读"和"照片不外泄"由工具集本身保证，不再依赖 agent 自觉。
+发出去的只有引擎生成的无元数据缩放 JPEG（512/1024/1536px）。文件名、路径、GPS、
+绝对拍摄时间都不出本机——匿名 ID 到真实路径的映射只存在于本地工作目录。
 
 ---
 
 ## 已知限制
 
-1. **11GB / 473 张全量策展没跑过**——本地分析跑过（14 秒），但全量视觉打分会很贵。
-   目前验证到 50 张取样。
-2. **DeepSeek Harness 是 v0.1 developer preview**，官方声明会有破坏性变更。
-   插件对它的耦合面收窄在 `ctx.tools.register` + `defineTool` 上。
-3. **分级授权还没做**。设计里 `propose` / `export_selection` 属于高风险动作应当弹确认，
-   目前是直接执行——不过 `export` 只复制，最坏情况是多了一份副本。
-4. **选片质量只在小样本上量过**，样本太小，不构成统计结论。
-5. **策略来自任务提示，不是 agent 自己规划的**。`run.sh` 把五步写进了任务文本。
-   没有测过：只说「帮我挑 3 张」而不给步骤时，它会不会自己想到按连拍组拆分、
-   只在切线花钱。这是判断它「是不是 agent」最大的未验证点。
+1. **策略来自任务提示，不是 agent 自己规划的。** `run.sh` 把六步写进了任务文本。
+   没测过：只说「帮我挑 3 张」而不给步骤时，它会不会自己想到按连拍组拆分、只在切线花钱。
+   这是判断它「到底算不算 agent」最大的未验证点。
+2. **分级授权没做。** 设计里 `propose` / `export_selection` 应当弹确认，目前直接执行
+   （不过 `export` 只复制，最坏是多一份副本）。
+3. **选片质量只在小样本上量过**，不构成统计结论。
+4. **全量 473 张的视觉策展没跑过**，验证到 50 张取样。
+5. **DeepSeek Harness 是 v0.1 developer preview**，会有破坏性变更。
+   本仓库锚定 `dsh-v0.1.1-rc.2`（`b150a55`）。
+
+---
+
+## 结构
+
+```
+engine/     Swift：分析引擎 + CLI（analyze / select / preview / resolve / export）
+agent/      TypeScript：cordis 插件
+  index.ts    9 个模型可见工具
+  state.ts    运行状态、切线分差、提议校验、跨会话持久化
+  vision.ts   视觉客户端（工具自己调，图片不进对话历史）
+  pool.ts     有界并发
+profiles/   两个 profile 模板（install.sh 替换占位符后装进 $DSH_HOME）
+bench/      评测脚本 · install.sh 从零装配 · run.sh 一键运行
+```
+
+**为什么视觉调用在工具里而不是交回给循环**：图片一旦进对话历史，之后每一轮都要重发。
+100 次打分就是 100 份图片反复穿过上下文。工具自己调、只交回一行紧凑分数，历史里就只剩数字。
