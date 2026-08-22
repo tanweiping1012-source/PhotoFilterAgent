@@ -10,6 +10,7 @@
 ## 一条命令
 
 ```bash
+cd ~/deepseek-harness/photo-curator
 ./run.sh ~/Desktop/照片测试 50 3 3 ~/Desktop/照片筛选结果
 #         照片目录          取样 人物 风景 导出目录
 ```
@@ -51,13 +52,25 @@ Web 里打开同一目录直接命中缓存，不会重复付费。
 `photo-web` 下 harness 会自动禁用 `tool-bash` / `tool-fs` / `skill-filesystem`，
 agent 只剩那 9 个照片工具——它本来就只该做一件事。
 
-### 运行时位置
+### 位置
 
-DeepSeek Harness 装在 `~/deepseek-harness`。要换地方，设环境变量即可：
+整个项目住在 harness 目录里：
 
-```bash
-DSH_HARNESS=/别的/路径 ./run.sh ~/Desktop/照片测试
 ```
+~/deepseek-harness/            DeepSeek Harness（v0.1 preview）
+└── photo-curator/             ← 本项目
+    ├── engine/                Swift 分析引擎 + CLI
+    ├── agent/                 cordis 插件（被 profile 软链引用）
+    ├── bench/                 评测脚本
+    └── run.sh
+```
+
+`photo-curator/` 不在 harness 的任何 pnpm workspace glob（`packages/*/*`、`apps/*`、
+`examples`）里，所以它既不会被 pnpm 接管，也不会进 harness 自己的构建与门禁。
+harness 的 `.git/info/exclude` 里也加了它，`git status` 保持干净。
+
+`run.sh` 的 harness 路径由自身位置推导（取上一级），换地方不用改代码；
+真要指向别处：`DSH_HARNESS=/别的/路径 ./run.sh ...`
 
 ---
 

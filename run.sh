@@ -21,7 +21,8 @@ if [[ -n "${EXPORT_TO}" ]]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HARNESS="${DSH_HARNESS:-$HOME/deepseek-harness}"
+# 本项目就住在 harness 目录里，默认取上一级即可。
+HARNESS="${DSH_HARNESS:-$(dirname "${ROOT}")}"
 ENGINE="$ROOT/engine/.build/release/photocurate"
 
 [[ -d "$FOLDER" ]] || { echo "照片目录不存在：${FOLDER}" >&2; exit 1; }
