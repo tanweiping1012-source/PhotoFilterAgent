@@ -21,7 +21,7 @@ if [[ -n "${EXPORT_TO}" ]]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HARNESS="${DSH_HARNESS:-/private/tmp/claude-501/-Users-bytedance-Desktop-claude-PhotoFilter/47b65fa2-7c9d-4ef7-9c0d-f2dc64f39b00/scratchpad/deepseek-harness}"
+HARNESS="${DSH_HARNESS:-$HOME/deepseek-harness}"
 ENGINE="$ROOT/engine/.build/release/photocurate"
 
 [[ -d "$FOLDER" ]] || { echo "照片目录不存在：${FOLDER}" >&2; exit 1; }

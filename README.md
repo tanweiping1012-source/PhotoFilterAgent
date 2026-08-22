@@ -20,11 +20,43 @@
 ./run.sh ~/Desktop/照片测试
 ```
 
-也可以直接对话（同一个 profile，可多轮）：
+### 图形界面
 
 ```bash
-cd <harness 目录>
+cd ~/deepseek-harness && pnpm dsh --profile photo-web
+```
+
+看到 `dsh web: http://127.0.0.1:3080` 后浏览器打开它，像聊天一样说
+「帮我从 ~/Desktop/照片测试 里挑 5 张最好的人物照」。
+
+⚠️ 这是**前台常驻进程**，终端窗口关掉服务就停。
+
+### 命令行对话
+
+```bash
+cd ~/deepseek-harness
 pnpm dsh --profile photo "帮我从 ~/Desktop/照片测试 里挑 5 张最好的人物照"
+```
+
+### 两个 profile
+
+| profile | 形态 | 说明 |
+|---|---|---|
+| `photo` | headless | 一个任务进、结果出、进程退出。`run.sh` 用的就是它 |
+| `photo-web` | Web UI | 常驻，浏览器操作，能看到工具一步步执行 |
+
+两者**共用同一个 `workdir`**（`~/.dsh/photo-curator`），命令行里打过的分，
+Web 里打开同一目录直接命中缓存，不会重复付费。
+
+`photo-web` 下 harness 会自动禁用 `tool-bash` / `tool-fs` / `skill-filesystem`，
+agent 只剩那 9 个照片工具——它本来就只该做一件事。
+
+### 运行时位置
+
+DeepSeek Harness 装在 `~/deepseek-harness`。要换地方，设环境变量即可：
+
+```bash
+DSH_HARNESS=/别的/路径 ./run.sh ~/Desktop/照片测试
 ```
 
 ---
