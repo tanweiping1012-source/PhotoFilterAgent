@@ -226,9 +226,30 @@ func runAnalyze(_ options: Options) async {
     // 连拍组默认折叠：只露一个占位代表，其余标记为 collapsed。
     // 上一次实测里模型无视了 78 组连拍、对每张单独打分——而连拍恰恰是"哪张睁着眼"
     // 唯一能被可靠判出来的地方。折叠之后，想动这些照片必须显式 compare。
+    //
+    // 代表不能按 ID 顺序取。全库实测 39 组覆盖 426 张，最大一组 49 张——按 ID 取
+    // 等于随机指定一张当门面，闭眼那张照样会顶上来（F25 的代表就是"脸质量54 眼睛闭"）。
+    // 那正是这次要修的 bug，只是换了一层重新出现。
+    //
+    // 改用本机已经算出的免费事实排序：先排除闭眼，再看人脸质量，再看清晰度，
+    // ID 兜底保证跨机器确定。这只决定"默认露哪张"——冠军仍然由 compare /
+    // resolve_family 定，代表选得好只是让模型不必为每组都花一次比较的钱。
+    var rowByID: [String: [String: Any]] = [:]
+    for row in rows {
+        guard let id = row["id"] as? String else { continue }
+        rowByID[id] = row
+    }
+    func placeholderRank(_ id: String) -> (Int, Int, Int, String) {
+        let row = rowByID[id] ?? [:]
+        let closed = (row["eyes_closed"] as? Bool ?? false) ? 1 : 0
+        let faceQuality = row["face_quality"] as? Int ?? -1
+        let sharp = row["sharp"] as? Int ?? 0
+        return (closed, -faceQuality, -sharp, id)
+    }
     var collapsed: Set<String> = []
     for (_, members) in familyMembers where members.count > 1 {
-        collapsed.formUnion(members.sorted().dropFirst())
+        let ordered = members.sorted { placeholderRank($0) < placeholderRank($1) }
+        collapsed.formUnion(ordered.dropFirst())
     }
 
     let peopleCount = photos.filter { $0.curationCategory == .people }.count
