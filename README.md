@@ -105,8 +105,8 @@ AI 想干什么就从里面挑一个来调。
 ### 装
 
 ```bash
-git clone https://github.com/tanweiping1012-source/photo-curator-agent.git
-cd photo-curator-agent
+git clone https://github.com/tanweiping1012-source/PhotoFilterAgent.git
+cd PhotoFilterAgent
 ./install.sh
 ```
 
