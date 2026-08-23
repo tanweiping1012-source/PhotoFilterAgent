@@ -147,6 +147,7 @@ struct PhotoItem: Identifiable, Equatable {
     var captureDate: Date?
     var perceptualHash: PerceptualHash?
     var technicalQuality: TechnicalQuality?
+    var portraitQuality: PortraitQuality?
     var curationCategory: PhotoCurationCategory?
     var isCurationCategoryUserAssigned: Bool
     var decision: PhotoDecision
@@ -160,6 +161,7 @@ struct PhotoItem: Identifiable, Equatable {
         captureDate: Date? = nil,
         perceptualHash: PerceptualHash? = nil,
         technicalQuality: TechnicalQuality? = nil,
+        portraitQuality: PortraitQuality? = nil,
         curationCategory: PhotoCurationCategory? = nil,
         isCurationCategoryUserAssigned: Bool = false,
         burstGroup: BurstGroupMembership? = nil,
@@ -172,6 +174,7 @@ struct PhotoItem: Identifiable, Equatable {
         self.captureDate = captureDate
         self.perceptualHash = perceptualHash
         self.technicalQuality = technicalQuality
+        self.portraitQuality = portraitQuality
         self.curationCategory = curationCategory
         self.isCurationCategoryUserAssigned =
             isCurationCategoryUserAssigned

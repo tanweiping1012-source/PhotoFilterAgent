@@ -60,11 +60,26 @@ export class RunState {
     return out
   }
 
-  /** 仍在竞争的候选。 */
+  /** 仍在竞争的候选。
+   *
+   * 连拍组默认折叠：未经 compare + resolve_family 的组只露一个占位代表。
+   * 实测里模型会无视"发现 78 组连拍"这句提示、对每张单独打分，而连拍恰恰是
+   * "哪张睁着眼"唯一能被可靠判出来的地方。折叠让它绕不过去。
+   */
   active(category?: Category): Candidate[] {
     const gone = this.eliminated()
     return [...this.candidates.values()].filter(
-      (c) => !gone.has(c.id) && (!category || c.category === category),
+      (c) =>
+        !gone.has(c.id)
+        && !(c.collapsed && !this.championByFamily.has(c.family ?? ''))
+        && (!category || c.category === category),
+    )
+  }
+
+  /** 还没定代表的连拍组。 */
+  openFamilies(): Family[] {
+    return [...this.families.values()].filter(
+      (f) => f.members.length > 1 && !this.championByFamily.has(f.id),
     )
   }
 
@@ -143,9 +158,12 @@ export class RunState {
       }
       if (openFamilies.length) {
         lines.push(
-          `  待定连拍组 ${openFamilies.length}: ` +
-            openFamilies.slice(0, 6).map((f) => `${f.id}(${f.members.length}张)`).join(' '),
+          `  ⚠ 待定连拍组 ${openFamilies.length} 组仍被折叠，组内其余照片不在候选里：`,
         )
+        lines.push(
+          `    ${openFamilies.slice(0, 8).map((f) => `${f.id}[${f.members.join(' ')}]`).join('  ')}`,
+        )
+        lines.push('    先 compare 再 resolve_family，否则这些瞬间只有占位代表参与竞争。')
       }
     }
     lines.push(

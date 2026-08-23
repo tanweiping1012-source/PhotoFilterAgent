@@ -54,12 +54,15 @@ enum PhotoAnalysisPipeline {
             preservingAspectRatio: true
         )
 
+        let category = PhotoCategoryClassifier.classify(image)
         return PhotoAnalysisResult(
             photoID: photoID(for: url),
             captureDate: captureDate,
             perceptualHash: fingerprintRaster.flatMap { PerceptualHasher.hash(from: $0) },
             technicalQuality: qualityRaster.map { TechnicalQualityAnalyzer.analyze($0) },
-            curationCategory: PhotoCategoryClassifier.classify(image)
+            // 只对人物照做人脸分析：风景照上跑关键点检测是白花 CPU。
+            portraitQuality: category == .people ? PortraitQualityAnalyzer.analyze(image) : nil,
+            curationCategory: category
         )
     }
 

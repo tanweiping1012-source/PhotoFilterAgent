@@ -29,15 +29,62 @@ export interface PhotoScore {
 
 export class VisionError extends Error {}
 
-const SYSTEM_PROMPT = `你是要求严格的旅行照片评分助手。用固定的绝对标尺独立评估瞬间、构图、主体、光线、叙事表现五个维度，各自 0–100 的整数。
-锚点：80 分等同专业摄影师的交付水准；普通旅行快照通常落在 60–75，不要因为画面讨喜或有纪念意义而抬分。
-只给五个维度分，不要给总分或名次——总分由 App 在本地按用户权重计算。
-不得比较图片，不得使用"相比、更好、本组、优先"等相对表述。不得评价人物身份或敏感属性。
+const SHARED_ANCHOR = `锚点：80 分等同专业摄影师的交付水准；普通旅行快照通常落在 60–75，
+不要因为画面讨喜或有纪念意义而抬分。只给五个维度分，不要给总分或名次——总分由 App 按用户权重本地计算。
+不得比较图片，不得使用"相比、更好、本组、优先"等相对表述。只返回 JSON，不要 Markdown 代码块。`
+
+/** 人像标尺。和风景分开，因为决定一张人像成败的东西风景照里根本不存在。 */
+const PEOPLE_PROMPT = `你在帮一个人从自己的旅行照片里挑出值得留下的几张。照片里的人是他自己或同行的人。
+
+先判断有没有硬伤。以下任意一条成立，就是硬伤：
+- 眼睛闭着、半闭、或明显在眨眼的中途
+- 脸被头发、手、物体遮住，或严重逆光成剪影看不清五官
+- 脸部失焦（背景是清楚的而脸是糊的）
+- 表情僵硬到失真：说话说到一半的口型、被抓拍到的怪表情
+
+**有硬伤时，主体分必须低于 40，瞬间分必须低于 45。**
+这类照片是废片，不是风格。不要因为"自然""不摆拍""有情绪""有生活感""闭目沉思"
+之类的理由给它加分——用户想要的是能拿出去看的照片，不是候选帧。
+
+没有硬伤时，按五个维度打分：
+- **瞬间**：表情和姿态是不是这一刻最好的状态。眼神有没有落点，笑是不是到眼睛里
+- **构图**：人在画面里的位置、留白、背景有没有干扰物（电线杆、路人、垃圾桶）
+- **主体**：人是不是清楚的视觉中心。脸的清晰度、肤色、有没有被环境淹没
+- **光线**：脸上的光。顺光/侧光/逆光处理得如何，有没有难看的阴影或过曝
+- **叙事**：这张照片能不能让人想起这次旅行。环境有没有交代地点和氛围
+
+${SHARED_ANCHOR}`
+
+/** 风景标尺。 */
+const SCENERY_PROMPT = `你在帮一个人从自己的旅行照片里挑出值得留下的风景照。
+
+按五个维度打分：
+- **瞬间**：光线、天气、人流的时机。是不是这个场景最好的一刻
+- **构图**：取景、水平、透视、前中后景的层次
+- **主体**：画面有没有明确的视觉重心，还是一片平均的杂乱
+- **光线**：整体影调、动态范围、有没有死黑或死白
+- **叙事**：看得出这是哪里、什么季节、什么氛围吗
+
+${SHARED_ANCHOR}`
+
+/** 比较用的系统提示。这里主动解禁相对表述——比较正是它存在的理由。 */
+const COMPARE_PROMPT = `你在帮一个人从同一场景的连拍里挑出最好的一张。
+
+**判断顺序**：先看有没有人。有人的话，第一优先是脸——眼睛睁开、表情自然、脸没被遮挡、
+脸是清楚的。只有在这些都相当的情况下，才去比构图、光线和背景。
+
+一组连拍里经常只有一两张眼睛是睁开的，其余都是眨眼的瞬间。**把睁眼的挑出来，
+不要因为闭眼那张"更有情绪"就选它。**
+
 只返回 JSON，不要 Markdown 代码块。`
 
 /** 单张打分的用户提示。附图在文本之后。 */
-function scorePrompt(id: string): string {
-    return `评分这一张匿名照片（id: ${id}）。
+function scorePrompt(id: string, category: 'people' | 'scenery'): string {
+    const hint = category === 'people'
+      ? '若存在硬伤（闭眼／遮挡／脸失焦／表情失真），reasons 第一条必须直接指出是哪一条。'
+      : ''
+    return `评分这一张匿名照片（id: ${id}，类型：${category === 'people' ? '人物' : '风景'}）。
+${hint}
 只返回：{"id":"${id}","dimensions":{"moment":0,"composition":0,"subject":0,"lighting":0,"storytelling":0},"reasons":["…","…"],"summary":"…"}
 reasons 是 1–3 条、每条 2–40 字的具体中文评价；summary 是 4–60 字的中文总结，只评价这一张自己。`
 }
@@ -113,6 +160,7 @@ export class VisionClient {
   }
 
   private async chat(
+    systemPrompt: string,
     userText: string,
     images: string[],
     detail: string,
@@ -140,7 +188,7 @@ export class VisionClient {
         body: JSON.stringify({
           model: this.model,
           messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'system', content: systemPrompt },
             { role: 'user', content: parts },
           ],
           temperature: 0.1,
@@ -176,9 +224,13 @@ export class VisionClient {
     id: string,
     jpegBase64: string,
     detail: 'low' | 'high',
+    category: 'people' | 'scenery',
     signal?: AbortSignal,
   ): Promise<PhotoScore> {
-    const raw = await this.chat(scorePrompt(id), [jpegBase64], detail, signal)
+    // 人像和风景用不同标尺：决定一张人像成败的东西（眼睛、表情、脸上的光）
+    // 在风景照里根本不存在，共用一套标尺等于让模型自己去猜该看什么。
+    const systemPrompt = category === 'people' ? PEOPLE_PROMPT : SCENERY_PROMPT
+    const raw = await this.chat(systemPrompt, scorePrompt(id, category), [jpegBase64], detail, signal)
     const parsed = parseJsonObject(raw) as Record<string, unknown>
     const dimensions = parsed.dimensions as Record<string, unknown> | undefined
     if (!dimensions) throw new VisionError('返回里缺少 dimensions')
@@ -206,7 +258,7 @@ export class VisionClient {
     question: string,
     signal?: AbortSignal,
   ): Promise<{ winner: string; reason: string; order: string[] }> {
-    const raw = await this.chat(comparePrompt(ids, question), jpegs, 'low', signal)
+    const raw = await this.chat(COMPARE_PROMPT, comparePrompt(ids, question), jpegs, 'low', signal)
     const parsed = parseJsonObject(raw) as Record<string, unknown>
     const winner = typeof parsed.winner === 'string' && ids.includes(parsed.winner)
       ? parsed.winner

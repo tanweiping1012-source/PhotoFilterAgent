@@ -32,6 +32,14 @@ export interface Candidate {
   t?: number
   /** 本地技术排序认为它是同家族里的优等生。 */
   local_top: boolean
+  /** 人脸事实摘要，例如「脸质量53 眼睛闭」；没有人脸时缺席。 */
+  face?: string
+  /** Apple 人脸拍摄质量分 0–100。 */
+  face_quality?: number
+  /** 本机判定眼睛明显闭合。这是硬伤，不是风格。 */
+  eyes_closed?: boolean
+  /** 属于某个连拍组且不是占位代表——默认不参与竞争，要 compare 才拆得开。 */
+  collapsed?: boolean
 }
 
 /** 一组画面高度相似的照片。最终结果里同一家族最多留一张。 */
@@ -48,6 +56,7 @@ export interface AnalyzeReport {
   family_count: number
   families: Family[]
   candidates: Candidate[]
+  collapsed_by_family: string[]
 }
 
 export interface SelectionBlock {

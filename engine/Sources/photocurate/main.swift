@@ -128,6 +128,7 @@ func prepare(folder: String, options: Options) async -> Prepared {
             photo.captureDate = result.captureDate
             photo.perceptualHash = result.perceptualHash
             photo.technicalQuality = result.technicalQuality
+            photo.portraitQuality = result.portraitQuality
             photo.curationCategory = result.curationCategory
         }
         return photo
@@ -150,48 +151,6 @@ func prepare(folder: String, options: Options) async -> Prepared {
 
     // 时间一律相对化：绝对拍摄时间是元数据，不该出现在模型可见的表里。
     let earliest = photos.compactMap(\.captureDate).min()
-
-    var familyMembers: [String: [String]] = [:]
-    for photo in photos {
-        guard let familyID = families.familyID(for: photo.id),
-              let anonymous = anonymousByLocal[photo.id] else { continue }
-        familyMembers[familyID, default: []].append(anonymous)
-    }
-    var familyLabel: [String: String] = [:]
-    for (offset, familyID) in familyMembers.keys.sorted().enumerated() {
-        familyLabel[familyID] = String(format: "F%02d", offset + 1)
-    }
-
-    func metrics(_ photo: PhotoItem) -> [String: Any] {
-        guard let quality = photo.technicalQuality else {
-            return ["sharp": 0, "range": 0, "clip": 100, "risk": ["unreadable"]]
-        }
-        let clipping = quality.shadowClippingRatio + quality.highlightClippingRatio
-        return [
-            "sharp": Int((min(max(quality.sharpness, 0), 1) * 100).rounded()),
-            "range": Int((Double(quality.dynamicRange) / 255 * 100).rounded()),
-            "clip": Int((min(max(clipping, 0), 1) * 100).rounded()),
-            "risk": quality.risks.map(\.rawValue),
-        ]
-    }
-
-    let rows: [[String: Any]] = photos.compactMap { photo in
-        guard let anonymous = anonymousByLocal[photo.id] else { return nil }
-        var row: [String: Any] = [
-            "id": anonymous,
-            "category": photo.curationCategory?.rawValue ?? "scenery",
-        ]
-        row.merge(metrics(photo)) { current, _ in current }
-        if let familyID = families.familyID(for: photo.id),
-           let label = familyLabel[familyID] {
-            row["family"] = label
-        }
-        if let captureDate = photo.captureDate, let earliest {
-            row["t"] = Int(captureDate.timeIntervalSince(earliest).rounded())
-        }
-        row["local_top"] = photo.localRecommendations.contains(where: \.isTopCandidate)
-        return row
-    }
 
     return Prepared(
         photos: photos,
@@ -253,7 +212,23 @@ func runAnalyze(_ options: Options) async {
             row["t"] = Int(captureDate.timeIntervalSince(earliest).rounded())
         }
         row["local_top"] = photo.localRecommendations.contains(where: \.isTopCandidate)
+        // 人脸事实必须直接摆出来。模型在 512px 上看得清眼睛是闭的——实测它会明说
+        // "闭目瞬间富有感染力"——但它把闭眼当成"自然、有情绪"而加分。
+        // 与其指望它领会，不如把本机免费算出的事实交给它。
+        if let portrait = photo.portraitQuality {
+            row["face"] = portrait.summary
+            row["face_quality"] = Int((portrait.captureQuality * 100).rounded())
+            if portrait.eyesLikelyClosed { row["eyes_closed"] = true }
+        }
         return row
+    }
+
+    // 连拍组默认折叠：只露一个占位代表，其余标记为 collapsed。
+    // 上一次实测里模型无视了 78 组连拍、对每张单独打分——而连拍恰恰是"哪张睁着眼"
+    // 唯一能被可靠判出来的地方。折叠之后，想动这些照片必须显式 compare。
+    var collapsed: Set<String> = []
+    for (_, members) in familyMembers where members.count > 1 {
+        collapsed.formUnion(members.sorted().dropFirst())
     }
 
     let peopleCount = photos.filter { $0.curationCategory == .people }.count
@@ -269,7 +244,13 @@ func runAnalyze(_ options: Options) async {
                 guard entry.value.count > 1, let label = familyLabel[entry.key] else { return nil }
                 return ["id": label, "members": entry.value.sorted()]
             },
-        "candidates": rows,
+        "collapsed_by_family": collapsed.sorted(),
+        "candidates": rows.map { row -> [String: Any] in
+            guard let id = row["id"] as? String, collapsed.contains(id) else { return row }
+            var row = row
+            row["collapsed"] = true
+            return row
+        },
     ])
 }
 

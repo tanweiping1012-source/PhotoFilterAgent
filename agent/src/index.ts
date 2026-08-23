@@ -69,6 +69,8 @@ function row(candidate: Candidate): string {
   ]
   if (candidate.family) parts.push(`连拍${candidate.family}`)
   if (candidate.risk.length) parts.push(`风险:${candidate.risk.join(',')}`)
+  if (candidate.face) parts.push(candidate.face)
+  if (candidate.eyes_closed) parts.push('⚠硬伤:闭眼')
   if (candidate.local_top) parts.push('本地优等')
   if (candidate.t !== undefined) parts.push(`+${candidate.t}s`)
   return parts.join(' ')
@@ -143,10 +145,18 @@ export function apply(ctx: Context, config: Config): void {
       const resumed = restored && state.scores.size
         ? `\n已恢复上次的 ${state.scores.size} 张打分与 ${state.championByFamily.size} 个连拍组结论，不会重复计费。\n`
         : ''
+      const closedEyes = report.candidates.filter((c) => c.eyes_closed).length
+      const banner = multi.length
+        ? `\n⚠ 发现 ${multi.length} 组连拍，已默认折叠——每组只有一张露在候选池里，\n` +
+          `其余不参与竞争。连拍之间的差别在表情、眼神、手的位置，绝对打分分不出来。\n` +
+          `**下一步请对每组调 compare 比较，再用 resolve_family 定代表**，然后才开始 inspect。\n`
+        : ''
+      const eyeNote = closedEyes
+        ? `⚠ 本机已判定 ${closedEyes} 张人物照眼睛闭合（候选表里标了 eyes_closed）。这是硬伤，别选它们。\n`
+        : ''
       const summary =
         `已在本机分析 ${report.photo_count} 张：人物 ${report.people_count} · 风景 ${report.scenery_count}。\n` +
-        resumed +
-        `发现 ${multi.length} 组连拍（同一组最终只保留一张）。\n` +
+        resumed + banner + eyeNote +
         `目标：人物 ${state.targets.people} 张 · 风景 ${state.targets.scenery} 张。\n\n` +
         listing('people') + listing('scenery') +
         (multi.length
@@ -244,7 +254,8 @@ export function apply(ctx: Context, config: Config): void {
         async (id) => {
           try {
             const preview = await engine.preview(id, detail, exec.signal)
-            const score = await client.score(id, preview.jpeg_base64, detail, exec.signal)
+            const category = state.candidates.get(id)?.category ?? 'scenery'
+          const score = await client.score(id, preview.jpeg_base64, detail, category, exec.signal)
             // 单线程事件循环下这两处自增没有竞态。
             state.record(score, detail)
             state.paidCalls.inspect += 1

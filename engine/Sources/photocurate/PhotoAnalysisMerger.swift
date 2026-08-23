@@ -6,6 +6,8 @@ struct PhotoAnalysisResult: Equatable {
     let captureDate: Date?
     let perceptualHash: PerceptualHash?
     let technicalQuality: TechnicalQuality?
+    /// 人物照的脸拍得怎么样；没有人脸时为 nil。
+    let portraitQuality: PortraitQuality?
     let curationCategory: PhotoCurationCategory
 
     init(
@@ -13,12 +15,14 @@ struct PhotoAnalysisResult: Equatable {
         captureDate: Date?,
         perceptualHash: PerceptualHash?,
         technicalQuality: TechnicalQuality?,
+        portraitQuality: PortraitQuality? = nil,
         curationCategory: PhotoCurationCategory = .scenery
     ) {
         self.photoID = photoID
         self.captureDate = captureDate
         self.perceptualHash = perceptualHash
         self.technicalQuality = technicalQuality
+        self.portraitQuality = portraitQuality
         self.curationCategory = curationCategory
     }
 }
