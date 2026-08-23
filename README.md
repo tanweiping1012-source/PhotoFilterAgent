@@ -1,4 +1,4 @@
-# 照片筛选 Agent
+# PhotoFilterAgent · 照片筛选 Agent
 
 旅行回来一堆照片，你想挑出最好的几张——但翻到第 200 张就烦了。
 
@@ -570,6 +570,19 @@ profiles/   两份配置模板（install.sh 会填好路径装到 ~/.dsh）
 bench/      评测脚本
 install.sh  从零装配        run.sh  一键跑完
 ```
+
+### 各处叫什么名字
+
+同一个东西在不同层会以不同形式出现，对照表：
+
+| 在哪 | 叫什么 |
+|---|---|
+| GitHub 仓库 / 本地目录 | `PhotoFilterAgent` |
+| DSH 插件列表里显示的 id | `photo-filter-agent` |
+| npm 包名 | `@photo-filter-agent/dsh-photo-filter-agent` |
+| Swift 可执行文件 | `photofilter` |
+| profile（`--profile` 后面跟的） | `photo` · `photo-web` |
+| 缓存与状态目录 | `~/.dsh/photo-filter-agent` |
 
 ---
 

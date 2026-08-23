@@ -1,5 +1,5 @@
 {
-  "name": "@photo-curator/dsh-photo-curator",
+  "name": "@photo-filter-agent/dsh-photo-filter-agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",

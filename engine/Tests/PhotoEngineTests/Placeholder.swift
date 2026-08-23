@@ -1,5 +1,5 @@
 import XCTest
-@testable import photocurate
+@testable import photofilter
 
 final class PlaceholderTests: XCTestCase {
     func testEngineLinks() { XCTAssertTrue(true) }

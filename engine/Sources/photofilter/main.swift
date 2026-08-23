@@ -1,6 +1,6 @@
 import Foundation
 
-// photocurate —— 照片筛选 agent 的本地分析进程。
+// photofilter —— 照片筛选 agent 的本地分析进程。
 //
 // 它是 agent 的“免费工具”：分类、相似家族、技术质量全部在本机算完，一次网络都不走。
 // 输出里永远没有绝对路径、文件名和绝对拍摄时间——匿名 ID 与真实路径的映射只留在
@@ -43,7 +43,7 @@ struct Options {
 }
 
 func fail(_ message: String) -> Never {
-    FileHandle.standardError.write(Data(("photocurate: " + message + "\n").utf8))
+    FileHandle.standardError.write(Data(("photofilter: " + message + "\n").utf8))
     exit(2)
 }
 
@@ -104,7 +104,7 @@ func prepare(folder: String, options: Options) async -> Prepared {
     }
     let workdir = options.flag("workdir")
         ?? FileManager.default.temporaryDirectory
-            .appendingPathComponent("photocurate").path
+            .appendingPathComponent("photofilter").path
 
     var urls = PhotoAnalysisPipeline.imageURLs(in: folderURL)
     guard !urls.isEmpty else { fail("目录里没有受支持的照片") }
@@ -164,7 +164,7 @@ func prepare(folder: String, options: Options) async -> Prepared {
 /// 输出候选表（无路径、无文件名、时间相对化）。
 func runAnalyze(_ options: Options) async {
     guard let folder = options.positional.first else {
-        fail("用法: photocurate analyze <目录> [--limit N] [--workdir <路径>]")
+        fail("用法: photofilter analyze <目录> [--limit N] [--workdir <路径>]")
     }
     let prepared = await prepare(folder: folder, options: options)
     let photos = prepared.photos
@@ -286,7 +286,7 @@ actor Collector {
 
 func runSelect(_ options: Options) async {
     guard let folder = options.positional.first else {
-        fail("用法: photocurate select <目录> --people N --scenery M [--limit N] [--workdir <路径>]")
+        fail("用法: photofilter select <目录> --people N --scenery M [--limit N] [--workdir <路径>]")
     }
     let prepared = await prepare(folder: folder, options: options)
     let peopleTarget = options.int("people") ?? 6
@@ -330,7 +330,7 @@ func runSelect(_ options: Options) async {
 /// 把一张照片重编码成无元数据 JPEG 并以 base64 输出。原图只读，绝不修改。
 func runPreview(_ options: Options) {
     guard let anonymous = options.positional.first else {
-        fail("用法: photocurate preview <匿名ID> --workdir <路径> [--detail low|standard|high]")
+        fail("用法: photofilter preview <匿名ID> --workdir <路径> [--detail low|standard|high]")
     }
     guard let workdir = options.flag("workdir") else { fail("缺少 --workdir") }
     guard let index = try? AnonymousIndex.read(from: workdir) else {
@@ -419,7 +419,7 @@ case "resolve": runResolve(options)
 case "export": runExport(options)
 default:
     print("""
-    photocurate —— 照片筛选 agent 的本地分析进程
+    photofilter —— 照片筛选 agent 的本地分析进程
 
     analyze <目录> [--limit N] [--workdir <路径>]
         递归扫描并分析：人物/风景分类、相似家族、清晰度与曝光。

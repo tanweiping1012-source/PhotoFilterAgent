@@ -23,7 +23,7 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # 本项目就住在 harness 目录里，默认取上一级即可。
 HARNESS="${DSH_HARNESS:-$(dirname "${ROOT}")}"
-ENGINE="$ROOT/engine/.build/release/photocurate"
+ENGINE="$ROOT/engine/.build/release/photofilter"
 
 [[ -d "$FOLDER" ]] || { echo "照片目录不存在：${FOLDER}" >&2; exit 1; }
 [[ -d "$HARNESS" ]] || { echo "找不到 DeepSeek Harness：${HARNESS}（可用 DSH_HARNESS 覆盖）" >&2; exit 1; }

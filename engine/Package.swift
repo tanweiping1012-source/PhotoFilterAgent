@@ -2,10 +2,10 @@
 import PackageDescription
 
 let package = Package(
-    name: "photocurate",
+    name: "photofilter",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "photocurate"),
-        .testTarget(name: "PhotoEngineTests", dependencies: ["photocurate"]),
+        .executableTarget(name: "photofilter"),
+        .testTarget(name: "PhotoEngineTests", dependencies: ["photofilter"]),
     ]
 )

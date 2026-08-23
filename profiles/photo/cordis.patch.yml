@@ -1,6 +1,6 @@
 # 照片策展 profile 的补丁层。
 #
-# 分工：harness 提供循环、会话、工具管线与模型接入；photo-curator 插件提供领域能力
+# 分工：harness 提供循环、会话、工具管线与模型接入；photo-filter-agent 插件提供领域能力
 # （本地分析引擎、视觉打分、连拍比较、提议校验、导出）。
 #
 # 视觉模型与循环模型是同一个 MiniMax-M3：循环通过 llm-pi-ai 走 settings.yaml 里
@@ -8,11 +8,11 @@
 # ——图片一旦进对话历史，之后每一轮都要重发。
 
 - insert:
-    - id: photo-curator
-      name: '@photo-curator/dsh-photo-curator'
+    - id: photo-filter-agent
+      name: '@photo-filter-agent/dsh-photo-filter-agent'
       config:
-        engineBinary: @@PHOTO_CURATOR_HOME@@/engine/.build/release/photocurate
-        workdir: @@DSH_HOME@@/photo-curator
+        engineBinary: @@PHOTO_FILTER_HOME@@/engine/.build/release/photofilter
+        workdir: @@DSH_HOME@@/photo-filter-agent
         visionModel: MiniMax-M3
         # Keychain 读取会弹图形授权框并阻塞；凭据走 .credentials.yaml。
         allowKeychain: false
@@ -30,7 +30,7 @@
 # **原图**（全分辨率、带 EXIF 与 GPS）直接读进对话，绕过引擎的匿名化、降采样和
 # 元数据剥离；glob/grep 则会泄露真实文件名。实测模型确实尝试过 read_image 与 glob。
 #
-# 需要的能力 photo-curator 都提供了：analyze_folder 看目录、preview 出无元数据缩略图、
+# 需要的能力 photo-filter-agent 都提供了：analyze_folder 看目录、preview 出无元数据缩略图、
 # export_selection 只复制。
 - id: tool-bash
   disabled: true

@@ -68,7 +68,7 @@ export interface ResolveOptions {
  */
 export async function resolveVisionApiKey(options: ResolveOptions = {}): Promise<KeyLookup> {
   const envNames = options.envNames
-    ?? ['MINIMAX_CN_API_KEY', 'MINIMAX_API_KEY', 'PHOTO_CURATOR_VISION_KEY']
+    ?? ['MINIMAX_CN_API_KEY', 'MINIMAX_API_KEY', 'PHOTO_FILTER_VISION_KEY']
   for (const name of envNames) {
     const value = process.env[name]?.trim()
     if (value) return { key: value, source: 'env' }

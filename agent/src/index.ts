@@ -8,7 +8,7 @@
  * - **照片不外泄**——发出去的只有引擎生成的无元数据缩放 JPEG；文件名、路径、
  *   绝对拍摄时间与 GPS 都不出本机。
  * - **不重复计费**——同一张同档位已有分数时直接命中缓存，并在结果里如实标注。
- * @module @photo-curator/dsh-photo-curator
+ * @module @photo-filter-agent/dsh-photo-filter-agent
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -20,11 +20,11 @@ import { mapWithConcurrency } from './pool.ts'
 import { loadState, RunState, saveState, validateProposal, type Category } from './state.ts'
 import { VisionClient, weightedTotal } from './vision.ts'
 
-export const name = 'photo-curator'
+export const name = 'photo-filter-agent'
 export const inject = ['tools']
 
 export interface Config {
-  /** `photocurate` 可执行文件路径。 */
+  /** `photofilter` 可执行文件路径。 */
   engineBinary: string
   /** 引擎工作目录：匿名 ID ↔ 路径的映射存在这里，不进模型上下文。 */
   workdir: string
@@ -46,8 +46,8 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  engineBinary: z.string().default('photocurate'),
-  workdir: z.string().default('/tmp/photo-curator'),
+  engineBinary: z.string().default('photofilter'),
+  workdir: z.string().default('/tmp/photo-filter-agent'),
   visionModel: z.string().default('MiniMax-M3'),
   allowKeychain: z.boolean().default(false),
   maxInspectBatch: z.number().step(1).min(1).max(32).default(8),

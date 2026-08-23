@@ -1,5 +1,5 @@
 /**
- * `photocurate` 本地分析进程的调用封装。
+ * `photofilter` 本地分析进程的调用封装。
  *
  * 引擎是 agent 的“免费工具”：分类、相似家族、技术质量全部在本机算完，一次网络都不走。
  * 它返回的候选表里没有绝对路径、文件名和绝对拍摄时间——匿名 ID 到真实路径的映射
@@ -88,7 +88,7 @@ export interface Preview {
 }
 
 /**
- * 调用 `photocurate` 并解析它的 JSON 输出。
+ * 调用 `photofilter` 并解析它的 JSON 输出。
  *
  * @param binary - 引擎可执行文件路径。
  * @param args - 子命令与参数。
@@ -104,12 +104,12 @@ async function invoke<T>(binary: string, args: string[], signal?: AbortSignal): 
     stdout = result.stdout
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    throw new EngineError(`photocurate ${args[0]} 执行失败: ${detail}`)
+    throw new EngineError(`photofilter ${args[0]} 执行失败: ${detail}`)
   }
   try {
     return JSON.parse(stdout) as T
   } catch {
-    throw new EngineError(`photocurate ${args[0]} 的输出不是合法 JSON`)
+    throw new EngineError(`photofilter ${args[0]} 的输出不是合法 JSON`)
   }
 }
 

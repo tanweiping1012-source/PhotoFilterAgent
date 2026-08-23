@@ -61,7 +61,7 @@ ok "harness 就绪"
 
 # ── 3. Swift 分析引擎 ──────────────────────────────────────────
 say "构建本地分析引擎"
-ENGINE="${ROOT}/engine/.build/release/photocurate"
+ENGINE="${ROOT}/engine/.build/release/photofilter"
 if [[ -x "${ENGINE}" ]]; then
   ok "已构建：${ENGINE}"
 else
@@ -82,15 +82,15 @@ for prof in photo photo-web; do
   for f in package.json cordis.yml pnpm-workspace.yaml; do
     cp "${src}/${f}" "${dst}/${f}"
   done
-  sed -e "s|@@PHOTO_CURATOR_HOME@@|${ROOT}|g" \
+  sed -e "s|@@PHOTO_FILTER_HOME@@|${ROOT}|g" \
       -e "s|@@DSH_HOME@@|${DSH_HOME}|g" \
       "${src}/cordis.patch.yml" > "${dst}/cordis.patch.yml"
   ok "${prof}"
 done
 
 # 插件按包名解析，软链进 harness 维护的扁平模块层。
-mkdir -p "${DSH_HOME}/profiles/node_modules/@photo-curator"
-ln -sfn "${ROOT}/agent" "${DSH_HOME}/profiles/node_modules/@photo-curator/dsh-photo-curator"
+mkdir -p "${DSH_HOME}/profiles/node_modules/@photo-filter-agent"
+ln -sfn "${ROOT}/agent" "${DSH_HOME}/profiles/node_modules/@photo-filter-agent/dsh-photo-filter-agent"
 ok "插件已链接"
 
 # ── 5. 视觉模型凭据 ────────────────────────────────────────────
@@ -129,10 +129,10 @@ fi
 # ── 6. 自检 ────────────────────────────────────────────────────
 say "自检"
 "${ENGINE}" >/dev/null 2>&1 && ok "引擎可执行"
-if (cd "${HARNESS}" && pnpm dsh --profile photo --dump-config 2>/dev/null | grep -q "photo-curator"); then
+if (cd "${HARNESS}" && pnpm dsh --profile photo --dump-config 2>/dev/null | grep -q "photo-filter-agent"); then
   ok "插件已挂进 photo profile"
 else
-  die "profile 里找不到 photo-curator，检查 ${DSH_HOME}/profiles/photo/cordis.patch.yml"
+  die "profile 里找不到 photo-filter-agent，检查 ${DSH_HOME}/profiles/photo/cordis.patch.yml"
 fi
 
 cat <<EOF
