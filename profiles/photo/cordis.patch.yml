@@ -3,9 +3,9 @@
 # 分工：harness 提供循环、会话、工具管线与模型接入；photo-filter-agent 插件提供领域能力
 # （本地分析引擎、视觉打分、连拍比较、提议校验、导出）。
 #
-# 视觉模型与循环模型是同一个 MiniMax-M3：循环通过 llm-pi-ai 走 settings.yaml 里
-# 配好的 minimax-cn 路由；插件里的 inspect/compare 自己发图，只把紧凑分数交回循环
-# ——图片一旦进对话历史，之后每一轮都要重发。
+# 主循环、领域视觉评分与独立 evaluator 统一继承用户当前 Harness 会话路由。
+# 领域工具只发匿名缩略 JPEG 的隔离 one-shot，不把图片写入主对话历史。
+# 旧 profile 不得覆盖用户的 agent-default-model，也不得指定独立视觉模型。
 
 - insert:
     - id: photo-filter-agent
@@ -13,16 +13,13 @@
       config:
         engineBinary: @@PHOTO_FILTER_HOME@@/engine/.build/release/photofilter
         workdir: @@DSH_HOME@@/photo-filter-agent
-        visionModel: MiniMax-M3
-        # Keychain 读取会弹图形授权框并阻塞；凭据走 .credentials.yaml。
-        allowKeychain: false
         maxInspectBatch: 8
         # 并发路数：开满会换来 429 再触发退避，反而更慢。
         inspectConcurrency: 4
         maxInlineIdList: 80
-        visionTimeoutMs: 120000
         defaultPeopleTarget: 6
         defaultSceneryTarget: 6
+        excludedRelativePaths: []
 
 # 关掉全部通用文件系统与 shell 能力。
 #

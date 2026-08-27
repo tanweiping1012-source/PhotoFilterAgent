@@ -1,61 +1,13 @@
 #!/usr/bin/env bash
-# 照片筛选 agent —— 一条命令跑通。
-#
-#   ./run.sh <照片目录> [取样张数] [人物保留数] [风景保留数] [导出目录]
-#
-# 例：
-#   ./run.sh ~/Desktop/照片测试 50 3 3 ~/Desktop/照片筛选结果
-#   ./run.sh ~/Desktop/照片测试            # 全量，人物 6 风景 6，不导出
+# 旧命令行 profile 不能满足当前模型路由和 audit v3 契约，故 fail closed。
 set -euo pipefail
 
-FOLDER="${1:?用法: ./run.sh <照片目录> [取样张数] [人物数] [风景数] [导出目录]}"
-# 传进来的路径可能是相对的；agent 要的是绝对路径，在这里一次性解析掉。
-FOLDER="$(cd "${FOLDER}" 2>/dev/null && pwd || echo "${FOLDER}")"
-LIMIT="${2:-}"
-PEOPLE="${3:-6}"
-SCENERY="${4:-6}"
-EXPORT_TO="${5:-}"
-if [[ -n "${EXPORT_TO}" ]]; then
-  mkdir -p "${EXPORT_TO}"
-  EXPORT_TO="$(cd "${EXPORT_TO}" && pwd)"
-fi
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# 本项目就住在 harness 目录里，默认取上一级即可。
 HARNESS="${DSH_HARNESS:-$(dirname "${ROOT}")}"
-ENGINE="$ROOT/engine/.build/release/photofilter"
 
-[[ -d "$FOLDER" ]] || { echo "照片目录不存在：${FOLDER}" >&2; exit 1; }
-[[ -d "$HARNESS" ]] || { echo "找不到 DeepSeek Harness：${HARNESS}（可用 DSH_HARNESS 覆盖）" >&2; exit 1; }
-
-# 引擎是本地分析的全部来源，缺了它 agent 连候选表都拿不到。
-if [[ ! -x "$ENGINE" ]]; then
-  echo "正在构建本地分析引擎…"
-  (cd "$ROOT/engine" && swift build -c release)
-fi
-
-LIMIT_CLAUSE=""
-if [[ -n "${LIMIT}" ]]; then
-  LIMIT_CLAUSE="limit=${LIMIT}，"
-fi
-
-TASK="完整策展 ${FOLDER}。${LIMIT_CLAUSE}人物保留 ${PEOPLE} 张、风景保留 ${SCENERY} 张。
-
-按这个顺序做：
-1. analyze_folder（免费，本地分析：人物/风景分类、连拍组、清晰度与曝光）
-2. 每个连拍组先用 compare 比较，再用 resolve_family 定下代表——连拍之间的差别在表情和姿态，绝对打分看不出来
-3. 剩余候选用 inspect detail=low 粗筛
-4. 查 status；只在切线分差小于 3 时，对切线附近的照片用 detail=high 精看
-5. propose 给出名单与每张的理由"
-
-if [[ -n "$EXPORT_TO" ]]; then
-  TASK="$TASK
-6. export_selection 导出到 ${EXPORT_TO}"
-fi
-
-TASK="$TASK
-
-请节制花费，不要把所有照片都用 high 档看一遍。"
-
-cd "$HARNESS"
-exec pnpm dsh --profile photo "$TASK"
+printf '%s\n' \
+  '旧版 run.sh 流程已停用：它不能保证主 Agent、baseline、high、AB/BA 与独立审计使用同一当前会话模型。' \
+  "请先运行：${ROOT}/install.sh ${HARNESS}" \
+  "然后启动：cd ${HARNESS} && pnpm dsh --profile web" \
+  '打开 http://127.0.0.1:3080，新建任务时选择 Photo Curator，并在界面选择本轮 provider/model。' >&2
+exit 2

@@ -42,7 +42,7 @@ export interface Candidate {
   collapsed?: boolean
 }
 
-/** 一组画面高度相似的照片。最终结果里同一家族最多留一张。 */
+/** 一组画面高度相似的照片。家族用于受限 novelty 与独立审计，不是最终名单的硬上限。 */
 export interface Family {
   id: string
   members: string[]
@@ -50,6 +50,8 @@ export interface Family {
 
 export interface AnalyzeReport {
   workdir: string
+  /** 候选相对路径、大小和修改时间的本地 SHA-256；不含可逆的路径信息。 */
+  dataset_fingerprint: string
   photo_count: number
   people_count: number
   scenery_count: number
@@ -87,6 +89,19 @@ export interface Preview {
   jpeg_base64: string
 }
 
+/** PASS 后冻结选片的原图内容身份；不包含路径或文件名。 */
+export interface ContentHash {
+  id: string
+  sha256: string
+}
+
+function appendExcludedRelativePaths(args: string[], excludedRelativePaths: readonly string[]): void {
+  if (!excludedRelativePaths.length) return
+  // One JSON argv value keeps paths as data. `execFile` below never invokes a
+  // shell, so quotes/metacharacters cannot turn an exclusion into a command.
+  args.push('--exclude-relative-json', JSON.stringify(excludedRelativePaths))
+}
+
 /**
  * 调用 `photofilter` 并解析它的 JSON 输出。
  *
@@ -120,9 +135,15 @@ export class PhotoEngine {
   ) {}
 
   /** 递归分析一个目录，产出候选表。 */
-  analyze(folder: string, limit?: number, signal?: AbortSignal): Promise<AnalyzeReport> {
+  analyze(
+    folder: string,
+    limit?: number,
+    signal?: AbortSignal,
+    excludedRelativePaths: readonly string[] = [],
+  ): Promise<AnalyzeReport> {
     const args = ['analyze', folder, '--workdir', this.workdir]
     if (limit && limit > 0) args.push('--limit', String(limit))
+    appendExcludedRelativePaths(args, excludedRelativePaths)
     return invoke<AnalyzeReport>(this.binary, args, signal)
   }
 
@@ -133,6 +154,7 @@ export class PhotoEngine {
     scenery: number,
     limit?: number,
     signal?: AbortSignal,
+    excludedRelativePaths: readonly string[] = [],
   ): Promise<SelectReport> {
     const args = [
       'select', folder,
@@ -141,6 +163,7 @@ export class PhotoEngine {
       '--scenery', String(scenery),
     ]
     if (limit && limit > 0) args.push('--limit', String(limit))
+    appendExcludedRelativePaths(args, excludedRelativePaths)
     return invoke<SelectReport>(this.binary, args, signal)
   }
 
@@ -149,6 +172,15 @@ export class PhotoEngine {
     return invoke<Preview>(
       this.binary,
       ['preview', id, '--workdir', this.workdir, '--detail', detail],
+      signal,
+    )
+  }
+
+  /** 流式计算原图 SHA-256；引擎仅返回匿名 ID 和哈希。 */
+  contentHashes(ids: readonly string[], signal?: AbortSignal): Promise<ContentHash[]> {
+    return invoke<ContentHash[]>(
+      this.binary,
+      ['content-hashes', ...ids, '--workdir', this.workdir],
       signal,
     )
   }

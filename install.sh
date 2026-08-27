@@ -11,19 +11,81 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ $# -gt 1 ]]; then
+  printf '用法：%s [harness 目录]\n' "$0" >&2
+  exit 2
+fi
 HARNESS="${1:-$(dirname "${ROOT}")}"
 HARNESS="$(cd "${HARNESS}" 2>/dev/null && pwd || echo "${HARNESS}")"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 
 # 本仓库开发与验证时所对应的 harness 版本。它是 v0.1 developer preview，
 # 官方明确会有破坏性变更；换版本出问题先回到这个锚点。
-HARNESS_PIN="dsh-v0.1.1-rc.2"
+HARNESS_PIN="dsh-v0.1.0-rc.8"
 HARNESS_REPO="https://github.com/deepseek-ai/deepseek-harness.git"
 
 say() { printf '\n\033[1m▸ %s\033[0m\n' "$1"; }
 ok()  { printf '  ✅ %s\n' "$1"; }
 warn(){ printf '  ⚠️  %s\n' "$1"; }
 die() { printf '\n\033[31m✖ %s\033[0m\n' "$1" >&2; exit 1; }
+
+# 目录白名单使用“每行一个绝对路径”的格式；不用逗号或冒号，避免它们与合法
+# 文件名冲突。空值渲染成 []，让插件默认拒绝所有照片读取与导出。
+yaml_path_array() {
+  local raw="$1"
+  local item escaped separator=""
+  if [[ -z "${raw}" ]]; then
+    printf '[]'
+    return
+  fi
+  printf '['
+  while IFS= read -r item || [[ -n "${item}" ]]; do
+    [[ -z "${item}" ]] && continue
+    if [[ "${item}" != /* ]]; then
+      printf '目录白名单只接受绝对路径：%s\n' "${item}" >&2
+      return 1
+    fi
+    escaped="$(printf '%s' "${item}" | sed -e 's|\\|\\\\|g' -e 's|"|\\"|g')"
+    printf '%s"%s"' "${separator}" "${escaped}"
+    separator=', '
+  done <<EOF
+${raw}
+EOF
+  printf ']'
+}
+
+# 候选排除规则使用“每行一个相对路径”。它们会相对于本轮明确授权的照片根目录
+# 解析，并在 fingerprint/匿名 ID 生成前跳过整个子树。绝对路径、空路径与 `..`
+# 都 fail closed，避免把排除配置变成越界读取或意外排除整个数据集的通道。
+yaml_relative_path_array() {
+  local raw="$1"
+  local item escaped separator=""
+  if [[ -z "${raw}" ]]; then
+    printf '[]'
+    return
+  fi
+  printf '['
+  while IFS= read -r item || [[ -n "${item}" ]]; do
+    [[ -z "${item}" ]] && continue
+    case "/${item}/" in
+      //*|*/../*|*/./*|*//*)
+        printf '候选排除项必须是规范的非空相对路径：%s\n' "${item}" >&2
+        return 1
+        ;;
+    esac
+    escaped="$(printf '%s' "${item}" | sed -e 's|\\|\\\\|g' -e 's|"|\\"|g')"
+    printf '%s"%s"' "${separator}" "${escaped}"
+    separator=', '
+  done <<EOF
+${raw}
+EOF
+  printf ']'
+}
+
+# sed replacement 需要保护路径或 YAML 数组里的反斜杠、& 与分隔符。
+sed_replacement() {
+  printf '%s' "$1" | sed 's|[\\&|]|\\&|g'
+}
 
 # ── 1. 前置工具 ────────────────────────────────────────────────
 say "检查前置工具"
@@ -45,7 +107,7 @@ if [[ -d "${HARNESS}/.git" ]] && [[ -f "${HARNESS}/apps/cli/src/bin.ts" ]]; then
 else
   [[ -e "${HARNESS}" ]] && die "${HARNESS} 已存在但不像 harness 仓库，请换个目录或先移走"
   echo "  克隆到 ${HARNESS} …"
-  git clone --depth 1 "${HARNESS_REPO}" "${HARNESS}"
+  git clone --branch "${HARNESS_PIN}" --depth 1 "${HARNESS_REPO}" "${HARNESS}"
   ok "已克隆（本仓库验证于 ${HARNESS_PIN}）"
 fi
 
@@ -59,92 +121,109 @@ if [[ ! -d "${HARNESS}/apps/cli/lib" ]]; then
 fi
 ok "harness 就绪"
 
+HARNESS_VERSION="$(node -p "require('${HARNESS}/package.json').version" 2>/dev/null || true)"
+if [[ "${HARNESS_VERSION}" == "0.1.0-rc.8" ]]; then
+  ok "检测到 ${HARNESS_PIN}，使用 user agent preset"
+else
+  die "当前 harness 是 ${HARNESS_VERSION:-未知版本}；Photo Curator 只验证于 ${HARNESS_PIN}。为避免静默加载旧 profile 或错误模型路由，安装已停止。"
+fi
+
 # ── 3. Swift 分析引擎 ──────────────────────────────────────────
 say "构建本地分析引擎"
 ENGINE="${ROOT}/engine/.build/release/photofilter"
-if [[ -x "${ENGINE}" ]]; then
-  ok "已构建：${ENGINE}"
-else
-  (cd "${ROOT}/engine" && swift build -c release)
-  [[ -x "${ENGINE}" ]] || die "构建完成但找不到可执行文件"
-  ok "已构建"
-fi
+# SwiftPM 会增量复用未变化的产物；每次执行 build 才能保证源码刚更新后不会继续
+# 运行旧二进制（匿名 ID/安全边界变化时尤其不能靠“文件已经存在”判断）。
+(cd "${ROOT}/engine" && swift build -c release)
+[[ -x "${ENGINE}" ]] || die "构建完成但找不到可执行文件"
+ok "已构建：${ENGINE}"
 
-# ── 4. 装配 profile ────────────────────────────────────────────
-# 模板里的占位符在这里换成真实路径。profile 是机器本地配置，
-# 落在 $DSH_HOME 下而不是仓库里。
-say "装配 profile"
-mkdir -p "${DSH_HOME}/profiles"
-for prof in photo photo-web; do
-  src="${ROOT}/profiles/${prof}"
-  dst="${DSH_HOME}/profiles/${prof}"
-  mkdir -p "${dst}"
-  for f in package.json cordis.yml pnpm-workspace.yaml; do
-    cp "${src}/${f}" "${dst}/${f}"
-  done
-  sed -e "s|@@PHOTO_FILTER_HOME@@|${ROOT}|g" \
-      -e "s|@@DSH_HOME@@|${DSH_HOME}|g" \
-      "${src}/cordis.patch.yml" > "${dst}/cordis.patch.yml"
-  ok "${prof}"
-done
+# ── 4. 装配 agent ──────────────────────────────────────────────
+# rc.8 把面向模型的能力放进 per-session agent preset。这里不再静默回退
+# 到旧 profile；旧版本必须先显式适配和重新验收模型路由。
+say "装配 photo-curator agent preset"
+preset_src="${ROOT}/presets/photo-curator"
+preset_dst="${DSH_HOME}/.agent-presets/photo-curator"
+allowed_roots="$(yaml_path_array "${PHOTO_FILTER_ALLOWED_ROOTS:-}")"
+excluded_relative_paths="$(yaml_relative_path_array "${PHOTO_FILTER_EXCLUDED_RELATIVE_PATHS:-}")"
+allowed_export_roots="$(yaml_path_array "${PHOTO_FILTER_ALLOWED_EXPORT_ROOTS:-}")"
+root_replacement="$(sed_replacement "${ROOT}")"
+home_replacement="$(sed_replacement "${DSH_HOME}")"
+allowed_roots_replacement="$(sed_replacement "${allowed_roots}")"
+excluded_relative_paths_replacement="$(sed_replacement "${excluded_relative_paths}")"
+allowed_export_roots_replacement="$(sed_replacement "${allowed_export_roots}")"
+mkdir -p "${preset_dst}"
+sed -e "s|@@PHOTO_FILTER_HOME@@|${root_replacement}|g" \
+    -e "s|@@DSH_HOME@@|${home_replacement}|g" \
+    -e "s|@@PHOTO_FILTER_ALLOWED_ROOTS@@|${allowed_roots_replacement}|g" \
+    -e "s|@@PHOTO_FILTER_EXCLUDED_RELATIVE_PATHS@@|${excluded_relative_paths_replacement}|g" \
+    -e "s|@@PHOTO_FILTER_ALLOWED_EXPORT_ROOTS@@|${allowed_export_roots_replacement}|g" \
+    "${preset_src}/agent.cordis.yml" > "${preset_dst}/agent.cordis.yml"
+cp "${preset_src}/preset.yml" "${preset_dst}/preset.yml"
+if grep -q '@@PHOTO_FILTER' "${preset_dst}/agent.cordis.yml"; then
+  die "photo-curator preset 仍有未渲染的安装占位符"
+fi
+if grep -q '@deepseek-ai/dsh-tool-subagent' "${preset_dst}/agent.cordis.yml"; then
+  die "photo-curator 不得加载可接收任意 prompt 的通用 subagent 工具"
+fi
+if ! grep -q "name: 'independent_evaluator'" "${ROOT}/agent/src/independent-evaluator.ts"; then
+  die "找不到 PhotoFilterAgent 自有的五字段 independent_evaluator"
+fi
+ok "photo-curator → ${preset_dst}"
 
 # 插件按包名解析，软链进 harness 维护的扁平模块层。
 mkdir -p "${DSH_HOME}/profiles/node_modules/@photo-filter-agent"
-ln -sfn "${ROOT}/agent" "${DSH_HOME}/profiles/node_modules/@photo-filter-agent/dsh-photo-filter-agent"
-ok "插件已链接"
+PLUGIN_LINK="${DSH_HOME}/profiles/node_modules/@photo-filter-agent/dsh-photo-filter-agent"
+if [[ -e "${PLUGIN_LINK}" ]] && [[ ! -L "${PLUGIN_LINK}" ]]; then
+  die "${PLUGIN_LINK} 已存在且不是软链；为避免覆盖本地文件，请先移走"
+fi
+ln -sfn "${ROOT}/agent" "${PLUGIN_LINK}"
+ok "插件已链接 → ${ROOT}/agent"
 
 # ── 5. 视觉模型凭据 ────────────────────────────────────────────
-say "检查视觉模型凭据"
+say "检查 Harness 凭据格式"
 CRED="${DSH_HOME}/.credentials.yaml"
-if [[ -n "${MINIMAX_CN_API_KEY:-}${MINIMAX_API_KEY:-}" ]]; then
-  ok "已从环境变量取到"
-elif [[ -f "${CRED}" ]] && grep -qE "MINIMAX_(CN_)?API_KEY" "${CRED}"; then
-  ok "已在 ${CRED} 中配置"
-else
-  warn "没有找到视觉模型 Key —— 只能用本地确定性选片（local_fallback_selection）"
-  cat <<EOF
-
-  要启用 AI 评分，二选一：
-
-    export MINIMAX_CN_API_KEY=你的key
-
-  或写进 ${CRED}：
-
-    version: 1
-    refs:
-      MINIMAX_CN_API_KEY: 你的key
-
-  harness 的循环模型也走同一个 Key，在 ${DSH_HOME}/settings.yaml 里配：
-
-    llm-pi-ai:
-      providers:
-        minimax-cn:
-          apiKeyEnv: MINIMAX_CN_API_KEY
-    agent-default-model:
-      provider: minimax-cn
-      model: MiniMax-M3
-EOF
+if [[ -f "${CRED}" ]]; then
+  credential_format="$(node "${ROOT}/scripts/migrate-credentials.mjs" "${CRED}" "${HARNESS}")" \
+    || die "${CRED} 不是 Harness 可用的凭据格式；未读取或输出其中的值"
+  if [[ "${credential_format}" == "migrated-legacy" ]]; then
+    ok "已把旧版嵌套凭据格式原子迁移为 Harness rc.8 的扁平映射（值未输出）"
+  fi
 fi
+ok "Photo Curator 不再维护独立视觉 Key；评分与审计统一经当前 Harness provider/model 路由"
 
 # ── 6. 自检 ────────────────────────────────────────────────────
 say "自检"
+if grep -R -qE 'visionModel|api\.minimaxi\.com|MiniMax-M3' \
+  "${ROOT}/presets" "${ROOT}/profiles" "${ROOT}/agent/src"; then
+  die "产品路径仍存在固定视觉供应商/模型路由"
+fi
 "${ENGINE}" >/dev/null 2>&1 && ok "引擎可执行"
-if (cd "${HARNESS}" && pnpm dsh --profile photo --dump-config 2>/dev/null | grep -q "photo-filter-agent"); then
-  ok "插件已挂进 photo profile"
+if (cd "${HARNESS}" && DSH_HOME="${DSH_HOME}" pnpm dsh --profile web --dump-config 2>/dev/null | grep -q "agent-presets"); then
+  ok "rc.8 web profile 已装配 agent preset roster"
 else
-  die "profile 里找不到 photo-filter-agent，检查 ${DSH_HOME}/profiles/photo/cordis.patch.yml"
+  die "rc.8 web profile 中找不到 agent-presets roster"
+fi
+if (cd "${HARNESS}" && DSH_HOME="${DSH_HOME}" node --import tsx/esm --input-type=module -e '
+    import { scanRoot } from "@deepseek-ai/dsh-agent-presets"
+    import { join } from "node:path"
+    const home = process.env.DSH_HOME
+    if (!home) throw new Error("DSH_HOME is required")
+    const rows = await scanRoot({ path: join(home, ".agent-presets"), trust: "user" })
+    const preset = rows.find((row) => row.id === "photo-curator")
+    if (!preset) throw new Error("photo-curator is not discoverable")
+    if (preset.broken) throw new Error(`photo-curator is broken: ${preset.broken}`)
+  ' >/dev/null 2>&1); then
+  ok "roster 可发现 photo-curator，且 composition 通过 rc.8 结构检查"
+else
+  die "roster 无法发现 photo-curator；检查 ${DSH_HOME}/.agent-presets/photo-curator"
 fi
 
 cat <<EOF
 
 $(printf '\033[1m装好了。\033[0m')
 
-  命令行：
-    cd ${ROOT}
-    ./run.sh ~/Desktop/照片 50 3 3 ~/Desktop/精选
-
   图形界面（前台常驻，别关窗口）：
-    cd ${HARNESS} && pnpm dsh --profile photo-web
-    然后打开 http://127.0.0.1:3080
+    cd ${HARNESS} && pnpm dsh --profile web
+    打开 http://127.0.0.1:3080，新建会话时选择 Photo Curator。
 
 EOF

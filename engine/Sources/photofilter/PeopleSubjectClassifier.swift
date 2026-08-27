@@ -46,6 +46,11 @@ struct PeopleSubjectEvidence: Equatable {
     }
 }
 
+struct PeoplePersonMaskEvidence: Equatable {
+    let coverage: Double
+    let boundingBox: CGRect?
+}
+
 enum PeopleSubjectReason: Equatable {
     case clearPortrait
     case dominantPerson
@@ -420,10 +425,11 @@ enum PhotoCategoryClassifier {
         )
     }
 
-    /// 人体、人脸、人像分割、实例掩码与显著性共用一个 `VNImageRequestHandler`。
+    /// 每项 Vision 检测独立执行和降级。
     ///
-    /// 旧实现按“先人脸、命中就早退”分三次 `perform`，每次都重新解码整张原图；
-    /// 省下的一次请求远抵不过多出来的两次全分辨率解码。
+    /// `VNImageRequestHandler.perform` 会因数组中任意一项不可用而整批抛错。分割、
+    /// 实例掩码或显著性这些增强信号不应抹掉已经取得的人体/人脸主证据。
+    /// 这里复用流水线已解码的 `CGImage`；独立 handler 不会再读取原图文件。
     private static func evidence(
         for image: CGImage
     ) throws -> PeopleSubjectEvidence {
@@ -442,79 +448,92 @@ enum PhotoCategoryClassifier {
         saliencyRequest.revision =
             VNGenerateAttentionBasedSaliencyImageRequestRevision2
 
-        try VNImageRequestHandler(cgImage: image).perform([
-            humanRequest,
-            faceRequest,
-            segmentationRequest,
-            instanceRequest,
-            saliencyRequest,
-        ])
-
-        var evidence = primaryEvidence(
-            humanRequest: humanRequest,
-            faceRequest: faceRequest
+        return collectEvidence(
+            humanRegions: {
+                try perform(humanRequest, for: image)
+                return (humanRequest.results ?? []).map {
+                    PeopleSubjectRegion(
+                        boundingBox: $0.boundingBox,
+                        confidence: $0.confidence
+                    )
+                }
+            },
+            faces: {
+                try perform(faceRequest, for: image)
+                let observations: [VNFaceObservation] =
+                    faceRequest.results ?? []
+                return observations.map {
+                    PeopleFaceEvidence(
+                        boundingBox: $0.boundingBox,
+                        captureQuality: $0.faceCaptureQuality,
+                        yawRadians: $0.yaw?.doubleValue
+                    )
+                }
+            },
+            personMask: {
+                try perform(segmentationRequest, for: image)
+                guard let buffer = segmentationRequest.results?
+                    .first?.pixelBuffer else {
+                    return nil
+                }
+                let statistics = maskStatistics(buffer)
+                return PeoplePersonMaskEvidence(
+                    coverage: statistics.coverage,
+                    boundingBox: statistics.boundingBox
+                )
+            },
+            personInstanceCount: {
+                try perform(instanceRequest, for: image)
+                return instanceRequest.results?.first?
+                    .allInstances.count ?? 0
+            },
+            salientRegions: {
+                try perform(saliencyRequest, for: image)
+                return saliencyRequest.results?.first?
+                    .salientObjects?.map(\.boundingBox) ?? []
+            }
         )
-        let mask = maskEvidence(
-            segmentationRequest: segmentationRequest,
-            instanceRequest: instanceRequest
-        )
-        evidence.personMaskCoverage = mask.coverage
-        evidence.personMaskBoundingBox = mask.boundingBox
-        evidence.personInstanceCount = mask.instanceCount
-        if mask.coverage >= minimumMaskCoverageForSaliency {
-            evidence.salientRegions = saliencyRequest.results?.first?
-                .salientObjects?.map(\.boundingBox) ?? []
-        }
-        return evidence
     }
 
     private static let minimumMaskCoverageForSaliency = 0.006
 
-    private static func primaryEvidence(
-        humanRequest: VNDetectHumanRectanglesRequest,
-        faceRequest: VNDetectFaceCaptureQualityRequest
+    /// 可测试的证据编排层。每个 provider 都是一项可独立失败的 Vision 能力；
+    /// 失败只会清空本项证据，不会丢掉其他已完成的检测。
+    static func collectEvidence(
+        humanRegions: () throws -> [PeopleSubjectRegion],
+        faces: () throws -> [PeopleFaceEvidence],
+        personMask: () throws -> PeoplePersonMaskEvidence?,
+        personInstanceCount: () throws -> Int,
+        salientRegions: () throws -> [CGRect]
     ) -> PeopleSubjectEvidence {
-        let humans = (humanRequest.results ?? []).map {
-            PeopleSubjectRegion(
-                boundingBox: $0.boundingBox,
-                confidence: $0.confidence
-            )
-        }
-        let faceObservations: [VNFaceObservation] =
-            faceRequest.results ?? []
-        let faces = faceObservations.map {
-            PeopleFaceEvidence(
-                boundingBox: $0.boundingBox,
-                captureQuality: $0.faceCaptureQuality,
-                yawRadians: $0.yaw?.doubleValue
-            )
-        }
-        return PeopleSubjectEvidence(
-            humanRegions: humans,
-            faces: faces
+        let detectedHumans = (try? humanRegions()) ?? []
+        let detectedFaces = (try? faces()) ?? []
+        let detectedMask = try? personMask()
+        let detectedInstanceCount =
+            (try? personInstanceCount()) ?? 0
+        var evidence = PeopleSubjectEvidence(
+            humanRegions: detectedHumans,
+            faces: detectedFaces,
+            personInstanceCount: detectedInstanceCount
         )
+        if let mask = detectedMask {
+            evidence.personMaskCoverage = mask.coverage
+            evidence.personMaskBoundingBox = mask.boundingBox
+        }
+        if evidence.personMaskCoverage
+            >= minimumMaskCoverageForSaliency {
+            evidence.salientRegions =
+                (try? salientRegions()) ?? []
+        }
+        return evidence
     }
 
-    private static func maskEvidence(
-        segmentationRequest: VNGeneratePersonSegmentationRequest,
-        instanceRequest: VNGeneratePersonInstanceMaskRequest
-    ) -> (
-        coverage: Double,
-        boundingBox: CGRect?,
-        instanceCount: Int
-    ) {
-        let instanceCount = instanceRequest.results?.first?
-            .allInstances.count ?? 0
-        guard let buffer =
-                segmentationRequest.results?.first?.pixelBuffer else {
-            return (0, nil, instanceCount)
-        }
-        let statistics = maskStatistics(buffer)
-        return (
-            statistics.coverage,
-            statistics.boundingBox,
-            instanceCount
-        )
+    private static func perform(
+        _ request: VNRequest,
+        for image: CGImage
+    ) throws {
+        try VNImageRequestHandler(cgImage: image)
+            .perform([request])
     }
 
     private static func maskStatistics(

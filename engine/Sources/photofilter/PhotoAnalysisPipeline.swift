@@ -2,6 +2,127 @@ import CoreGraphics
 import Foundation
 import ImageIO
 
+enum PhotoPathExclusionError: Error, Equatable, LocalizedError {
+    case emptyOrRootPath
+    case absolutePath(String)
+    case parentTraversal(String)
+    case nullByte(String)
+    case pathEscapesRoot(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyOrRootPath:
+            return "排除路径不能为空或指向测试集根目录"
+        case .absolutePath(let path):
+            return "排除路径必须是相对路径: \(path)"
+        case .parentTraversal(let path):
+            return "排除路径不能包含 ..: \(path)"
+        case .nullByte(let path):
+            return "排除路径不能包含 NUL: \(path)"
+        case .pathEscapesRoot(let path):
+            return "排除路径解析符号链接后越出测试集: \(path)"
+        }
+    }
+}
+
+/// A validated, fail-closed policy for paths that must not enter a candidate set.
+///
+/// Both lexical and symlink-resolved prefixes are retained. Lexical matching
+/// removes the requested directory itself and all descendants; resolved matching
+/// also removes aliases that point back into an excluded directory. Any candidate
+/// whose resolved target leaves the dataset root is skipped.
+struct PhotoPathExclusions {
+    let normalizedRelativePaths: [String]
+
+    private let lexicalRoot: String
+    private let resolvedRoot: String
+    private let lexicalPrefixes: [String]
+    private let resolvedPrefixes: [String]
+
+    init(root: URL, excludedRelativePaths: [String]) throws {
+        let standardizedRoot = root.standardizedFileURL
+        lexicalRoot = standardizedRoot.path
+        resolvedRoot = standardizedRoot.resolvingSymlinksInPath().standardizedFileURL.path
+
+        var normalized: [String] = []
+        var lexical: [String] = []
+        var resolved: [String] = []
+        var seen: Set<String> = []
+
+        for rawPath in excludedRelativePaths {
+            let components = try Self.normalizedComponents(rawPath)
+            let relative = components.joined(separator: "/")
+            guard seen.insert(relative).inserted else { continue }
+
+            let lexicalURL = components.reduce(standardizedRoot) {
+                $0.appendingPathComponent($1, isDirectory: false)
+            }.standardizedFileURL
+            guard Self.isEqualOrDescendant(lexicalURL.path, of: lexicalRoot) else {
+                throw PhotoPathExclusionError.pathEscapesRoot(rawPath)
+            }
+
+            let resolvedURL = lexicalURL.resolvingSymlinksInPath().standardizedFileURL
+            guard Self.isEqualOrDescendant(resolvedURL.path, of: resolvedRoot) else {
+                throw PhotoPathExclusionError.pathEscapesRoot(rawPath)
+            }
+
+            normalized.append(relative)
+            lexical.append(lexicalURL.path)
+            resolved.append(resolvedURL.path)
+        }
+
+        normalizedRelativePaths = normalized.sorted()
+        lexicalPrefixes = lexical
+        resolvedPrefixes = resolved
+    }
+
+    /// `true` means the enumerated URL must never be analyzed. Resolving every
+    /// candidate is intentional: a regular-file symlink can otherwise bypass an
+    /// excluded directory even when directory traversal itself is disabled.
+    func excludes(_ url: URL) -> Bool {
+        let lexicalPath = url.standardizedFileURL.path
+        guard Self.isEqualOrDescendant(lexicalPath, of: lexicalRoot) else { return true }
+        if lexicalPrefixes.contains(where: {
+            Self.isEqualOrDescendant(lexicalPath, of: $0)
+        }) {
+            return true
+        }
+
+        let resolvedPath = url.resolvingSymlinksInPath().standardizedFileURL.path
+        guard Self.isEqualOrDescendant(resolvedPath, of: resolvedRoot) else { return true }
+        return resolvedPrefixes.contains(where: {
+            Self.isEqualOrDescendant(resolvedPath, of: $0)
+        })
+    }
+
+    private static func normalizedComponents(_ rawPath: String) throws -> [String] {
+        guard !rawPath.isEmpty else { throw PhotoPathExclusionError.emptyOrRootPath }
+        guard !rawPath.contains("\0") else {
+            throw PhotoPathExclusionError.nullByte(rawPath)
+        }
+        guard !(rawPath as NSString).isAbsolutePath else {
+            throw PhotoPathExclusionError.absolutePath(rawPath)
+        }
+
+        let rawComponents = rawPath.split(separator: "/", omittingEmptySubsequences: false)
+        guard !rawComponents.contains(where: { $0 == ".." }) else {
+            throw PhotoPathExclusionError.parentTraversal(rawPath)
+        }
+        let normalized = rawComponents.compactMap { component -> String? in
+            let value = String(component)
+            return value.isEmpty || value == "." ? nil : value
+        }
+        guard !normalized.isEmpty else { throw PhotoPathExclusionError.emptyOrRootPath }
+        return normalized
+    }
+
+    private static func isEqualOrDescendant(_ path: String, of root: String) -> Bool {
+        if path == root { return true }
+        if root == "/" { return path.hasPrefix("/") }
+        return path.hasPrefix(root + "/")
+    }
+}
+
 /// 单次解码的本地分析流水线。
 ///
 /// 一张照片只打开一次 `CGImageSource`、只解码一次降采样图，随后的拍摄时间、感知指纹、
@@ -176,9 +297,14 @@ enum PhotoAnalysisPipeline {
     /// 递归收集受支持的图片；跳过隐藏文件与包内容，结果按路径自然序稳定排序。
     nonisolated static func imageURLs(
         in folder: URL,
-        supportedExtensions: Set<String> = PhotoAnalysisPipeline.supportedExtensions
-    ) -> [URL] {
-        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isHiddenKey]
+        supportedExtensions: Set<String> = PhotoAnalysisPipeline.supportedExtensions,
+        excludedRelativePaths: [String] = []
+    ) throws -> [URL] {
+        let exclusions = try PhotoPathExclusions(
+            root: folder,
+            excludedRelativePaths: excludedRelativePaths
+        )
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isDirectoryKey, .isHiddenKey]
         guard let enumerator = FileManager.default.enumerator(
             at: folder,
             includingPropertiesForKeys: Array(keys),
@@ -189,7 +315,12 @@ enum PhotoAnalysisPipeline {
 
         var imageURLs: [URL] = []
         for case let url as URL in enumerator {
-            guard let values = try? url.resourceValues(forKeys: keys),
+            let values = try? url.resourceValues(forKeys: keys)
+            if exclusions.excludes(url) {
+                if values?.isDirectory == true { enumerator.skipDescendants() }
+                continue
+            }
+            guard let values,
                   values.isRegularFile == true,
                   values.isHidden != true,
                   supportedExtensions.contains(url.pathExtension.lowercased()) else {

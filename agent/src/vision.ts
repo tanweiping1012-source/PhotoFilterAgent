@@ -1,15 +1,14 @@
 /**
- * 视觉打分客户端（MiniMax，OpenAI 兼容的 chat completions）。
+ * 旧版五维视觉打分与比较语义。
  *
- * 为什么由工具自己调用视觉模型，而不是把图片交回给 harness 的循环模型：
- * 图片一旦进入对话历史，之后**每一轮都要重发**。100 次 inspect 就是 100 份图片
- * 反复穿过上下文。工具自己调用、只把紧凑的五维分交回循环，历史里就只剩数字。
+ * 图片不进入主对话历史；工具通过 Harness 统一 LLM adapter 做隔离
+ * one-shot，但 provider/model 必须等于当前 DSH 会话路由。
  *
  * 发出去的永远是引擎生成的无元数据缩放 JPEG：不含原图、文件名、路径、GPS 与拍摄时间。
  * @module
  */
 
-const ENDPOINT = 'https://api.minimaxi.com/v1/chat/completions'
+import { HarnessVisionTransport } from './harness-vision.ts'
 
 /** 五个互相独立的审美维度，0–100。总分不由模型给，由本地加权算出。 */
 export interface Dimensions {
@@ -97,15 +96,6 @@ ${question}
 只返回：{"winner":"<id>","reason":"<30 字以内的具体理由>","order":["<最好>","…"]}`
 }
 
-interface ChatChoice {
-  message?: { content?: string }
-}
-
-interface ChatResponse {
-  choices?: ChatChoice[]
-  base_resp?: { status_code?: number; status_msg?: string }
-}
-
 /** 从可能带围栏或前后缀的模型输出里取出第一个 JSON 对象。 */
 function parseJsonObject(text: string): unknown {
   // 即使关掉 thinking，仍要防住偶发的 <think> 段落与围栏：推理里几乎必然出现花括号，
@@ -141,22 +131,14 @@ function clampScore(value: unknown): number {
 }
 
 export interface VisionOptions {
-  apiKey: string
-  model?: string
-  /** 单次请求超时。默认 90 秒——超时会自动重试，等于把同一批图片重新付费发一遍。 */
-  timeoutMs?: number
-  fetchImpl?: typeof fetch
+  transport: HarnessVisionTransport
 }
 
 export class VisionClient {
-  private readonly model: string
-  private readonly timeoutMs: number
-  private readonly fetchImpl: typeof fetch
+  private readonly transport: HarnessVisionTransport
 
-  constructor(private readonly options: VisionOptions) {
-    this.model = options.model ?? 'MiniMax-M3'
-    this.timeoutMs = options.timeoutMs ?? 90_000
-    this.fetchImpl = options.fetchImpl ?? fetch
+  constructor(options: VisionOptions) {
+    this.transport = options.transport
   }
 
   private async chat(
@@ -166,57 +148,19 @@ export class VisionClient {
     detail: string,
     signal?: AbortSignal,
   ): Promise<string> {
-    const parts: unknown[] = [{ type: 'text', text: userText }]
-    for (const base64 of images) {
-      parts.push({
-        type: 'image_url',
-        image_url: { url: `data:image/jpeg;base64,${base64}`, detail },
-      })
-    }
-
-    const timeout = AbortSignal.timeout(this.timeoutMs)
-    const composed = signal ? AbortSignal.any([signal, timeout]) : timeout
-
-    let response: Response
-    try {
-      response = await this.fetchImpl(ENDPOINT, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.options.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: parts },
-          ],
-          temperature: 0.1,
-          // M3 默认会先输出一整段 <think> 推理，既烧 token 又把 JSON 挤出截断边界。
-          // 打分要的是结论不是推理过程，直接关掉。
-          thinking: { type: 'disabled' },
-          reasoning_split: true,
-          max_completion_tokens: 1_200,
-        }),
-        signal: composed,
-      })
-    } catch (error) {
-      throw new VisionError(`视觉请求失败: ${error instanceof Error ? error.message : String(error)}`)
-    }
-
-    if (!response.ok) {
-      // 正文可能带 Key 回显或供应商内部细节，只取状态码。
-      throw new VisionError(`视觉服务返回 HTTP ${response.status}`)
-    }
-    const payload = (await response.json()) as ChatResponse
-    // MiniMax 会在 HTTP 200 上用 base_resp 表达业务失败（额度、限流）。
-    const status = payload.base_resp?.status_code
-    if (status !== undefined && status !== 0) {
-      throw new VisionError(`视觉服务拒绝请求（MiniMax-${status}）`)
-    }
-    const content = payload.choices?.[0]?.message?.content
-    if (!content) throw new VisionError('视觉服务没有返回内容')
-    return content
+    void detail
+    const parsed = await this.transport.invokeStructured({
+      system: systemPrompt,
+      user: userText,
+      jpegs: images,
+      tool: {
+        name: 'submit_legacy_photo_assessment',
+        description: '提交旧版五维单图评分或连拍比较结果。',
+        parameters: { type: 'object', additionalProperties: true },
+      },
+      maxTokens: 1_000,
+    }, signal)
+    return JSON.stringify(parsed)
   }
 
   /** 给一张照片打五维分。 */

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // photofilter —— 照片筛选 agent 的本地分析进程。
@@ -59,6 +60,17 @@ func emit(_ value: Any) {
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
+/// Exclusions travel as one JSON array argument. This keeps every relative path
+/// as data (never shell syntax) and lets malformed input fail before enumeration.
+func excludedRelativePaths(from options: Options) -> [String] {
+    guard let raw = options.flag("exclude-relative-json") else { return [] }
+    guard let data = raw.data(using: .utf8),
+          let paths = try? JSONDecoder().decode([String].self, from: data) else {
+        fail("--exclude-relative-json 必须是字符串 JSON 数组")
+    }
+    return paths
+}
+
 // MARK: - 匿名索引
 
 /// 匿名 ID ↔ 真实路径。写在工作目录里，只有本进程读；模型永远拿不到它。
@@ -93,6 +105,33 @@ struct Prepared {
     let anonymousByLocal: [String: String]
     let workdir: String
     let earliest: Date?
+    let datasetFingerprint: String
+}
+
+/// 当前候选集合的轻量内容身份。
+///
+/// 路径、文件大小和纳秒级修改时间只在本机进入哈希；模型只看到摘要。它避免目录内容
+/// 变化后复用旧的匿名 ID、分数和导出映射。这里不读取整张原图，因此不会把一次本地
+/// 扫描的 I/O 放大一倍。
+func datasetFingerprint(root: URL, urls: [URL]) -> String {
+    var hasher = SHA256()
+    let rootPath = root.standardizedFileURL.path
+    for url in urls {
+        let path = url.standardizedFileURL.path
+        let relative = path.hasPrefix(rootPath + "/")
+            ? String(path.dropFirst(rootPath.count + 1))
+            : path
+        let values = try? url.resourceValues(forKeys: [
+            .fileSizeKey,
+            .contentModificationDateKey,
+        ])
+        let modifiedNanoseconds = values?.contentModificationDate
+            .map { Int64(($0.timeIntervalSince1970 * 1_000_000_000).rounded()) }
+            ?? -1
+        let record = "\(relative)\u{0}\(values?.fileSize ?? -1)\u{0}\(modifiedNanoseconds)\n"
+        hasher.update(data: Data(record.utf8))
+    }
+    return hasher.finalize().map { String(format: "%02x", $0) }.joined()
 }
 
 /// 递归扫描 → 并行分析 → 相似家族 → 清晰度风险 → 家族内本地排序。
@@ -106,7 +145,17 @@ func prepare(folder: String, options: Options) async -> Prepared {
         ?? FileManager.default.temporaryDirectory
             .appendingPathComponent("photofilter").path
 
-    var urls = PhotoAnalysisPipeline.imageURLs(in: folderURL)
+    let excludedPaths = excludedRelativePaths(from: options)
+    let discoveredURLs: [URL]
+    do {
+        discoveredURLs = try PhotoAnalysisPipeline.imageURLs(
+            in: folderURL,
+            excludedRelativePaths: excludedPaths
+        )
+    } catch {
+        fail(error.localizedDescription)
+    }
+    var urls = discoveredURLs
     guard !urls.isEmpty else { fail("目录里没有受支持的照片") }
     if let limit = options.int("limit"), limit > 0, urls.count > limit {
         // 取样必须跨越整个目录，否则只会拿到一个子文件夹的照片，
@@ -114,6 +163,7 @@ func prepare(folder: String, options: Options) async -> Prepared {
         let step = Double(urls.count) / Double(limit)
         urls = (0..<limit).map { urls[min(urls.count - 1, Int(Double($0) * step))] }
     }
+    let fingerprint = datasetFingerprint(root: folderURL, urls: urls)
 
     var results: [String: PhotoAnalysisResult] = [:]
     let collected = Collector()
@@ -139,10 +189,24 @@ func prepare(folder: String, options: Options) async -> Prepared {
     photos = LocalCandidateRanker.assigningRecommendations(to: photos)
     let families = CandidateFamilyIndex(photos: photos)
 
-    // 匿名 ID 按稳定顺序分配，同一目录重复分析得到同样的编号。
+    // 匿名 ID 必须稳定，但不能沿用递归路径顺序：如果测试集里恰好有 oracle
+    // 子目录，连续的一段 ID 会把其目录归属侧漏给上层 Agent。以整个
+    // 数据集指纹作为 salt，对本地 photo id 排序后再编号；同一数据集可复现，
+    // 路径分组却无法从 p001/p002… 推断。salt 与真实路径都不会离开本机。
+    func anonymousOrderKey(_ photo: PhotoItem) -> String {
+        let material = "\(fingerprint)\u{0}\(photo.id)"
+        return SHA256.hash(data: Data(material.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+    let anonymizedPhotos = photos.sorted {
+        let left = anonymousOrderKey($0)
+        let right = anonymousOrderKey($1)
+        return left == right ? $0.id < $1.id : left < right
+    }
     var index = AnonymousIndex(root: folderURL.standardizedFileURL.path, byAnonymous: [:])
     var anonymousByLocal: [String: String] = [:]
-    for (offset, photo) in photos.enumerated() {
+    for (offset, photo) in anonymizedPhotos.enumerated() {
         let anonymous = String(format: "p%03d", offset + 1)
         index.byAnonymous[anonymous] = photo.url.standardizedFileURL.path
         anonymousByLocal[photo.id] = anonymous
@@ -157,7 +221,8 @@ func prepare(folder: String, options: Options) async -> Prepared {
         families: families,
         anonymousByLocal: anonymousByLocal,
         workdir: workdir,
-        earliest: earliest
+        earliest: earliest,
+        datasetFingerprint: fingerprint
     )
 }
 
@@ -255,6 +320,7 @@ func runAnalyze(_ options: Options) async {
     let peopleCount = photos.filter { $0.curationCategory == .people }.count
     emit([
         "workdir": workdir,
+        "dataset_fingerprint": prepared.datasetFingerprint,
         "photo_count": photos.count,
         "people_count": peopleCount,
         "scenery_count": photos.count - peopleCount,
@@ -373,6 +439,87 @@ func runResolve(_ options: Options) {
     emit(["root": index.root, "resolved": resolved])
 }
 
+// MARK: - content-hashes（只读冻结 receipt）
+
+struct ContentHashRecord: Equatable {
+    let id: String
+    let sha256: String
+}
+
+enum ContentHashError: Error, Equatable, LocalizedError {
+    case duplicateID(String)
+    case unknownID(String)
+    case unreadableID(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .duplicateID(let id): return "重复的照片 ID: \(id)"
+        case .unknownID(let id): return "未知的照片 ID: \(id)"
+        case .unreadableID(let id): return "无法读取照片 ID: \(id)"
+        }
+    }
+}
+
+/// Hash a file incrementally so a receipt never requires loading an original
+/// photo into memory in full.
+func streamSHA256(for url: URL) throws -> String {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    var hasher = SHA256()
+    while true {
+        guard let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty else { break }
+        hasher.update(data: chunk)
+    }
+    return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+}
+
+/// Validate the complete request before reading any original. Unknown and
+/// duplicate IDs therefore fail closed without returning a partial receipt.
+func contentHashRecords(ids: [String], index: AnonymousIndex) throws -> [ContentHashRecord] {
+    var seen: Set<String> = []
+    var sources: [(String, URL)] = []
+    sources.reserveCapacity(ids.count)
+    let resolvedRoot = URL(fileURLWithPath: index.root, isDirectory: true)
+        .resolvingSymlinksInPath().standardizedFileURL.path
+    func remainsInsideSourceRoot(_ url: URL) -> Bool {
+        let resolved = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return resolved == resolvedRoot || resolved.hasPrefix(resolvedRoot + "/")
+    }
+    for id in ids {
+        guard seen.insert(id).inserted else { throw ContentHashError.duplicateID(id) }
+        guard let path = index.byAnonymous[id] else { throw ContentHashError.unknownID(id) }
+        let source = URL(fileURLWithPath: path)
+        // The source may have been replaced after analyze. Never let a later
+        // symlink swap turn a receipt hash into a read outside the authorized root.
+        guard remainsInsideSourceRoot(source) else { throw ContentHashError.unreadableID(id) }
+        sources.append((id, source))
+    }
+
+    return try sources.map { id, url in
+        do {
+            return ContentHashRecord(id: id, sha256: try streamSHA256(for: url))
+        } catch {
+            throw ContentHashError.unreadableID(id)
+        }
+    }
+}
+
+func runContentHashes(_ options: Options) {
+    guard !options.positional.isEmpty else {
+        fail("用法: photofilter content-hashes <匿名ID...> --workdir <路径>")
+    }
+    guard let workdir = options.flag("workdir") else { fail("缺少 --workdir") }
+    guard let index = try? AnonymousIndex.read(from: workdir) else {
+        fail("读不到索引，请先运行 analyze")
+    }
+    do {
+        let records = try contentHashRecords(ids: options.positional, index: index)
+        emit(records.map { ["id": $0.id, "sha256": $0.sha256] })
+    } catch {
+        fail(error.localizedDescription)
+    }
+}
+
 // MARK: - export（只复制，绝不移动/删除/改名原图）
 
 func runExport(_ options: Options) {
@@ -382,27 +529,30 @@ func runExport(_ options: Options) {
         fail("读不到索引，请先运行 analyze")
     }
     let destinationURL = URL(fileURLWithPath: destination, isDirectory: true)
-    // 导出目录不得落在原图目录内部：那既是往只读目录里写，也会让下次扫描把副本当成新照片。
-    if destinationURL.standardizedFileURL.path.hasPrefix(index.root + "/") {
-        fail("导出目录不能位于原图目录内部")
+    let plan: [ExportCopyItem]
+    do {
+        plan = try ExportSafety.makePlan(
+            sourceRoot: index.root,
+            byAnonymous: index.byAnonymous,
+            ids: options.positional,
+            destination: destination
+        )
+        try FileManager.default.createDirectory(
+            at: destinationURL, withIntermediateDirectories: true
+        )
+    } catch {
+        fail(error.localizedDescription)
     }
 
     var copied: [[String: String]] = []
-    for id in options.positional {
-        guard let path = index.byAnonymous[id] else { continue }
-        let source = URL(fileURLWithPath: path)
-        let target = destinationURL.appendingPathComponent(source.lastPathComponent)
+    for item in plan {
         do {
-            try FileManager.default.createDirectory(
-                at: destinationURL, withIntermediateDirectories: true
-            )
-            if FileManager.default.fileExists(atPath: target.path) {
-                try FileManager.default.removeItem(at: target)
-            }
-            try FileManager.default.copyItem(at: source, to: target)
-            copied.append(["id": id, "filename": source.lastPathComponent])
+            // `copyItem` also fails if a file appears after preflight; it never
+            // replaces that file, so a race cannot turn into an overwrite.
+            try FileManager.default.copyItem(at: item.source, to: item.target)
+            copied.append(["id": item.id, "filename": item.source.lastPathComponent])
         } catch {
-            fail("复制失败 \(source.lastPathComponent): \(error)")
+            fail("复制失败 \(item.id)：目标未覆盖")
         }
     }
     emit(["destination": destinationURL.path, "copied": copied, "count": copied.count])
@@ -416,20 +566,27 @@ case "analyze": await runAnalyze(options)
 case "select": await runSelect(options)
 case "preview": runPreview(options)
 case "resolve": runResolve(options)
+case "content-hashes": runContentHashes(options)
 case "export": runExport(options)
 default:
     print("""
     photofilter —— 照片筛选 agent 的本地分析进程
 
-    analyze <目录> [--limit N] [--workdir <路径>]
+    analyze <目录> [--limit N] [--workdir <路径>] [--exclude-relative-json '["relative/path"]']
         递归扫描并分析：人物/风景分类、相似家族、清晰度与曝光。
         输出候选表（无路径、无文件名、时间相对化）。
+
+    select <目录> --people N --scenery M [--limit N] [--workdir <路径>] [--exclude-relative-json '["relative/path"]']
+        使用同一套排除规则完成确定性本地选片。
 
     preview <匿名ID> --workdir <路径> [--detail low|standard|high]
         输出无元数据 JPEG 的 base64（512 / 1024 / 1536px）。
 
     resolve <匿名ID...> --workdir <路径>
         本机解析匿名 ID 为真实路径（不进模型上下文）。
+
+    content-hashes <匿名ID...> --workdir <路径>
+        流式计算原图 SHA-256；只输出 id 与 sha256。
 
     export <匿名ID...> --workdir <路径> --to <目标目录>
         只复制到目标目录；原图不移动、不删除、不改名。
