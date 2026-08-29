@@ -45,10 +45,21 @@ def lift_at_k(scores: np.ndarray, labels: np.ndarray, k: int) -> float:
     return float(hit_at_k(scores, labels, k) / expected) if expected > 0 else float("nan")
 
 
-def report(scores: np.ndarray, labels: np.ndarray, k: int) -> dict:
+def report(scores: np.ndarray, labels: np.ndarray, k: int,
+           delivered: np.ndarray | None = None) -> dict:
+    """评测报告。
+
+    ⚠️ `delivered` 不是可选的锦上添花，是**产品真正交付的那份名单**。
+
+    踩过的坑：最初只按分数取前 K 算命中，报出 4/20；但产品实际交付的 20 张
+    还要过一道「同场景组最多 2 张」的限流，真实交付是 3/20。
+    评测测的是排序，产品交付的是名单 —— **这两个必须分开报，而且以交付为准**。
+    （那一张的差别：金标 DSCF9445 分数 +1.80 排组内第 4，
+    被同组已入选的 2 张挡住，换进来一张 +1.57 的非金标。）
+    """
     n_total, n_gold = len(labels), int(labels.sum())
     hits = hit_at_k(scores, labels, k)
-    return {
+    out = {
         "auc": round(auc(scores, labels), 4),
         "hits": hits,
         "k": k,
@@ -62,6 +73,14 @@ def report(scores: np.ndarray, labels: np.ndarray, k: int) -> dict:
             float(np.mean([lift_at_k(scores, labels, kk) for kk in (10, 20, 30, 40, 50)])), 3
         ),
     }
+    if delivered is not None:
+        d_hits = int(delivered.sum())
+        out["delivered_hits"] = d_hits
+        out["delivered_n"] = int(len(delivered))
+        out["delivered_p_value"] = round(
+            hypergeom_pvalue(d_hits, n_total, n_gold, int(len(delivered))), 4
+        )
+    return out
 
 
 def holdout_curve(

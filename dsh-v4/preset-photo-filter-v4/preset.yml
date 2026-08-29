@@ -1,0 +1,2 @@
+name: Photo Filter v4
+description: 本地确定性排序的照片筛选 Agent。零付费视觉调用，排序在本机算完，模型只负责听懂意图和解释结果。
