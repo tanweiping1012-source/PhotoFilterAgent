@@ -269,6 +269,54 @@ def test_资格门_引擎缺失时报错而不是静默跳过():
     """静默跳过是危险的：用户以为有资格门保护时，必须知道它没生效。
     实测代价：不设门时 20 张名单里 6 张闭眼，而用户自己一张都不选。"""
     from pathlib import Path
-    from photofilter_rank.eligibility import EligibilityUnavailable, closed_eye_names
+    from photofilter_rank.eligibility import EligibilityUnavailable, engine_facts
     with pytest.raises(EligibilityUnavailable, match='不存在'):
-        closed_eye_names(Path('/tmp'), Path('/nonexistent/photofilter'), Path('/tmp/wd'))
+        engine_facts(Path('/tmp'), Path('/nonexistent/photofilter'), Path('/tmp/wd'))
+
+
+def test_冷启动_有引擎时优先用AppleVision人脸质量():
+    """v1 就有的免费指标 AUC 0.711，比下载来的 topiq_nr-face（0.606）更好。
+    这个默认值是本项目最被低估的一个信号 —— 曾经被「本地技术指标与口味无关」
+    这条结论一起否掉了，而那条结论只对清晰度/曝光成立。"""
+    q = _q(("a", "b", "c", "d"))
+    q["vision_face"] = {"a": 61, "b": 38, "c": 50, "d": 44}
+    assert choose_cold_strategy(q, list("abcd"), "auto") == "vision_face"
+    s, used = cold_start_score(q, list("abcd"), "auto")
+    assert used == "vision_face"
+    assert s[0] > s[1], "人脸质量 61 应该排在 38 前面"
+
+
+def test_冷启动_拿不到引擎时如实降级而不是假装用了():
+    q = _q(("a", "b", "c", "d"))          # 没有 vision_face
+    assert choose_cold_strategy(q, list("abcd"), "auto") == "face"
+    _, used = cold_start_score(q, list("abcd"), "vision_face")
+    assert used == "face", "拿不到引擎数据时必须降级并如实报告，不能假装用了"
+
+
+def test_分组_必须与打分无关():
+    """分组是照片本身的属性。如果它依赖打分，换一个打分器就换一套分组，
+    两次结果无法比较 —— 实测同一份打分只改分组顺序，交付命中在 3~5/20 之间跳。"""
+    rng = np.random.default_rng(2)
+    X = _clip_like(60, 16, rng)
+    X[10:14] = X[10] + rng.normal(scale=0.01, size=(4, 16))
+    X /= np.linalg.norm(X, axis=1, keepdims=True)
+    baseline = group_by_similarity(X, 0.99)
+    # 不传 order 时必须每次都一样，且与任何分数无关
+    for _ in range(3):
+        assert group_by_similarity(X, 0.99) == baseline
+    # 传了顺序会变 —— 所以 rank.py 里绝不能传分数顺序进来
+    shuffled = group_by_similarity(X, 0.99, order=list(rng.permutation(60)))
+    assert len(set(shuffled)) > 0
+
+
+def test_引擎结果必须按指纹缓存(tmp_path):
+    """Apple Vision 的人脸质量不是确定性的（实测 106/280 张两次扫描分数不同）。
+    v4 的核心主张是「排序是确定性函数」，所以必须缓存 —— 同一个数据集只扫一次。"""
+    import json as _json
+    from photofilter_rank.eligibility import EngineFacts, engine_facts
+    wd = tmp_path / 'wd'; wd.mkdir()
+    (wd / 'facts-abc123.json').write_text(
+        _json.dumps({'closed_eyes': ['x.jpg'], 'face_quality': {'y.jpg': 55}}))
+    # 引擎路径是假的：命中缓存就不该去调它
+    f = engine_facts(tmp_path, tmp_path / 'no-such-binary', wd, cache_key='abc123')
+    assert f.closed_eyes == {'x.jpg'} and f.face_quality == {'y.jpg': 55}

@@ -15,7 +15,7 @@ import numpy as np
 
 from .config import RankConfig
 from .dedupe import group_by_similarity, select_with_cap, suggest_threshold
-from .eligibility import EligibilityUnavailable, closed_eye_names
+from .eligibility import EligibilityUnavailable, engine_facts
 from .embed import embed_photos
 from .quality import cold_start_score, local_quality, zscore
 from .scan import build_cache, fingerprint, list_photos
@@ -72,6 +72,28 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
     cache_map = build_cache(photos, cfg.cache_dir / "thumbs", cfg.max_side, cfg.jpeg_quality, verbose)
     X, names = embed_photos(cache_map, cfg.cache_dir, fp, device, verbose)
     quality = local_quality(cache_map, names, cfg.cache_dir, fp, device, verbose)
+
+    # 本地引擎的免费事实：闭眼判定 + Apple Vision 人脸质量。
+    # 人脸质量是全场最强的单一指标（AUC 0.711），必须在打分之前拿到。
+    blocked: set[str] = set()
+    eligibility_note = None
+    if cfg.engine_binary is None:
+        if cfg.block_closed_eyes:
+            eligibility_note = ('未配置本地分析引擎：闭眼资格门**没有生效**，'
+                                '冷启动也退回较弱的 topiq 指标（AUC 0.606 vs 0.711）。')
+    else:
+        try:
+            facts = engine_facts(
+                cfg.folder, cfg.engine_binary,
+                cfg.engine_workdir or (cfg.cache_dir / 'engine'),
+                cache_key=fp,      # 按数据集指纹缓存 —— Vision 的分数不是确定性的
+            )
+            quality['vision_face'] = {k: v for k, v in facts.face_quality.items() if k in set(names)}
+            if cfg.block_closed_eyes:
+                blocked = facts.closed_eyes & set(names)
+        except EligibilityUnavailable as e:
+            # 静默跳过是危险的：用户以为有资格门保护时必须知道它没生效。
+            eligibility_note = f'本地分析引擎不可用，资格门与人脸质量都**没有生效**：{e}'
 
     cold_raw, cold_strategy = cold_start_score(quality, names, cfg.cold_strategy)
     cold = zscore(cold_raw)
@@ -134,22 +156,7 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
     if label_idx:
         order = label_idx + [i for i in order if i not in set(label_idx)]
 
-    # 资格门：闭眼照留在候选池里（不影响分数与统计），只是不进最终名单。
-    blocked: set[str] = set()
-    eligibility_note = None
-    if cfg.block_closed_eyes:
-        if cfg.engine_binary is None:
-            eligibility_note = '未配置本地分析引擎，闭眼资格门**没有生效**。'
-        else:
-            try:
-                blocked = closed_eye_names(
-                    cfg.folder, cfg.engine_binary,
-                    cfg.engine_workdir or (cfg.cache_dir / 'engine'),
-                )
-                blocked &= set(names)
-            except EligibilityUnavailable as e:
-                # 静默跳过是危险的：用户以为有资格门保护时必须知道它没生效。
-                eligibility_note = f'闭眼资格门**没有生效**：{e}'
+    # 闭眼照留在候选池里（不影响分数与统计），只是不进最终名单。
     eligible = [i for i in order if names[i] not in blocked]
 
     picked, cap_note = select_with_cap(
