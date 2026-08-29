@@ -33,6 +33,18 @@ eval-people-309 实测（AUC / 前20命中 / 超几何 p 值）：
 不集中在前 10。
 
 结论：冷启动**只用一个指标**，按人脸检出率自动路由。
+
+━━ 后来的修正：最好的那个指标不在这张表里 ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+上面整张表比的都是「下载来的模型」。真正最强的是 v1 就有的
+**Apple Vision 人脸质量**：AUC 0.711、交付 5/20（p=0.0056），
+比这里任何一个都好，而且同样免费。
+
+它没进这张表，是因为 v1 的结论「本地技术指标和人的口味基本无关」
+把它一起否掉了 —— 那个结论对清晰度/曝光成立，对人脸质量不成立。
+详见 eligibility.py 的 EngineFacts。
+
+所以人像池的默认策略是 vision_face，只有拿不到引擎时才退回 face（topiq）。
 """
 from __future__ import annotations
 
@@ -121,13 +133,18 @@ def choose_cold_strategy(quality: dict, names: list[str], configured: str) -> st
 
     路由依据是人脸检出率，不是用户声明 —— 用户说「这是人像文件夹」可能是错的，
     检出率是可观测的事实。309 张人像池实测检出率 0.877。
+
+    人像池优先用 Apple Vision 的人脸质量（AUC 0.711）；拿不到引擎时
+    才退回 topiq_nr-face（0.606）。
     """
     if configured != "auto":
         return configured
     rate = quality.get("face_detect_rate")
     if rate is None:
         rate = sum(1 for n in names if n in quality["face"]) / max(len(names), 1)
-    return "face" if rate >= 0.6 else "laion_aes"
+    if rate < 0.6:
+        return "laion_aes"
+    return "vision_face" if quality.get("vision_face") else "face"
 
 
 def cold_start_score(
@@ -138,6 +155,14 @@ def cold_start_score(
     'blend' 保留下来是为了让人能复现「融合更差」这个结论，不是推荐用法。
     """
     resolved = choose_cold_strategy(quality, names, strategy)
+    if resolved == "vision_face":
+        vf = quality.get("vision_face") or {}
+        if vf:
+            have = [i for i, n in enumerate(names) if n in vf]
+            out = np.full(len(names), NO_FACE_RANK)
+            out[have] = _rank(np.array([vf[names[i]] for i in have]))
+            return out, resolved
+        resolved = "face"          # 引擎没给上，如实降级
     lai = _rank(np.array([quality["laion_aes"][n] for n in names]))
     fac = face_rank(quality, names)
     if resolved == "laion_aes":
