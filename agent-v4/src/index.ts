@@ -169,8 +169,8 @@ export function apply(ctx: Context, config: Config): void {
     name: 'rank_photos',
     description:
       '在本机对已扫描的目录排序并挑出最好的 N 张。完全免费、零模型调用、不发送任何照片。' +
-      '如果用户已经用 set_my_favorites 标过喜欢的照片，会自动改用「学到的个人口味」模式；' +
-      '否则用通用质量指标冷启动。同一场景组默认最多入选 2 张。',
+      '打分用 Apple Vision 的人脸质量（AUC 0.723），闭眼照会被资格门挡在名单外。' +
+      '同一场景组默认最多入选 2 张。结果是确定性的：同样输入永远同样输出。',
     parameters: {
       target: { type: 'number', description: `要挑几张（默认 ${config.defaultTarget}）` },
     },
@@ -305,9 +305,10 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'set_my_favorites',
     description:
-      '记录用户明确说喜欢的照片（用匿名编号）。下次 rank_photos 会从这些照片里学用户的口味。' +
-      '实测：标 10 张的效果远好于不标；但标注必须分散在整批照片里，' +
-      '如果都来自同一段行程，排序器会检测到并拒绝使用。免费。',
+      '记录用户明确说喜欢的照片（用匿名编号）。' +
+      '⚠️ 重要：实测个人口味探针在**交付的前 20 张**上没有可测收益 —— ' +
+      '融合后 AUC 更高（0.754 vs 0.714）但交付命中反而略差（1.57 vs 1.83，30 次划分里只赢 7 次），' +
+      '所以它**默认不参与排序**。调用这个工具只是记录，不要向用户承诺效果会变好。免费。',
     parameters: {
       ids: { type: 'array', items: { type: 'string' }, required: true, description: '用户喜欢的照片编号' },
       replace: { type: 'boolean', description: 'true=替换现有标注，false=追加（默认追加）' },
@@ -327,17 +328,15 @@ export function apply(ctx: Context, config: Config): void {
       }
       state.labels = args.replace ? r.names : [...new Set([...state.labels, ...r.names])]
       const n = state.labels.length
-      const advice = n < 5
-        ? `还不够 5 张，排序仍会走冷启动。实测标 3 张反而不如不标（AUC 0.555 vs 0.606）。`
-        : n < 12
-        ? `已进入过渡区。实测标到 10 张才明显超过冷启动（0.673 vs 0.606）。`
-        : `已足够启用个人口味模式（实测 15 张时 AUC 0.713）。`
       return {
         n_labels: n,
-        summary: `已记录 ${n} 张标注。${advice}\n` +
-          `提醒用户：标注要分散在整批照片里。实测连着标同一段行程的 10 张，AUC 只有 0.439 —— ` +
-          `比不标（0.606）还差，比随机（0.5）还差，因为模型会学成「像那个地方的照片」。\n` +
-          `下一步：重新调用 rank_photos。`,
+        summary: `已记录 ${n} 张标注。\n\n` +
+          `⚠️ **必须如实告诉用户：这些标注默认不参与排序。**\n` +
+          `实测个人口味探针在交付的前 20 张上没有可测收益：融合后 AUC 从 0.714 升到 0.754，` +
+          `但交付命中从 1.83 降到 1.57，30 次随机划分里融合只赢 7 次、打平 13 次、落后 10 次。` +
+          `AUC 变好而头部没变好 —— 这和之前融合两个通用美学指标时是同一个模式。\n\n` +
+          `所以不要承诺「标了就会更准」。当前排序用的是 Apple Vision 人脸质量（AUC 0.723）。\n` +
+          `下一步：重新调用 rank_photos（结果不会因为这些标注而改变）。`,
       }
     },
   }))

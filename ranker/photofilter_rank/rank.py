@@ -108,12 +108,27 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
     if n_lab >= 2:
         concentration = label_concentration(X, np.array([idx[n] for n in labels]))
 
-    if n_lab < cfg.min_labels:
+    if n_lab and not cfg.use_probe:
+        # 标注被记录了，但不参与排序 —— 实测它在交付层面没有收益。
         mode, final = "cold", cold
         probe_score = None
+        probe_w = 0.0
+        warnings.append(
+            f"收到 {n_lab} 张标注，但**没有用于排序**。实测个人口味探针在交付的前 20 张上"
+            f"没有可测收益（融合 1.57 vs 冷启动 1.83，30 次划分里只赢 7 次），"
+            f"所以默认关闭。要强行启用请设 use_probe=True。"
+        )
+    elif n_lab < cfg.min_labels:
+        mode, final = "cold", cold
+        probe_score = None
+        probe_w = 0.0
         if n_lab:
-            warnings.append(f"只有 {n_lab} 张标注，少于 {cfg.min_labels} 张，仍走冷启动。")
+            warnings.append(
+                f"只有 {n_lab} 张标注，少于 {cfg.min_labels} 张，仍走冷启动。"
+                f"实测标 3 张时探针 AUC 0.555，而冷启动是 0.725 —— 标太少不如不标。"
+            )
     elif concentration is not None and concentration > cfg.max_label_concentration:
+        probe_w = 0.0
         # 实测：标注集中时探针 AUC 0.476，冷启动 0.606 —— 用了反而更差，
         # 所以宁可不用，并且明确告诉用户怎么修。
         mode, final = "cold", cold
@@ -131,14 +146,11 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
             l2=cfg.probe_l2, iters=cfg.probe_iters, lr=cfg.probe_lr,
         )
         probe_score = zscore(probe.score(X))
-        if n_lab >= cfg.blend_until:
-            # 学习曲线的交叉点在 5–10 张之间：3 张时探针 0.555 < 冷启动 0.606（只有 27% 胜出），
-            # 10 张时探针 0.673 > 冷启动 0.605（77% 的划分胜出）。过了交叉点就纯用个人口味。
-            mode, final = "personal", probe_score
-        else:
-            # 5–11 张正好横跨交叉点，线性过渡避免在这一段来回跳
-            t = (n_lab - cfg.min_labels) / max(cfg.blend_until - cfg.min_labels, 1)
-            mode, final = "blend", (1 - t) * cold + t * probe_score
+        # 永远是融合，不存在「纯个人口味」模式 —— 纯探针在每个标注量上都更差。
+        span = max(cfg.probe_weight_full_at - cfg.min_labels, 1)
+        t = min((n_lab - cfg.min_labels) / span, 1.0)
+        probe_w = cfg.probe_weight_min + t * (cfg.probe_weight_max - cfg.probe_weight_min)
+        mode, final = "fused", (1 - probe_w) * cold + probe_w * probe_score
 
     # --- 分组 + 带上限地挑选 ---
     order = np.argsort(-final).tolist()
@@ -173,6 +185,7 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
         "cold_strategy": cold_strategy,
         "face_detect_rate": round(quality.get("face_detect_rate", float("nan")), 3),
         "labels_used": labels,
+        "probe_weight": round(probe_w, 3),
         "labels_pinned": [names[i] for i in label_idx],
         "device": device,
         "family_threshold": round(fam_t, 4),
