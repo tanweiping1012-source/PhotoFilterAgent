@@ -45,6 +45,13 @@ export interface Config {
   excludedRelativePaths: string[]
   /** 允许导出到的根目录；空表示禁止导出。 */
   allowedExportRoots: string[]
+  /**
+   * Swift 本地分析引擎路径，用于闭眼资格门（免费、不联网）。
+   *
+   * 不配的话资格门不生效。实测代价：20 张名单里 6 张闭眼（基准率 8.2%），
+   * 而用户自己的 20 张精选里闭眼 0 张 —— 交付命中从 4/20 掉到 3/20。
+   */
+  engineBinary: string
   /** 单次排序器调用超时（毫秒）。首次跑要下模型 + 建缓存，给足。 */
   rankerTimeoutMs: number
   /** 默认保留几张。 */
@@ -61,6 +68,7 @@ export const Config: z<Config> = z.object({
   allowedRoots: z.array(z.string()).default([]),
   excludedRelativePaths: z.array(z.string()).default([]),
   allowedExportRoots: z.array(z.string()).default([]),
+  engineBinary: z.string().default(''),
   rankerTimeoutMs: z.number().step(1).min(10_000).default(900_000),
   defaultTarget: z.number().step(1).min(1).default(20),
   maxInlineIdList: z.number().step(1).min(0).default(60),
@@ -77,7 +85,10 @@ interface RunState {
 }
 
 export function apply(ctx: Context, config: Config): void {
-  const ranker = new Ranker(config.python, config.rankerDir, config.cacheDir, config.rankerTimeoutMs)
+  const ranker = new Ranker(
+    config.python, config.rankerDir, config.cacheDir, config.rankerTimeoutMs,
+    config.engineBinary || undefined,
+  )
   const state: RunState = { labels: [] }
 
   /** 目录必须落在授权根目录内。这是结构约束，不靠 agent 自觉。 */
@@ -202,6 +213,10 @@ export function apply(ctx: Context, config: Config): void {
         }).join('\n')
 
         const warn = (n.warnings ?? []).map((w) => `\n⚠ ${w}`).join('')
+        const gateNote = n.n_blocked
+          ? `\n资格门拦下 ${n.n_blocked} 张闭眼照（仍在候选池里参与统计，只是不进名单）。` +
+            `这是本机免费检测，不用视觉模型。`
+          : ''
         const capNote = n.relaxed
           ? `\n⚠ 同组上限从 2 放宽到 ${n.family_cap_used} 才凑满 ${target} 张（场景组不够多）。`
           : ''
@@ -215,7 +230,7 @@ export function apply(ctx: Context, config: Config): void {
             `模式：${modeText}\n` +
             `候选 ${res.n_candidates} 张 · 场景组 ${n.n_families} 个（最大 ${n.largest_family} 张）· 耗时 ${res.elapsed_sec}s\n` +
             `**付费模型调用 0 次** —— 全程在本机算完。\n` +
-            warn + capNote + `\n\n` +
+            warn + gateNote + capNote + `\n\n` +
             `选出 ${res.selected.length} 张，分布在 ${famCount} 个不同场景组：\n${rows}\n\n` +
             `分数是标准化后的相对值，不是绝对质量分：+1.8 表示明显高于这批照片的平均水平。\n` +
             `想看某几张为什么入选、或边界上差了什么，调 explain_ranking。`,

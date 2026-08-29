@@ -15,6 +15,7 @@ import numpy as np
 
 from .config import RankConfig
 from .dedupe import group_by_similarity, select_with_cap, suggest_threshold
+from .eligibility import EligibilityUnavailable, closed_eye_names
 from .embed import embed_photos
 from .quality import cold_start_score, local_quality, zscore
 from .scan import build_cache, fingerprint, list_photos
@@ -133,11 +134,33 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
     if label_idx:
         order = label_idx + [i for i in order if i not in set(label_idx)]
 
-    picked, cap_note = select_with_cap(order, families, min(cfg.target, len(names)), cfg.family_cap)
+    # 资格门：闭眼照留在候选池里（不影响分数与统计），只是不进最终名单。
+    blocked: set[str] = set()
+    eligibility_note = None
+    if cfg.block_closed_eyes:
+        if cfg.engine_binary is None:
+            eligibility_note = '未配置本地分析引擎，闭眼资格门**没有生效**。'
+        else:
+            try:
+                blocked = closed_eye_names(
+                    cfg.folder, cfg.engine_binary,
+                    cfg.engine_workdir or (cfg.cache_dir / 'engine'),
+                )
+                blocked &= set(names)
+            except EligibilityUnavailable as e:
+                # 静默跳过是危险的：用户以为有资格门保护时必须知道它没生效。
+                eligibility_note = f'闭眼资格门**没有生效**：{e}'
+    eligible = [i for i in order if names[i] not in blocked]
+
+    picked, cap_note = select_with_cap(
+        eligible, families, min(cfg.target, len(eligible)), cfg.family_cap,
+    )
 
     notes = {
         **cap_note,
         "warnings": warnings,
+        "blocked_closed_eyes": sorted(blocked),
+        "n_blocked": len(blocked),
         "label_concentration": round(concentration, 3) if concentration is not None else None,
         "n_families": len(set(families)),
         "cold_strategy": cold_strategy,
@@ -151,6 +174,9 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
             (np.triu(X @ X.T, 1) >= suggest_threshold(X, cfg.dup_percentile, cfg.cosine_floor)).sum()
         ),
     }
+    if eligibility_note:
+        warnings.append(eligibility_note)
+        notes['warnings'] = warnings
     if probe_score is not None:
         notes["cold_vs_probe_spearman"] = round(
             float(np.corrcoef(np.argsort(np.argsort(cold)), np.argsort(np.argsort(probe_score)))[0, 1]), 3

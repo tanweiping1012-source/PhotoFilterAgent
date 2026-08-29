@@ -20,6 +20,10 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--exclude", nargs="*", default=[], help="要排除的相对路径（人工答案子目录）")
     p.add_argument("--cache", type=Path, default=None)
     p.add_argument("--device", default="auto")
+    p.add_argument("--engine", type=Path, default=None,
+                   help="Swift 本地分析引擎路径，用于闭眼资格门（不给则资格门不生效并报告）")
+    p.add_argument("--no-eligibility", action="store_true",
+                   help="关掉闭眼资格门。实测关掉后 20 张里有 6 张闭眼，而用户自己一张不选")
     p.add_argument("--cold", default="auto", choices=["auto", "face", "laion_aes", "blend"],
                    help="冷启动用哪个指标；blend 只为复现「融合更差」的结论，不推荐")
     p.add_argument("--quiet", action="store_true")
@@ -36,6 +40,8 @@ def _cfg(a) -> "RankConfig":
         cache_dir=(a.cache or DEFAULT_CACHE).expanduser(),
         device=a.device,
         cold_strategy=getattr(a, "cold", "auto"),
+        block_closed_eyes=not getattr(a, "no_eligibility", False),
+        engine_binary=getattr(a, "engine", None),
     )
 
 
@@ -101,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\n选出 {len(res.selected)} 张：")
         for i, n in enumerate(res.selected, 1):
             print(f"  {i:>2}. {n}   {res.scores[n]:+.2f}")
+        if res.notes.get("n_blocked"):
+            print(f"\n资格门拦下 {res.notes['n_blocked']} 张闭眼照（仍留在候选池里，只是不进名单）")
         if res.notes.get("relaxed"):
             print(f"\n⚠ 同组上限从 {cfg.family_cap} 放宽到 {res.notes['family_cap_used']} 才凑满 {a.target} 张")
         if a.json:

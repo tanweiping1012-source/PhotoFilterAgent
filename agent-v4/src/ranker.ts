@@ -24,6 +24,10 @@ export interface RankNotes {
   relaxed?: number
   near_duplicate_pairs?: number
   labels_used?: string[]
+  labels_pinned?: string[]
+  /** 资格门拦下的闭眼照。免费本地检测，见 ranker/photofilter_rank/eligibility.py。 */
+  blocked_closed_eyes?: string[]
+  n_blocked?: number
   device?: string
 }
 
@@ -81,7 +85,14 @@ export class Ranker {
     private readonly rankerDir: string,
     private readonly cacheDir: string,
     private readonly timeoutMs: number,
+    /** Swift 本地分析引擎，用于闭眼资格门。空则资格门不生效，排序器会如实报告。 */
+    private readonly engineBinary?: string,
   ) {}
+
+  /** 资格门参数。不给引擎时不加 --engine，排序器会把「没生效」写进 warnings。 */
+  private gate(): string[] {
+    return this.engineBinary ? ['--engine', this.engineBinary] : []
+  }
 
   private run(args: string[], signal?: AbortSignal): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -136,7 +147,7 @@ export class Ranker {
   ): Promise<RankResult> {
     const dir = mkdtempSync(join(tmpdir(), 'pfv4-lbl-'))
     try {
-      const args = ['pick', folder, '--target', String(target)]
+      const args = ['pick', folder, '--target', String(target), ...this.gate()]
       if (exclude.length) args.push('--exclude', ...exclude)
       if (labels.length) {
         const p = join(dir, 'labels.txt')
@@ -155,7 +166,7 @@ export class Ranker {
   ): Promise<EvalResult> {
     const dir = mkdtempSync(join(tmpdir(), 'pfv4-lbl-'))
     try {
-      const args = ['eval', folder, '--gold', goldFile, '--target', String(target)]
+      const args = ['eval', folder, '--gold', goldFile, '--target', String(target), ...this.gate()]
       if (exclude.length) args.push('--exclude', ...exclude)
       if (labels.length) {
         const p = join(dir, 'labels.txt')

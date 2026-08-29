@@ -263,3 +263,12 @@ def test_护栏拒绝标注时不应该再把它们置顶():
     assert pinned_labels("cold", labels) == [], "护栏退回 cold 时不得置顶"
     assert pinned_labels("blend", labels) == labels, "标注被采纳时应该置顶"
     assert pinned_labels("personal", labels) == labels
+
+
+def test_资格门_引擎缺失时报错而不是静默跳过():
+    """静默跳过是危险的：用户以为有资格门保护时，必须知道它没生效。
+    实测代价：不设门时 20 张名单里 6 张闭眼，而用户自己一张都不选。"""
+    from pathlib import Path
+    from photofilter_rank.eligibility import EligibilityUnavailable, closed_eye_names
+    with pytest.raises(EligibilityUnavailable, match='不存在'):
+        closed_eye_names(Path('/tmp'), Path('/nonexistent/photofilter'), Path('/tmp/wd'))
