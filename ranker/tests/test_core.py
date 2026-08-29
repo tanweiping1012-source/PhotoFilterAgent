@@ -231,3 +231,24 @@ def test_集中度_编码器基线相似度太低时不给假判断():
 def test_集中度_标注少于两张时不判断():
     X = np.eye(5)
     assert label_concentration(X, np.array([0])) == 1.0
+
+
+def test_报告_必须区分交付与排序():
+    """产品交付的是过了同组限流的名单，不是按分数的前 K。
+    实测这两个数会不一样：按分数前 20 是 4/20，实际交付 3/20 ——
+    差的那张金标被「同场景组最多入选 2 张」挡掉了。只报前者会高估。"""
+    s = np.arange(100.0)[::-1]
+    y = np.zeros(100); y[:10] = 1
+    delivered = np.array([1.0] * 7 + [0.0] * 13)      # 交付 20 张，命中 7
+    r = report(s, y, 20, delivered=delivered)
+    assert r["hits"] == 10, "按分数前 20 命中 10"
+    assert r["delivered_hits"] == 7, "实际交付只命中 7"
+    assert r["delivered_n"] == 20
+    assert r["delivered_p_value"] > r["p_value"], "交付更差，p 值应该更大"
+
+
+def test_报告_不传交付时不编造这个字段():
+    s = np.arange(50.0)[::-1]
+    y = np.zeros(50); y[:5] = 1
+    r = report(s, y, 10)
+    assert "delivered_hits" not in r

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -42,6 +43,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="photofilter-rank", description="本地优先的照片排序")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    p_scan = sub.add_parser("scan", help="只做本地扫描：数量、指纹、人脸检出率（最快，不算向量）")
+    _common(p_scan)
+    p_scan.add_argument("--json", type=Path, default=None)
+
     p_pick = sub.add_parser("pick", help="挑出最好的 N 张")
     _common(p_pick)
     p_pick.add_argument("--labels", type=Path, default=None, help="你喜欢的照片文件名清单，每行一个")
@@ -51,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     _common(p_eval)
     p_eval.add_argument("--labels", type=Path, default=None)
     p_eval.add_argument("--gold", type=Path, required=True, help="人工精选清单（答案）")
+    p_eval.add_argument("--json", type=Path, default=None)
 
     p_curve = sub.add_parser("curve", help="学习曲线：需要几张标注才够")
     _common(p_curve)
@@ -66,6 +72,25 @@ def main(argv: list[str] | None = None) -> int:
 
     from .evaluate import holdout_curve, report
     from .rank import rank_folder, result_to_json
+
+    if a.cmd == "scan":
+        from .scan import build_cache, fingerprint, list_photos
+        photos = list_photos(cfg.folder, cfg.exclude)
+        if not photos:
+            print(f"{cfg.folder} 里没有找到照片")
+            return 1
+        fp = fingerprint(photos, cfg.folder)
+        out = {
+            "n_photos": len(photos),
+            "fingerprint": fp,
+            "folder": str(cfg.folder),
+            "names": [p.name for p in photos],
+        }
+        print(f"候选 {len(photos)} 张 · 指纹 {fp}")
+        if a.json:
+            a.json.write_text(json.dumps(out, ensure_ascii=False))
+            print(f"→ {a.json}")
+        return 0
 
     if a.cmd == "pick":
         res = rank_folder(cfg, verbose)
@@ -95,7 +120,16 @@ def main(argv: list[str] | None = None) -> int:
     y = np.array([1.0 if n in gold else 0.0 for n in ordered])
 
     if a.cmd == "eval":
-        r = report(s, y, a.target)
+        # 产品交付的是 res.selected（过了同组限流），不是按分数的前 K。
+        # 只报后者会高估 —— 实测过一次 4/20 vs 真实交付 3/20。
+        delivered = np.array([1.0 if n in gold else 0.0
+                              for n in res.selected if n not in trained])
+        r = report(s, y, a.target, delivered=delivered)
+        if a.json:
+            a.json.write_text(json.dumps(
+                {**r, "mode": res.mode, "notes": res.notes, "selected": res.selected,
+                 "elapsed_sec": res.elapsed_sec, "excluded_trained": sorted(trained)},
+                ensure_ascii=False))
         for w in res.notes.get("warnings", []):
             print(f"\n⚠ {w}")
         if trained:
@@ -103,9 +137,16 @@ def main(argv: list[str] | None = None) -> int:
                   f"其中金标 {len(trained & gold)} 张；剩余金标 {int(y.sum())} 张）")
         print(f"\n=== 评测 · {res.mode} 模式"
               + (f" · 冷启动指标 {res.notes['cold_strategy']}" if res.mode == "cold" else "") + " ===")
+        dp = r.get("delivered_p_value", 1.0)
+        print(f"  ── 实际交付的名单（产品给用户的就是这个）──")
+        print(f"  交付命中        {r.get('delivered_hits','?')}/{r['n_gold']}"
+              f"   共交付 {r.get('delivered_n','?')} 张   随机期望 {r['random_expected']}")
+        print(f"  超几何 p 值     {dp:.4f}   {'✅ 显著' if dp < 0.05 else '⚠ 与运气区分不开'}")
+        print(f"  ── 排序本身（不含同组限流）──")
         print(f"  AUC            {r['auc']:.3f}   (0.5 = 掷硬币)")
-        print(f"  前 {r['k']} 命中      {r['hits']}/{r['n_gold']}   随机期望 {r['random_expected']}")
-        print(f"  超几何 p 值     {r['p_value']:.4f}   {'✅ 显著' if r['p_value'] < 0.05 else '⚠ 与运气区分不开'}")
+        print(f"  按分数前 {r['k']}    {r['hits']}/{r['n_gold']}"
+              f"   {'（限流后会变，以交付为准）' if r['hits'] != r.get('delivered_hits') else ''}")
+        print(f"  超几何 p 值     {r['p_value']:.4f}")
         print(f"  头部提升        {r['lift_mean']:.2f}x   (K=10/20/30/40/50 平均，相对随机)")
         print(f"  候选 {r['n_total']} 张 · 耗时 {res.elapsed_sec}s · 付费调用 0 次")
         return 0
