@@ -49,6 +49,12 @@ class RankConfig:
     cosine_floor: float = 0.90           # 分位数再低也不低于此值
     family_cap: int = 2                  # 同一组最多入选几张
 
+    # --- 资格门（本机免费，见 eligibility.py）---
+    # 默认开。实测不开的话 20 张名单里有 6 张闭眼，而用户自己一张都不选。
+    block_closed_eyes: bool = True
+    engine_binary: Path | None = None       # Swift 引擎路径；None 则跳过并如实报告
+    engine_workdir: Path | None = None
+
     # --- 运行 ---
     cache_dir: Path = DEFAULT_CACHE
     device: str = "auto"                 # auto / mps / cuda / cpu

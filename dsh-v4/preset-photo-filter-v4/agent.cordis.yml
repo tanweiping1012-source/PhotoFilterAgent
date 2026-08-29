@@ -87,6 +87,9 @@
       - "me-pick"
       - "20260221开拓小屋线+防潮坝/me/me-pick"
       - "20260221开拓小屋线+防潮坝/景色pick"
+    # 闭眼资格门用的本地引擎（免费、不联网）。不配的话资格门不生效：
+    # 实测 20 张名单里会有 6 张闭眼，而用户自己的精选里闭眼 0 张。
+    engineBinary: "@@REPO@@/engine/.build/release/photofilter"
     allowedExportRoots: ["@@EXPORT@@"]
     rankerTimeoutMs: 1800000
     defaultTarget: 20
