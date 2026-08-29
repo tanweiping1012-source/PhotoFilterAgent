@@ -252,3 +252,14 @@ def test_报告_不传交付时不编造这个字段():
     y = np.zeros(50); y[:5] = 1
     r = report(s, y, 10)
     assert "delivered_hits" not in r
+
+
+def test_护栏拒绝标注时不应该再把它们置顶():
+    """既然已经判定这批标注不可信，就不该让它们反过来占满结果 ——
+    那等于把「我们不信任的信号」伪装成排序结论。
+    实测现场：前 10 张全是用户标的、分数显示 0.00，agent 只能费力解释。"""
+    from photofilter_rank.rank import pinned_labels
+    labels = [3, 7, 11]
+    assert pinned_labels("cold", labels) == [], "护栏退回 cold 时不得置顶"
+    assert pinned_labels("blend", labels) == labels, "标注被采纳时应该置顶"
+    assert pinned_labels("personal", labels) == labels

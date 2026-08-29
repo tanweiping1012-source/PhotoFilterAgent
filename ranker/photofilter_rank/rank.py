@@ -35,6 +35,20 @@ class RankResult:
     notes: dict
 
 
+def pinned_labels(mode: str, label_idx: list[int]) -> list[int]:
+    """哪些标注可以置顶。
+
+    用户亲口说喜欢的照片直接置顶是合理的 —— 但**只在标注被采纳时**。
+
+    踩过的坑：护栏因为标注过于集中而拒绝用它们学口味（mode 退回 cold）时，
+    置顶却照做了，于是前 10 张全是用户自己标的、分数显示 0.00，
+    agent 只能费力解释「这不代表它特别好」。既然已经判定这批标注不可信，
+    就不该让它们反过来占满结果 —— 那等于把「我们不信任的信号」
+    伪装成排序结论。
+    """
+    return [] if mode == "cold" else list(label_idx)
+
+
 def _load_labels(path: Path | None, names: list[str]) -> list[str]:
     if path is None or not path.exists():
         return []
@@ -109,9 +123,15 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
     # 这就顺带解决了 v2「连拍代表选错」的问题：代表不再是随便选的。
     fam_t = suggest_threshold(X, cfg.family_percentile, cfg.cosine_floor)
     families = group_by_similarity(X, fam_t, order)
-    # 已经标过的照片是用户亲口说喜欢的，不需要模型再判断一次，直接置顶
-    label_idx = [idx[n] for n in labels]
-    order = label_idx + [i for i in order if i not in set(label_idx)]
+    # 用户亲口说喜欢的照片直接置顶 —— 但只在标注**被采纳**时才置顶。
+    #
+    # 踩过的坑：护栏因为标注过于集中而拒绝用它们学口味时，置顶却照做了，
+    # 于是前 10 张全是用户自己标的、分数显示 0.00，agent 只能费力解释
+    # 「这不代表它特别好」。既然已经判定这批标注不可信，就不该让它们
+    # 反过来占满结果 —— 那等于把「我们不信任的信号」伪装成排序结论。
+    label_idx = pinned_labels(mode, [idx[n] for n in labels])
+    if label_idx:
+        order = label_idx + [i for i in order if i not in set(label_idx)]
 
     picked, cap_note = select_with_cap(order, families, min(cfg.target, len(names)), cfg.family_cap)
 
@@ -123,6 +143,7 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
         "cold_strategy": cold_strategy,
         "face_detect_rate": round(quality.get("face_detect_rate", float("nan")), 3),
         "labels_used": labels,
+        "labels_pinned": [names[i] for i in label_idx],
         "device": device,
         "family_threshold": round(fam_t, 4),
         "largest_family": int(np.bincount(families).max()),
