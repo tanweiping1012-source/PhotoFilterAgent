@@ -169,7 +169,19 @@ def main(argv: list[str] | None = None) -> int:
         cm = build_cache(photos, cfg.cache_dir / "thumbs", cfg.max_side, cfg.jpeg_quality, False)
         X, nm = embed_photos(cm, cfg.cache_dir, fp, cfg.resolve_device(), False)
         q = local_quality(cm, nm, cfg.cache_dir, fp, cfg.resolve_device(), False)
-        base = zscore(cold_start_score(q, nm, cfg.cold_strategy)[0])
+        # 冷启动基线必须和 pick/eval 走同一条路，否则曲线比的是另一个东西。
+        if cfg.engine_binary is not None:
+            from .eligibility import EligibilityUnavailable, engine_facts
+            try:
+                facts = engine_facts(cfg.folder, cfg.engine_binary,
+                                     cfg.engine_workdir or (cfg.cache_dir / 'engine'),
+                                     cache_key=fp)
+                q['vision_face'] = {k: v for k, v in facts.face_quality.items() if k in set(nm)}
+            except EligibilityUnavailable as e:
+                print(f'⚠ 引擎不可用，冷启动基线降级：{e}')
+        base_raw, base_strategy = cold_start_score(q, nm, cfg.cold_strategy)
+        base = zscore(base_raw)
+        print(f'冷启动基线用的是 {base_strategy}')
         yy = np.array([1.0 if n in gold else 0.0 for n in nm])
         curve = holdout_curve(X, yy, tuple(a.sizes), a.splits, baseline=base,
                               probe_iters=cfg.probe_iters, protocol=a.protocol)

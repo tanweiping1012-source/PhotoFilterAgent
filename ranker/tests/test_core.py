@@ -261,8 +261,7 @@ def test_护栏拒绝标注时不应该再把它们置顶():
     from photofilter_rank.rank import pinned_labels
     labels = [3, 7, 11]
     assert pinned_labels("cold", labels) == [], "护栏退回 cold 时不得置顶"
-    assert pinned_labels("blend", labels) == labels, "标注被采纳时应该置顶"
-    assert pinned_labels("personal", labels) == labels
+    assert pinned_labels("fused", labels) == labels, "标注被采纳时应该置顶"
 
 
 def test_资格门_引擎缺失时报错而不是静默跳过():
@@ -320,3 +319,30 @@ def test_引擎结果必须按指纹缓存(tmp_path):
     # 引擎路径是假的：命中缓存就不该去调它
     f = engine_facts(tmp_path, tmp_path / 'no-such-binary', wd, cache_key='abc123')
     assert f.closed_eyes == {'x.jpg'} and f.face_quality == {'y.jpg': 55}
+
+
+def test_探针权重_随标注数上升且永不到1():
+    """纯探针在每个标注量上都比冷启动差（m=15 时 0.721 vs 0.739）。
+    所以不存在「纯个人口味」模式 —— 权重封顶 0.5，永远是融合。"""
+    from photofilter_rank.config import RankConfig
+    from pathlib import Path as _P
+    c = RankConfig(folder=_P('/tmp'))
+    def w(n):
+        span = max(c.probe_weight_full_at - c.min_labels, 1)
+        t = min((n - c.min_labels) / span, 1.0)
+        return c.probe_weight_min + t * (c.probe_weight_max - c.probe_weight_min)
+    assert abs(w(5) - 0.40) < 1e-9
+    assert w(5) < w(10) < w(15)
+    assert abs(w(15) - 0.50) < 1e-9
+    assert w(100) == w(15), "标再多也封顶，不会退化成纯探针"
+    assert c.probe_weight_max < 1.0, "权重永远不能到 1"
+
+
+def test_探针默认关闭():
+    """v4 最初的核心卖点，实测在交付层面没有收益：
+    融合 1.57 vs 冷启动 1.83（30 次划分，融合只赢 7 次）。
+    AUC 确实更高（0.754 vs 0.714），但产品交付的是前 20 张，那一项没改善。
+    代码和测量都留着 —— 负面结果本身是产出 —— 但不能在默认路径上。"""
+    from pathlib import Path as _P
+    from photofilter_rank.config import RankConfig
+    assert RankConfig(folder=_P('/tmp')).use_probe is False
