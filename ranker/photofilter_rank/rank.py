@@ -154,10 +154,17 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
 
     # --- 分组 + 带上限地挑选 ---
     order = np.argsort(-final).tolist()
-    # 按分数从高到低处理，让每组最好的那张当组长 —— 组长会被优先选中，
-    # 这就顺带解决了 v2「连拍代表选错」的问题：代表不再是随便选的。
+    # 分组必须用**与打分无关**的顺序（不传 order = 按文件名顺序，
+    # 相机输出天然按时间递增）。
+    #
+    # 踩过的坑：最初按分数顺序分组，让每组最好的那张当组长。后果是
+    # **换一个打分器就换一套分组**，两次结果无法比较 ——
+    # 实测同一份打分只改分组顺序，交付命中在 3~5/20 之间跳，组数 122 vs 128。
+    #
+    # 这不会重新引入 v2 那个「连拍代表选错」的问题：v4 的分组**不淘汰任何人**，
+    # 只限制每组入选几张，选片仍然按分数顺序走 —— 组长是谁不影响选片。
     fam_t = suggest_threshold(X, cfg.family_percentile, cfg.cosine_floor)
-    families = group_by_similarity(X, fam_t, order)
+    families = group_by_similarity(X, fam_t)
     # 用户亲口说喜欢的照片直接置顶 —— 但只在标注**被采纳**时才置顶。
     #
     # 踩过的坑：护栏因为标注过于集中而拒绝用它们学口味时，置顶却照做了，

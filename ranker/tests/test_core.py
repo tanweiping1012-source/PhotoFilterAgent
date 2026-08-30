@@ -387,3 +387,15 @@ def test_默认风格是质量优先():
     from pathlib import Path as _P
     from photofilter_rank.config import RankConfig
     assert RankConfig(folder=_P('/tmp')).style == "quality"
+
+
+def test_人像池里无脸照片排最后而不是中位():
+    """20/20 金标全部检出人脸，30 张无脸照里金标 0 张。
+    ⚠️ 这是正确性改进不是效果改进：实测交付一张没变（五次扫描 4,4,3,3,4 完全相同），
+    因为那些照片本来就进不了前 20。不要当成绩报。"""
+    from photofilter_rank.quality import cold_start_score
+    q = _q(("a", "b", "c", "d"))
+    q["vision_face"] = {"a": 61, "b": 38, "c": 50}      # d 没有脸
+    s, used = cold_start_score(q, list("abcd"), "auto")
+    assert used == "vision_face"
+    assert s[3] < min(s[0], s[1], s[2]), "无脸的必须排在所有有脸的后面"
