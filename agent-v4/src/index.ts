@@ -81,6 +81,7 @@ interface RunState {
   ids?: IdentityMap
   last?: RankResult
   labels: string[]
+  style: string
   exportTicket?: { code: string; dest: string; names: string[] }
 }
 
@@ -89,7 +90,7 @@ export function apply(ctx: Context, config: Config): void {
     config.python, config.rankerDir, config.cacheDir, config.rankerTimeoutMs,
     config.engineBinary || undefined,
   )
-  const state: RunState = { labels: [] }
+  const state: RunState = { labels: [], style: 'quality' }
 
   /** 目录必须落在授权根目录内。这是结构约束，不靠 agent 自觉。 */
   function assertAllowed(folder: string, roots: string[], what: string): string {
@@ -169,10 +170,17 @@ export function apply(ctx: Context, config: Config): void {
     name: 'rank_photos',
     description:
       '在本机对已扫描的目录排序并挑出最好的 N 张。完全免费、零模型调用、不发送任何照片。' +
-      '打分用 Apple Vision 的人脸质量（AUC 0.723），闭眼照会被资格门挡在名单外。' +
-      '同一场景组默认最多入选 2 张。结果是确定性的：同样输入永远同样输出。',
+      '**必须先问用户这一趟想要哪种风格**（quality 拍得清楚好看 / mood 有氛围）——' +
+      '实测这两种给出的名单几乎完全不重叠（0/20 和 4/20），而且各自只在对应的场合有效。' +
+      '闭眼照会被资格门挡在名单外。同一场景组默认最多入选 2 张。结果是确定性的。',
     parameters: {
       target: { type: 'number', description: `要挑几张（默认 ${config.defaultTarget}）` },
+      style: {
+        type: 'string',
+        description:
+          'quality = 挑拍得清楚、人脸好看的（默认）；mood = 挑有氛围的（弱光、动态、颗粒、柔焦这类）。' +
+          '这两种给出的名单几乎完全不同（实测重叠 0/20 和 4/20），所以**必须先问用户想要哪种**，不要自己猜。',
+      },
     },
     output: {
       schema: {
@@ -191,8 +199,12 @@ export function apply(ctx: Context, config: Config): void {
       if (!state.folder) throw new Error('请先调用 scan_folder。')
       const target = args.target ?? config.defaultTarget
       try {
+        if (args.style && args.style !== 'quality' && args.style !== 'mood') {
+          throw new Error(`style 只能是 quality 或 mood，收到 "${args.style}"。`)
+        }
+        state.style = args.style ?? state.style
         const res = await ranker.rank(
-          state.folder, target, config.excludedRelativePaths, state.labels, exec.signal,
+          state.folder, target, config.excludedRelativePaths, state.labels, state.style, exec.signal,
         )
         const ids = IdentityMap.load(config.workdir, res.fingerprint)
         ids.assign([...res.ranking].sort())
@@ -201,6 +213,11 @@ export function apply(ctx: Context, config: Config): void {
         state.last = res
 
         const n = res.notes
+        const styleText = state.style === 'mood'
+          ? '氛围优先 —— 把通用美学分翻转过来。实测在「按氛围挑」的那批照片上，' +
+            '6 个通用美学模型全部反向（用户选的照片里有两张排全池倒数第一、第二）。' +
+            '⚠️ 这一档只有 4 张金标支撑，2/4、p=0.11，不显著 —— 是可选项，不是已验证的能力。'
+          : '质量优先 —— 按人脸拍摄质量排（实测交付 4/20，p=0.032 显著）'
         const modeText = {
           cold: `冷启动（0 张标注）—— 用通用质量指标 ${n.cold_strategy}`,
           blend: `过渡（${res.n_labels} 张标注）—— 个人口味与通用指标混合`,
@@ -227,6 +244,7 @@ export function apply(ctx: Context, config: Config): void {
           mode: res.mode,
           n_candidates: res.n_candidates,
           summary:
+            `挑片风格：${styleText}\n` +
             `模式：${modeText}\n` +
             `候选 ${res.n_candidates} 张 · 场景组 ${n.n_families} 个（最大 ${n.largest_family} 张）· 耗时 ${res.elapsed_sec}s\n` +
             `**付费模型调用 0 次** —— 全程在本机算完。\n` +
