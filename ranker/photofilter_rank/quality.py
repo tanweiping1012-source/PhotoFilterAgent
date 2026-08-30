@@ -185,7 +185,11 @@ def cold_start_score(
         vf = quality.get("vision_face") or {}
         if vf:
             have = [i for i, n in enumerate(names) if n in vf]
-            out = np.full(len(names), NO_FACE_RANK)
+            # 人像池里检不到脸 → 排最后，不是给中位待遇。
+            # 实测 20/20 金标全部检出人脸，30 张无脸照里金标 0 张。
+            # AUC 0.723 → 0.744。⚠️ 但**交付一张没变**（4,4,3,3,4 五次扫描完全相同）——
+            # 那 30 张本来就进不了前 20，这是正确性改进不是效果改进，别当成绩报。
+            out = np.full(len(names), -1.0)
             out[have] = _rank(np.array([vf[names[i]] for i in have]))
             return out, resolved
         resolved = "face"          # 引擎没给上，如实降级
