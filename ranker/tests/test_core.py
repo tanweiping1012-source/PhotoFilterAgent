@@ -273,16 +273,24 @@ def test_资格门_引擎缺失时报错而不是静默跳过():
         engine_facts(Path('/tmp'), Path('/nonexistent/photofilter'), Path('/tmp/wd'))
 
 
-def test_冷启动_有引擎时优先用AppleVision人脸质量():
-    """v1 就有的免费指标 AUC 0.711，比下载来的 topiq_nr-face（0.606）更好。
-    这个默认值是本项目最被低估的一个信号 —— 曾经被「本地技术指标与口味无关」
-    这条结论一起否掉了，而那条结论只对清晰度/曝光成立。"""
+def test_冷启动_有引擎时用vision_face没有时降级():
+    """两个数据集给出相反的偏好（0.723/0.571 vs 0.606/0.685），均值几乎打平。
+    默认选 vision_face 的唯一理由是证据强度：数据集① 有 20 张金标，② 只有 4 张。
+    这不是一个有把握的选择。"""
     q = _q(("a", "b", "c", "d"))
     q["vision_face"] = {"a": 61, "b": 38, "c": 50, "d": 44}
     assert choose_cold_strategy(q, list("abcd"), "auto") == "vision_face"
-    s, used = cold_start_score(q, list("abcd"), "auto")
-    assert used == "vision_face"
-    assert s[0] > s[1], "人脸质量 61 应该排在 38 前面"
+    assert choose_cold_strategy(_q(("a", "b", "c", "d")), list("abcd"), "auto") == "face", \
+        "拿不到引擎数据时降级到 topiq"
+
+
+def test_资格门默认开启():
+    """数据集② 的 6 张精选里有 2 张闭眼，一度让我把这道门判成有害。
+    但用户本人确认那 2 张是手滑，不是有意选择 —— 人工答案本身也有噪声。
+    教训：差点拿一份有噪声的答案去推翻一条正确的设计。"""
+    from pathlib import Path as _P
+    from photofilter_rank.config import RankConfig
+    assert RankConfig(folder=_P('/tmp')).block_closed_eyes is True
 
 
 def test_冷启动_拿不到引擎时如实降级而不是假装用了():
