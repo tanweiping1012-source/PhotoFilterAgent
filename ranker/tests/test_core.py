@@ -354,3 +354,36 @@ def test_探针默认关闭():
     from pathlib import Path as _P
     from photofilter_rank.config import RankConfig
     assert RankConfig(folder=_P('/tmp')).use_probe is False
+
+
+def test_氛围风格是把美学分翻转():
+    """不是笔误：在「按氛围挑」的那批上，6 个通用美学模型全部反向。
+    用户选的 4 张里有 2 张在 laion_aes 上排 132/133 和 133/133。"""
+    from photofilter_rank.quality import mood_score
+    q = {"laion_aes": {"a": 6.8, "b": 5.0, "c": 4.1}}
+    s, used = mood_score(q, ["a", "b", "c"])
+    assert used == "mood"
+    assert s[2] > s[1] > s[0], "美学分最低的应该排最前"
+
+
+def test_两种风格给出不同的排序():
+    """如果两种风格结果差不多，那问用户「你想要哪种」就没有意义。
+    实测两套名单重叠 0/20 和 4/20 —— 几乎完全不同。
+
+    这里让 vision_face 与 laion_aes 同序，翻转后必然完全相反 ——
+    钉住的是「mood 确实翻转了美学分」这个契约。"""
+    from photofilter_rank.quality import cold_start_score
+    q = _q(("a", "b", "c", "d"))
+    q["laion_aes"] = {"a": 4.1, "b": 6.8, "c": 5.0, "d": 5.5}
+    q["vision_face"] = {"a": 20, "b": 70, "c": 40, "d": 55}   # 与 laion_aes 同序
+    sq, uq = cold_start_score(q, list("abcd"), "auto", style="quality")
+    sm, um = cold_start_score(q, list("abcd"), "auto", style="mood")
+    assert uq == "vision_face" and um == "mood"
+    assert list(np.argsort(-sq)) == list(np.argsort(-sm))[::-1], "两种风格应该给出相反的顺序"
+
+
+def test_默认风格是质量优先():
+    """mood 的证据很弱（4 张金标，2/4，p=0.11），是可选项不是默认。"""
+    from pathlib import Path as _P
+    from photofilter_rank.config import RankConfig
+    assert RankConfig(folder=_P('/tmp')).style == "quality"

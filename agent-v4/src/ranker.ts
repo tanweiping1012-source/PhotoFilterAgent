@@ -17,6 +17,8 @@ export interface RankNotes {
   label_concentration?: number | null
   cold_strategy?: string
   face_detect_rate?: number
+  /** 这一轮用的挑片风格：quality（拍得清楚好看）/ mood（有氛围）。 */
+  style?: string
   n_families?: number
   largest_family?: number
   family_threshold?: number
@@ -143,11 +145,12 @@ export class Ranker {
   }
 
   async rank(
-    folder: string, target: number, exclude: string[], labels: string[], signal?: AbortSignal,
+    folder: string, target: number, exclude: string[], labels: string[],
+    style: string, signal?: AbortSignal,
   ): Promise<RankResult> {
     const dir = mkdtempSync(join(tmpdir(), 'pfv4-lbl-'))
     try {
-      const args = ['pick', folder, '--target', String(target), ...this.gate()]
+      const args = ['pick', folder, '--target', String(target), '--style', style, ...this.gate()]
       if (exclude.length) args.push('--exclude', ...exclude)
       if (labels.length) {
         const p = join(dir, 'labels.txt')

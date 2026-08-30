@@ -95,7 +95,7 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
             # 静默跳过是危险的：用户以为有资格门保护时必须知道它没生效。
             eligibility_note = f'本地分析引擎不可用，资格门与人脸质量都**没有生效**：{e}'
 
-    cold_raw, cold_strategy = cold_start_score(quality, names, cfg.cold_strategy)
+    cold_raw, cold_strategy = cold_start_score(quality, names, cfg.cold_strategy, cfg.style)
     cold = zscore(cold_raw)
 
     # --- 决定用哪种打分模式 ---
@@ -183,6 +183,7 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
         "label_concentration": round(concentration, 3) if concentration is not None else None,
         "n_families": len(set(families)),
         "cold_strategy": cold_strategy,
+        "style": cfg.style,
         "face_detect_rate": round(quality.get("face_detect_rate", float("nan")), 3),
         "labels_used": labels,
         "probe_weight": round(probe_w, 3),

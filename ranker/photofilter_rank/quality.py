@@ -150,13 +150,36 @@ def choose_cold_strategy(quality: dict, names: list[str], configured: str) -> st
     return "vision_face" if quality.get("vision_face") else "face"
 
 
+def mood_score(quality: dict, names: list[str]) -> tuple[np.ndarray, str]:
+    """氛围优先：把通用美学分**翻转**过来。
+
+    这不是笔误。实测在「按氛围挑」的那批照片上，6 个满覆盖的通用美学模型
+    全部反向 —— 用户选的 4 张里有 2 张在 laion_aes 上排 132/133 和 133/133，
+    是全池倒数第一和第二。
+
+        指标            AUC（按氛围挑的那批）
+        laion_aes       0.291  → 翻转后 0.709
+        topiq_iaa       0.114  → 翻转后 0.886
+
+    合理的解释：氛围往往伴随弱光、动态、颗粒、柔焦、逆光 ——
+    而这些恰恰是技术画质模型要扣分的东西。
+
+    ⚠️ 只有 4 张金标支撑，翻转后交付 2/4、p=0.11，不显著。
+    """
+    lai = _rank(np.array([quality["laion_aes"][n] for n in names]))
+    return 1.0 - lai, "mood"
+
+
 def cold_start_score(
-    quality: dict[str, dict[str, float]], names: list[str], strategy: str = "auto"
+    quality: dict[str, dict[str, float]], names: list[str], strategy: str = "auto",
+    style: str = "quality",
 ) -> tuple[np.ndarray, str]:
     """返回 (分数, 实际用的策略)。
 
     'blend' 保留下来是为了让人能复现「融合更差」这个结论，不是推荐用法。
     """
+    if style == "mood":
+        return mood_score(quality, names)
     resolved = choose_cold_strategy(quality, names, strategy)
     if resolved == "vision_face":
         vf = quality.get("vision_face") or {}

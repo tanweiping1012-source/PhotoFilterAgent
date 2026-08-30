@@ -24,6 +24,8 @@ def _common(p: argparse.ArgumentParser) -> None:
                    help="Swift 本地分析引擎路径，用于闭眼资格门（不给则资格门不生效并报告）")
     p.add_argument("--no-eligibility", action="store_true",
                    help="关掉闭眼资格门。实测关掉后 20 张里有 6 张闭眼，而用户自己一张不选")
+    p.add_argument("--style", default="quality", choices=["quality", "mood"],
+                   help="quality=挑拍得清楚好看的（默认）；mood=挑有氛围的（把美学分翻转）")
     p.add_argument("--cold", default="auto", choices=["auto", "face", "laion_aes", "blend"],
                    help="冷启动用哪个指标；blend 只为复现「融合更差」的结论，不推荐")
     p.add_argument("--quiet", action="store_true")
@@ -40,6 +42,7 @@ def _cfg(a) -> "RankConfig":
         cache_dir=(a.cache or DEFAULT_CACHE).expanduser(),
         device=a.device,
         cold_strategy=getattr(a, "cold", "auto"),
+        style=getattr(a, "style", "quality"),
         block_closed_eyes=not getattr(a, "no_eligibility", False),
         engine_binary=getattr(a, "engine", None),
     )
