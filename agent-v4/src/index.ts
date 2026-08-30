@@ -25,10 +25,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { IdentityMap } from './identity.ts'
+import { comparePairs } from './compare.ts'
+import type { HarnessVisionExecution, HarnessVisionServices } from './harness-vision.ts'
 import { Ranker, RankerError, type RankResult } from './ranker.ts'
 
 export const name = 'photo-filter-v4'
-export const inject = ['tools']
+// llm/attachments 只被 compare_within_groups 用到 —— 那是整条链路里唯一花钱的工具。
+export const inject = ['tools', 'llm', 'attachments']
 
 export interface Config {
   /** 排序器目录（含 photofilter_rank 包）。 */
@@ -424,7 +427,110 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
 
-  // ── 工具 6：导出（两步确认，只复制）─────────────────────────
+  // ── 工具 6：组内成对比较（唯一花钱的工具）────────────────────
+  ctx.tools.register(defineTool({
+    name: 'compare_within_groups',
+    description:
+      '用视觉模型比较**同一场景组内**难分高下的照片对，据此重排组内顺序。' +
+      '这是整个工具集里**唯一花钱**的一个：每对花 2 次调用（正反各一次）。' +
+      '为什么需要它：本地打分测的是拍摄技术质量，看不见表情、眼神、互动 —— ' +
+      '而同一瞬间的连拍里，差别恰恰只在这些。实测本地打分的组内排序命中率 65%（随机 47%）。' +
+      '只在用户明确要求「再精细一点」或对边界结果不满意时调用，并且**必须先说明要花多少次调用**。',
+    parameters: {
+      max_pairs: {
+        type: 'number',
+        description: '最多比较几对（默认 12，即 24 次调用）。每对 2 次调用，务必先告知用户。',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          pairs_compared: { type: 'number' },
+          calls_spent: { type: 'number' },
+          summary: { type: 'string' },
+        },
+      },
+      render: (_a, v) => [{ type: 'text', text: v.summary }],
+    },
+    async execute(args, exec) {
+      const { res, ids } = requireRanked()
+      const maxPairs = Math.max(1, Math.min(args.max_pairs ?? 12, 40))
+
+      // 只比较**影响名单**的对：入选边界附近、且同组的。
+      const selected = new Set(res.selected)
+      const rank = new Map(res.ranking.map((n, i) => [n, i]))
+      const byFam = new Map<number, string[]>()
+      for (const n of res.ranking) {
+        const f = res.families[n]
+        if (!byFam.has(f)) byFam.set(f, [])
+        byFam.get(f)!.push(n)
+      }
+      const pairs: Array<[string, string]> = []
+      for (const [, members] of byFam) {
+        if (members.length < 2) continue
+        const inSel = members.filter((m) => selected.has(m))
+        const outSel = members.filter((m) => !selected.has(m))
+        // 组里已入选的最弱一张 vs 没入选的最强一张 —— 换掉它会直接改名单。
+        if (inSel.length && outSel.length) {
+          pairs.push([inSel[inSel.length - 1]!, outSel[0]!])
+        }
+      }
+      pairs.sort((x, y) => (rank.get(x[1]) ?? 0) - (rank.get(y[1]) ?? 0))
+      const use = pairs.slice(0, maxPairs)
+      if (!use.length) {
+        return {
+          pairs_compared: 0, calls_spent: 0,
+          summary: '没有找到值得比较的组内对（每个场景组要么只有一张，要么全入选/全落选）。没有花钱。',
+        }
+      }
+
+      try {
+        const names = [...new Set(use.flat())]
+        const { previews, missing } = await ranker.preview(
+          state.folder!, names, config.excludedRelativePaths, 512, exec.signal,
+        )
+        if (missing.length) {
+          throw new Error(`这些照片没有缓存预览，无法比较：${missing.map((n) => ids.id(n)).join(' ')}`)
+        }
+        const services: HarnessVisionServices = {
+          llm: ctx.get('llm') as unknown as HarnessVisionServices['llm'],
+          attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
+        }
+        const { verdicts, route } = await comparePairs(
+          use, previews, services, exec as unknown as HarnessVisionExecution,
+        )
+
+        const swaps: string[] = []
+        const lines = verdicts.map((v) => {
+          const inId = ids.id(v.a)
+          const outId = ids.id(v.b)
+          if (v.winner === 'b') swaps.push(`${outId} 换掉 ${inId}`)
+          const mark = v.winner === 'a' ? '维持原判' : v.winner === 'b' ? '⇄ 建议换' : '平局'
+          return `  ${inId}（已入选） vs ${outId}（未入选）  →  ${mark}\n      ${v.reason}`
+        }).join('\n')
+
+        const flips = verdicts.filter((v) => v.winner === 'b').length
+        const ties = verdicts.filter((v) => v.winner === 'tie').length
+        const inconsistent = verdicts.filter((v) => !v.consistent && v.reason.includes('不一致')).length
+        return {
+          pairs_compared: verdicts.length,
+          calls_spent: verdicts.length * 2,
+          summary:
+            `组内成对比较完成：${verdicts.length} 对，**花了 ${verdicts.length * 2} 次付费调用**` +
+            `（每对正反各问一次）。模型路由 ${route}。\n\n` +
+            lines + `\n\n` +
+            `结果：维持原判 ${verdicts.length - flips - ties} 对 · 建议换 ${flips} 对 · 平局 ${ties} 对` +
+            `（其中 ${inconsistent} 对是正反答案不一致被判平局 —— 位置偏好是真实存在的，单向结果不可信）。\n` +
+            (swaps.length
+              ? `\n建议的调整：${swaps.join('，')}。要不要我按这个改名单？`
+              : `\n没有建议调整 —— 本地排序在这些边界上的判断，模型也同意。`),
+        }
+      } catch (e) { fail(e) }
+    },
+  }))
+
+  // ── 工具 7：导出（两步确认，只复制）─────────────────────────
   ctx.tools.register(defineTool({
     name: 'export_selection',
     description:

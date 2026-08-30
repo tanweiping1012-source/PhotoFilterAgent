@@ -88,14 +88,18 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
                 cfg.engine_workdir or (cfg.cache_dir / 'engine'),
                 cache_key=fp,      # 按数据集指纹缓存 —— Vision 的分数不是确定性的
             )
-            quality['vision_face'] = {k: v for k, v in facts.face_quality.items() if k in set(names)}
+            nameset = set(names)
+            quality['vision_face'] = {k: v for k, v in facts.face_quality.items() if k in nameset}
+            quality['big_face'] = facts.big_face & nameset
             if cfg.block_closed_eyes:
                 blocked = facts.closed_eyes & set(names)
         except EligibilityUnavailable as e:
             # 静默跳过是危险的：用户以为有资格门保护时必须知道它没生效。
             eligibility_note = f'本地分析引擎不可用，资格门与人脸质量都**没有生效**：{e}'
 
-    cold_raw, cold_strategy = cold_start_score(quality, names, cfg.cold_strategy, cfg.style)
+    cold_raw, cold_strategy = cold_start_score(
+        quality, names, cfg.cold_strategy, cfg.style, cfg.stratify_by_face_size,
+    )
     cold = zscore(cold_raw)
 
     # --- 决定用哪种打分模式 ---

@@ -170,9 +170,26 @@ def mood_score(quality: dict, names: list[str]) -> tuple[np.ndarray, str]:
     return 1.0 - lai, "mood"
 
 
+def stratified_face_rank(
+    vf: dict[str, float], names: list[str], big: set[str]
+) -> np.ndarray:
+    """按人脸大小分层，各组内部各算百分位。见 config.py 的 stratify_by_face_size。
+
+    修的是 Apple Vision 人脸质量对小脸的系统性低估（中位 33 vs 56）。
+    """
+    out = np.full(len(names), -1.0)
+    for group in (big, set(names) - big):
+        idx = [i for i, n in enumerate(names) if n in group and n in vf]
+        if len(idx) > 1:
+            out[idx] = _rank(np.array([vf[names[i]] for i in idx]))
+        elif idx:
+            out[idx[0]] = 0.5
+    return out
+
+
 def cold_start_score(
     quality: dict[str, dict[str, float]], names: list[str], strategy: str = "auto",
-    style: str = "quality",
+    style: str = "quality", stratify: bool = False,
 ) -> tuple[np.ndarray, str]:
     """返回 (分数, 实际用的策略)。
 
@@ -189,6 +206,9 @@ def cold_start_score(
             # 实测 20/20 金标全部检出人脸，30 张无脸照里金标 0 张。
             # AUC 0.723 → 0.744。⚠️ 但**交付一张没变**（4,4,3,3,4 五次扫描完全相同）——
             # 那 30 张本来就进不了前 20，这是正确性改进不是效果改进，别当成绩报。
+            big = set(quality.get("big_face") or ())
+            if stratify and big:
+                return stratified_face_rank(vf, names, big), resolved + "+stratified"
             out = np.full(len(names), -1.0)
             out[have] = _rank(np.array([vf[names[i]] for i in have]))
             return out, resolved

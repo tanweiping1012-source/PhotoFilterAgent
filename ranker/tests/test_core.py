@@ -399,3 +399,30 @@ def test_人像池里无脸照片排最后而不是中位():
     s, used = cold_start_score(q, list("abcd"), "auto")
     assert used == "vision_face"
     assert s[3] < min(s[0], s[1], s[2]), "无脸的必须排在所有有脸的后面"
+
+
+def test_人脸分层_默认关且能打开():
+    """Apple Vision 的人脸质量对小脸系统性低估（中位 33 vs 56），
+    分层能修好；但它是精度/召回权衡：K=20 略差（3.2 vs 3.6），K=50 接近两倍好。
+    产品默认要 20 张，所以默认关。"""
+    from pathlib import Path as _P
+    from photofilter_rank.config import RankConfig
+    from photofilter_rank.quality import cold_start_score
+    assert RankConfig(folder=_P('/tmp')).stratify_by_face_size is False
+    q = _q(("a", "b", "c", "d"))
+    q["vision_face"] = {"a": 60, "b": 58, "c": 30, "d": 28}   # a,b 大脸高分；c,d 小脸低分
+    q["big_face"] = {"a", "b"}
+    flat, _ = cold_start_score(q, list("abcd"), "auto", stratify=False)
+    strat, used = cold_start_score(q, list("abcd"), "auto", stratify=True)
+    assert used.endswith("+stratified")
+    assert list(np.argsort(-flat)) == [0, 1, 2, 3], "平铺时大脸全部在前"
+    # 分层后每组内部各自排百分位，小脸组的第一名不再被整体压在后面
+    assert strat[2] > flat[2], "小脸组的最好一张应该被提上来"
+
+
+def test_人脸分层_拿不到大脸标记时安全降级():
+    from photofilter_rank.quality import cold_start_score
+    q = _q(("a", "b", "c", "d"))
+    q["vision_face"] = {"a": 60, "b": 58, "c": 30, "d": 28}
+    s, used = cold_start_score(q, list("abcd"), "auto", stratify=True)   # 没有 big_face
+    assert used == "vision_face", "没有大脸标记就退回普通排序，不报错"
