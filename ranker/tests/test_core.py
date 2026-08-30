@@ -273,15 +273,15 @@ def test_资格门_引擎缺失时报错而不是静默跳过():
         engine_facts(Path('/tmp'), Path('/nonexistent/photofilter'), Path('/tmp/wd'))
 
 
-def test_冷启动_有引擎时用vision_face没有时降级():
-    """两个数据集给出相反的偏好（0.723/0.571 vs 0.606/0.685），均值几乎打平。
-    默认选 vision_face 的唯一理由是证据强度：数据集① 有 20 张金标，② 只有 4 张。
-    这不是一个有把握的选择。"""
+def test_人像默认用topiq而不是AppleVision():
+    """中途把默认换成 Apple Vision（AUC 0.729 > topiq 0.606），是错的。
+    跨 5 次扫描的交付实测：topiq 4.0（5/5 显著、确定性），Vision 3.4（2/5、有噪声）；
+    换到第二个数据集更是反过来（topiq 0.732 / Vision 0.455）。
+    错在用 AUC 当判据 —— 在这之前已经四次记录过「AUC 和交付会背离」。"""
     q = _q(("a", "b", "c", "d"))
     q["vision_face"] = {"a": 61, "b": 38, "c": 50, "d": 44}
-    assert choose_cold_strategy(q, list("abcd"), "auto") == "vision_face"
-    assert choose_cold_strategy(_q(("a", "b", "c", "d")), list("abcd"), "auto") == "face", \
-        "拿不到引擎数据时降级到 topiq"
+    assert choose_cold_strategy(q, list("abcd"), "auto") == "face", "有 Vision 数据也不用"
+    assert choose_cold_strategy(q, list("abcd"), "vision_face") == "vision_face", "显式指定仍可用"
 
 
 def test_资格门默认开启():
@@ -376,8 +376,8 @@ def test_两种风格给出不同的排序():
     q = _q(("a", "b", "c", "d"))
     q["laion_aes"] = {"a": 4.1, "b": 6.8, "c": 5.0, "d": 5.5}
     q["vision_face"] = {"a": 20, "b": 70, "c": 40, "d": 55}   # 与 laion_aes 同序
-    sq, uq = cold_start_score(q, list("abcd"), "auto", style="quality")
-    sm, um = cold_start_score(q, list("abcd"), "auto", style="mood")
+    sq, uq = cold_start_score(q, list("abcd"), "vision_face", style="quality")
+    sm, um = cold_start_score(q, list("abcd"), "vision_face", style="mood")
     assert uq == "vision_face" and um == "mood"
     assert list(np.argsort(-sq)) == list(np.argsort(-sm))[::-1], "两种风格应该给出相反的顺序"
 
@@ -396,7 +396,7 @@ def test_人像池里无脸照片排最后而不是中位():
     from photofilter_rank.quality import cold_start_score
     q = _q(("a", "b", "c", "d"))
     q["vision_face"] = {"a": 61, "b": 38, "c": 50}      # d 没有脸
-    s, used = cold_start_score(q, list("abcd"), "auto")
+    s, used = cold_start_score(q, list("abcd"), "vision_face")   # 默认已改为 face，这里显式指定
     assert used == "vision_face"
     assert s[3] < min(s[0], s[1], s[2]), "无脸的必须排在所有有脸的后面"
 
@@ -412,8 +412,8 @@ def test_人脸分层_默认关且能打开():
     q = _q(("a", "b", "c", "d"))
     q["vision_face"] = {"a": 60, "b": 58, "c": 30, "d": 28}   # a,b 大脸高分；c,d 小脸低分
     q["big_face"] = {"a", "b"}
-    flat, _ = cold_start_score(q, list("abcd"), "auto", stratify=False)
-    strat, used = cold_start_score(q, list("abcd"), "auto", stratify=True)
+    flat, _ = cold_start_score(q, list("abcd"), "vision_face", stratify=False)
+    strat, used = cold_start_score(q, list("abcd"), "vision_face", stratify=True)
     assert used.endswith("+stratified")
     assert list(np.argsort(-flat)) == [0, 1, 2, 3], "平铺时大脸全部在前"
     # 分层后每组内部各自排百分位，小脸组的第一名不再被整体压在后面
@@ -424,5 +424,6 @@ def test_人脸分层_拿不到大脸标记时安全降级():
     from photofilter_rank.quality import cold_start_score
     q = _q(("a", "b", "c", "d"))
     q["vision_face"] = {"a": 60, "b": 58, "c": 30, "d": 28}
-    s, used = cold_start_score(q, list("abcd"), "auto", stratify=True)   # 没有 big_face
+    s, used = cold_start_score(q, list("abcd"), "vision_face", stratify=True)   # 没有 big_face
     assert used == "vision_face", "没有大脸标记就退回普通排序，不报错"
+

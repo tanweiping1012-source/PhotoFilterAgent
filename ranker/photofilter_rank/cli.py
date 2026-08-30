@@ -29,7 +29,7 @@ def _common(p: argparse.ArgumentParser) -> None:
                         "K=20 时略差（3.2 vs 3.6），K=50 时接近两倍好（9.4 vs 4.8）")
     p.add_argument("--style", default="quality", choices=["quality", "mood"],
                    help="quality=挑拍得清楚好看的（默认）；mood=挑有氛围的（把美学分翻转）")
-    p.add_argument("--cold", default="auto", choices=["auto", "face", "laion_aes", "blend"],
+    p.add_argument("--cold", default="auto", choices=["auto", "vision_face", "face", "laion_aes", "blend"],
                    help="冷启动用哪个指标；blend 只为复现「融合更差」的结论，不推荐")
     p.add_argument("--quiet", action="store_true")
 
