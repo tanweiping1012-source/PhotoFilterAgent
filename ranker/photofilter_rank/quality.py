@@ -144,6 +144,9 @@ def choose_cold_strategy(quality: dict, names: list[str], configured: str) -> st
         rate = sum(1 for n in names if n in quality["face"]) / max(len(names), 1)
     if rate < 0.6:
         return "laion_aes"
+    # 人像池默认 vision_face。两个数据集给出相反的偏好、均值几乎打平，
+    # 选它的唯一理由是证据强度：数据集① 有 20 张金标，数据集② 只有 4 张。
+    # 拿不到引擎时降级到 topiq_nr-face。
     return "vision_face" if quality.get("vision_face") else "face"
 
 
