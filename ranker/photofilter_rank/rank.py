@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import RankConfig
-from .dedupe import group_by_similarity, select_with_cap, suggest_threshold
+from .dedupe import group_by_similarity, select_spread, select_with_cap, suggest_threshold
 from .eligibility import EligibilityUnavailable, engine_facts
 from .embed import embed_photos
 from .quality import cold_start_score, local_quality, zscore
@@ -191,9 +191,13 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
     # 闭眼照留在候选池里（不影响分数与统计），只是不进最终名单。
     eligible = [i for i in order if names[i] not in blocked]
 
-    picked, cap_note = select_with_cap(
-        eligible, families, min(cfg.target, len(eligible)), cfg.family_cap,
-    )
+    k = min(cfg.target, len(eligible))
+    if cfg.time_segments > 0:
+        picked, cap_note = select_spread(
+            eligible, families, len(names), k, cfg.family_cap, cfg.time_segments,
+        )
+    else:
+        picked, cap_note = select_with_cap(eligible, families, k, cfg.family_cap)
 
     notes = {
         **cap_note,

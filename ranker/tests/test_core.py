@@ -450,3 +450,41 @@ def test_风景池必须警告没有验证过的信号():
     assert choose_cold_strategy(landscape, ["a"], "auto") == "laion_aes"
     portrait = _q(("a", "b", "c", "d"))          # face_detect_rate = 1.0
     assert choose_cold_strategy(portrait, list("abcd"), "auto") == "face"
+
+
+def test_时间段配额_把选片摊开():
+    """用户自己是「每段各挑几张」（最挤 10% 窗口 5/20 = 随机期望），
+    排序器是「把最好的一段整段端走」（14/20）。挤在一段里等于自己砍掉覆盖面。"""
+    from photofilter_rank.dedupe import select_spread
+    # 100 张，分数最高的全挤在前 10 张
+    order = list(range(100))
+    fams = list(range(100))          # 每张自成一组，排除同组上限的干扰
+    picked, note = select_spread(order, fams, 100, 10, family_cap=2, segments=10)
+    assert len(picked) == 10
+    segs = {min(i * 10 // 100, 9) for i in picked}
+    assert len(segs) == 10, f"目标 10 张、切 10 段 → 每段各 1 张，实际覆盖 {len(segs)} 段"
+    assert note["segment_cap"] == 1, "下限必须是 1 不是 2，否则前几段会各拿 2 张"
+    assert max(picked) >= 90, f"必须跨到最后一段，实际最大 {max(picked)}"
+    # 不加配额时会全部挤在最前面
+    from photofilter_rank.dedupe import select_with_cap
+    flat, _ = select_with_cap(order, fams, 10, 2)
+    assert flat == list(range(10)), "对照：不加配额就是前 10 张，全挤在第 1 段"
+
+
+def test_时间段配额_凑不满时放开而不是失败():
+    """用户要 N 张就该拿到 N 张。段配额是软约束，同组上限才是硬的。"""
+    from photofilter_rank.dedupe import select_spread
+    # 同组上限是硬约束：12 张全在一组，只能出 2 张，段配额放开也救不回来
+    picked, note = select_spread(list(range(12)), [0] * 12, 12, 10, family_cap=2, segments=10)
+    assert len(picked) == 2, "同组上限是硬约束，不因为凑不满就放开"
+    assert note["segments_relaxed"] == 1, "应该尝试过放开段配额"
+    # 段配额是软约束：候选够多时正常拿满
+    picked2, _ = select_spread(list(range(12)), list(range(12)), 12, 10, family_cap=2, segments=10)
+    assert len(picked2) == 10, "用户要 10 张就该拿到 10 张"
+
+
+def test_时间段配额_可以关掉():
+    from pathlib import Path as _P
+    from photofilter_rank.config import RankConfig
+    assert RankConfig(folder=_P('/tmp')).time_segments == 10
+    assert RankConfig(folder=_P('/tmp'), time_segments=0).time_segments == 0
