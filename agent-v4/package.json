@@ -1,6 +1,6 @@
 {
   "name": "@photo-filter-agent/dsh-photo-filter-v4",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "照片筛选 v4：本地确定性排序器接成 DeepSeek Harness 工具，零付费视觉调用",
