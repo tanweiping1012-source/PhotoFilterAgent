@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "photofilter-rank"
-version = "0.9.1"
+version = "0.9.2"
 description = "本地优先的照片排序：CLIP embedding + 个人口味探针，零付费调用"
 requires-python = ">=3.9"
 dependencies = ["numpy>=1.24", "pillow>=10.0", "torch>=2.2", "pyiqa>=0.1.15"]
