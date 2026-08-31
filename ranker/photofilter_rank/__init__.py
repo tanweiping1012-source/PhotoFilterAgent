@@ -8,7 +8,7 @@
 所以 v4 把排序主干放在本地，视觉大模型只做它擅长的否决判断。
 """
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 from .config import RankConfig
 from .rank import rank_folder

@@ -358,7 +358,7 @@ export function apply(ctx: Context, config: Config): void {
           `实测个人口味探针在交付的前 20 张上没有可测收益：融合后 AUC 从 0.714 升到 0.754，` +
           `但交付命中从 1.83 降到 1.57，30 次随机划分里融合只赢 7 次、打平 13 次、落后 10 次。` +
           `AUC 变好而头部没变好 —— 这和之前融合两个通用美学指标时是同一个模式。\n\n` +
-          `所以不要承诺「标了就会更准」。当前排序用的是 Apple Vision 人脸质量（AUC 0.723）。\n` +
+          `所以不要承诺「标了就会更准」。当前排序用的是本机人脸质量模型，确定性、不花钱。\n` +
           `下一步：重新调用 rank_photos（结果不会因为这些标注而改变）。`,
       }
     },
@@ -419,8 +419,8 @@ export function apply(ctx: Context, config: Config): void {
             `  候选 ${r.n_total} 张 · 耗时 ${r.elapsed_sec}s · **付费调用 0 次**` + trained + gap + `\n\n` +
             `对照 v3（997 次付费调用、同一批照片）：AUC 0.497、交付 3/20、p=0.130 不显著。\n` +
             `⚠️ 上面这一行是历史定值；v4 的成绩以**本次运行实测**为准，不要引用记忆里的数字。\n` +
-            `已知 v4 的交付在 3~4/20 之间波动（Apple Vision 的人脸质量本身不确定，` +
-            `五次扫描实测 4,4,3,3,4，只有三次过 p<0.05）。所以不要说「v4 完胜 v3」——` +
+            `v4 的默认打分器是确定性的（同一批照片每次跑都是同一份名单）。` +
+            `所以不要说「v4 完胜 v3」——` +
             `确定的优势是 0 次付费调用、秒级、结果可复现。`,
         }
       } catch (e) { fail(e) }
@@ -534,9 +534,12 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'export_selection',
     description:
-      '把选中的照片**复制**到一个新文件夹。绝不移动、删除、改名或写回原图。' +
-      '必须两步：第一次调用只冻结名单并返回确认码；用户在新消息里明确回复确认码后，' +
-      '才带 confirmation_code 调用第二次。Agent 不得自行补出确认码。',
+      '把选中的照片**复制**到一个新文件夹。绝不移动、删除、改名或写回原图。\n' +
+      '**两步流程，而且确认码只能由本工具生成：**\n' +
+      '① 不带 confirmation_code 调用一次 → 本工具冻结名单并返回一个 6 位十六进制确认码。\n' +
+      '② 把那个码原样转达给用户，等他在新消息里回复，再带 confirmation_code 调用第二次。\n' +
+      '⚠️ **你不能自己编一个码。** 想告诉用户确认码，就必须先调用本工具拿到它 —— ' +
+      '编造的码在第二步会被拒绝（「没有待确认的导出票据」），用户会白等一轮。',
     parameters: {
       dest: { type: 'string', required: true, description: '目标目录的绝对路径' },
       confirmation_code: { type: 'string', description: '第二次调用时传入用户回复的确认码' },
@@ -566,7 +569,8 @@ export function apply(ctx: Context, config: Config): void {
           summary:
             `名单已冻结：${res.selected.length} 张（${res.selected.map((n) => ids.id(n)).join(' ')}）\n` +
             `目标目录：${dest}\n\n` +
-            `确认码 **${code}**。请在一条新消息里回复「确认导出 ${code}」，我才会执行复制。\n` +
+            `确认码 **${code}** ← 这是本工具刚生成的，原样转达给用户，不要改写。\n` +
+            `请用户在一条新消息里回复「确认导出 ${code}」，然后你才带 confirmation_code 再调一次。\n` +
             `导出只做复制，原图不移动、不删除、不改名、不写回。`,
         }
       }
