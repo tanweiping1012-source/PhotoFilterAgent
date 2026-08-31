@@ -152,6 +152,19 @@ def choose_cold_strategy(quality: dict, names: list[str], configured: str) -> st
     if rate is None:
         rate = sum(1 for n in names if n in quality["face"]) / max(len(names), 1)
     if rate < 0.6:
+        # 风景池：**没有任何本地指标能用。** 实测 161 张风景 + 14 张人工精选，
+        # 6 个通用美学模型（含翻转）AUC 全部落在 0.46–0.55：
+        #
+        #     clipiqa+ 0.545 · musiq-ava 0.536 · topiq_iaa 0.522
+        #     laion_aes 0.511 · nima 0.471 · liqe 0.463
+        #
+        # 对比人像的 0.606（交付 4/20，p=0.032）。差别在于人像有一个**任务对口的
+        # 窄模型**（Apple 的人脸拍摄质量，学的就是「同一张脸哪次拍得更好」），
+        # 风景没有任何等价物 —— 只有「大众觉得好不好看」，而那跟这个用户的
+        # 风景口味不相关。
+        #
+        # 仍然返回 laion_aes（总得给个顺序），但 rank_folder 会加一条警告：
+        # 给用户一份随机排序却包装成「精选」，比诚实地说「这一档没验证过」更糟。
         return "laion_aes"
     # 人像池默认 face（topiq_nr-face），**不是** Apple Vision ——
     # 见下面「一次被自己数据推翻的默认值」。

@@ -102,6 +102,15 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
     )
     cold = zscore(cold_raw)
 
+    # 风景池没有任何经过验证的本地信号 —— 必须说出来。
+    # 实测 161 张风景 + 14 张人工精选：6 个通用美学模型（含翻转）AUC 全在
+    # 0.46–0.55，即随机。给用户一份随机排序却包装成「精选」，
+    # 比诚实地说「这一档没验证过」更糟。
+    unvalidated_domain = (
+        cold_strategy == "laion_aes"
+        and quality.get("face_detect_rate", 1.0) < 0.6
+    )
+
     # --- 决定用哪种打分模式 ---
     labels = _load_labels(cfg.labels, names)
     idx = {n: i for i, n in enumerate(names)}
@@ -194,6 +203,7 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
         "label_concentration": round(concentration, 3) if concentration is not None else None,
         "n_families": len(set(families)),
         "cold_strategy": cold_strategy,
+        "unvalidated_domain": unvalidated_domain,
         "style": cfg.style,
         "face_detect_rate": round(quality.get("face_detect_rate", float("nan")), 3),
         "labels_used": labels,
@@ -206,6 +216,15 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
             (np.triu(X @ X.T, 1) >= suggest_threshold(X, cfg.dup_percentile, cfg.cosine_floor)).sum()
         ),
     }
+    if unvalidated_domain:
+        warnings.append(
+            "⚠️ 这批照片里几乎没有人脸，属于**风景/静物**。"
+            "本项目在风景上**没有任何经过验证的信号**：实测 161 张风景 + 14 张人工精选，"
+            "6 个通用美学模型（clipiqa+/musiq-ava/topiq_iaa/laion_aes/nima/liqe，含翻转）"
+            "AUC 全部落在 0.46–0.55，也就是掷硬币。"
+            "下面这份名单按 laion_aes 排出来，**请当成一个任意顺序，不要当成精选**。"
+            "（人像那一档是验证过的：AUC 0.606、交付 4/20、p=0.032。）"
+        )
     if eligibility_note:
         warnings.append(eligibility_note)
         notes['warnings'] = warnings
