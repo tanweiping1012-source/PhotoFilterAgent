@@ -144,6 +144,11 @@ class RankConfig:
     dup_percentile: float = 99.5         # 近重复
     cosine_floor: float = 0.90           # 分位数再低也不低于此值
     family_cap: int = 2                  # 同一组最多入选几张
+    # 时间段配额：把池子按文件名顺序切成几段，每段最多入选 ceil(target/段数) 张。
+    # 修的是「排序器把最好的一段整段端走」——用户自己是每段各挑几张。
+    # 实测两个数据集、四个 K 没有一处输，且让风景第一次过了显著线。见 dedupe.select_spread。
+    # 设 0 关闭。
+    time_segments: int = 10
 
     # --- 资格门（本机免费，见 eligibility.py）---
     #

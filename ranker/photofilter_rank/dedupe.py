@@ -103,3 +103,67 @@ def select_with_cap(
         if used_cap >= max(len(order), 1):
             return picked, {"family_cap_used": used_cap, "relaxed": used_cap - cap}
         used_cap += 1
+
+
+def select_spread(
+    order: list[int], families: list[int], n_photos: int, target: int,
+    family_cap: int, segments: int,
+) -> tuple[list[int], dict[str, int]]:
+    """在同组上限之外，再加一层**时间段配额**。
+
+    ━━ 为什么需要它 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    用户自己挑片是「每一段各挑几张」，排序器是「把最好的那一段整段端走」：
+
+        用户挑的 20 张    最挤的 10% 窗口 5/20（= 随机期望），覆盖跨度 94%
+        排序器挑的 20 张  最挤的 10% 窗口 14/20              ← 挤在一段里
+
+    这不是打分准不准的问题，是**选片结构**跟用户的行为不匹配。
+    而且挤在一段里等于自己砍掉了覆盖面 —— 弱信号只能作用在池子的一小部分上。
+
+    ━━ 实测（两个数据集，四个 K，没有一处输）━━━━━━━━━━━━━━━━━━━━━━━
+
+        K      人像现状          人像配额          风景现状        风景配额
+        10   3/20 p=.021     3/20 p=.021     1/14 p=.608   1/14 p=.608
+        20   4/20 p=.032     5/20 p=.006     3/14 p=.243   5/14 p=.017 ✅
+        30   4/20 p=.116     6/20 p=.007     4/14 p=.249   5/14 p=.093
+        50   5/20 p=.207    10/20 p<.001     5/14 p=.451   5/14 p=.451
+
+    风景那一列尤其说明问题：所有指标在风景上都等于随机（AUC 0.46–0.55），
+    但**只靠把选片摊开**，K=20 就第一次过了显著线。
+
+    ━━ 一个前提 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    「段」是按**文件名顺序**切的，对相机输出等价于按时间切。
+    如果照片被重命名过、或来自多台设备混合，这个代理就不成立。
+    """
+    n_seg = max(1, segments)
+    # 下限必须是 1 不是 2：目标 10 张、切 10 段时，cap=2 会让前 5 段各拿 2 张、
+    # 后 5 段一张不拿 —— 那正好是这个机制要修的毛病。
+    seg_cap = max(1, -(-target // n_seg))          # 向上取整
+    picked: list[int] = []
+    fam_count: dict[int, int] = {}
+    seg_count: dict[int, int] = {}
+    for idx in order:
+        fam = families[idx]
+        seg = min(idx * n_seg // max(n_photos, 1), n_seg - 1)
+        if fam_count.get(fam, 0) >= family_cap or seg_count.get(seg, 0) >= seg_cap:
+            continue
+        picked.append(idx)
+        fam_count[fam] = fam_count.get(fam, 0) + 1
+        seg_count[seg] = seg_count.get(seg, 0) + 1
+        if len(picked) == target:
+            return picked, {"family_cap_used": family_cap, "relaxed": 0,
+                            "segment_cap": seg_cap, "segments_relaxed": 0}
+
+    # 段配额凑不满就放开它（只保留同组上限）—— 用户要 N 张就该拿到 N 张。
+    chosen = set(picked)
+    for idx in order:
+        if idx in chosen or fam_count.get(families[idx], 0) >= family_cap:
+            continue
+        picked.append(idx)
+        fam_count[families[idx]] = fam_count.get(families[idx], 0) + 1
+        if len(picked) == target:
+            break
+    return picked, {"family_cap_used": family_cap, "relaxed": 0,
+                    "segment_cap": seg_cap, "segments_relaxed": 1}
