@@ -94,6 +94,14 @@ def engine_facts(
     v4 的核心主张是「排序是确定性函数」。所以这里必须缓存：
     同一个数据集指纹只扫一次，之后永远复用。
     """
+    # 每个数据集用自己的子目录 —— 必须在读缓存之前就切过去。
+    #
+    # 踩过的坑：facts 按指纹存，但引擎每次扫描都会把 index.json 写在 workdir 根下，
+    # 后一个数据集会覆盖前一个。单看 engine_facts 内部是自洽的（写完立刻读），
+    # 但两个数据集并发扫描就会互相污染，而且任何后续想按引擎 ID 取预览的代码
+    # 都会拿到错的映射。按指纹分目录，从结构上消掉这个隐患。
+    workdir = workdir / (cache_key or "shared")
+
     if cache_key:
         cached = workdir / f'facts-{cache_key}.json'
         if cached.exists():
@@ -103,6 +111,7 @@ def engine_facts(
                                set(d.get('big_face') or ()))
     if not engine.exists():
         raise EligibilityUnavailable(f"本地分析引擎不存在：{engine}")
+
     workdir.mkdir(parents=True, exist_ok=True)
     try:
         out = subprocess.run(

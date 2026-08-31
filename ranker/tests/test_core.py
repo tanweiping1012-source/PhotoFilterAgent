@@ -316,17 +316,30 @@ def test_分组_必须与打分无关():
     assert len(set(shuffled)) > 0
 
 
-def test_引擎结果必须按指纹缓存(tmp_path):
-    """Apple Vision 的人脸质量不是确定性的（实测 106/280 张两次扫描分数不同）。
-    v4 的核心主张是「排序是确定性函数」，所以必须缓存 —— 同一个数据集只扫一次。"""
+def test_引擎结果按指纹缓存且各数据集分目录(tmp_path):
+    """两件事一起钉住：
+
+    ① **必须缓存** —— Apple Vision 的人脸质量不是确定性的（实测同一批扫两遍
+       106/280 张分数不同），而「排序是确定性函数」是 v4 的核心主张。
+    ② **必须按指纹分目录** —— 引擎每次扫描都把 index.json 写在 workdir 根下，
+       共用一个目录时后一个数据集会覆盖前一个的映射。
+    """
     import json as _json
-    from photofilter_rank.eligibility import EngineFacts, engine_facts
-    wd = tmp_path / 'wd'; wd.mkdir()
-    (wd / 'facts-abc123.json').write_text(
+    from photofilter_rank.eligibility import engine_facts
+    wd = tmp_path / 'wd'
+    (wd / 'abc123').mkdir(parents=True)
+    (wd / 'abc123' / 'facts-abc123.json').write_text(
         _json.dumps({'closed_eyes': ['x.jpg'], 'face_quality': {'y.jpg': 55}}))
-    # 引擎路径是假的：命中缓存就不该去调它
+    # 传的是 wd 根；实现应自己下钻到 wd/abc123，因此命中缓存、不去调那个假引擎
     f = engine_facts(tmp_path, tmp_path / 'no-such-binary', wd, cache_key='abc123')
     assert f.closed_eyes == {'x.jpg'} and f.face_quality == {'y.jpg': 55}
+    # 另一个指纹不该读到它
+    (wd / 'other').mkdir()
+    try:
+        engine_facts(tmp_path, tmp_path / 'no-such-binary', wd, cache_key='other')
+        raise AssertionError('不同指纹不该命中别人的缓存')
+    except Exception as e:
+        assert '不存在' in str(e), f'应该因为引擎不存在而报错，实际：{e}'
 
 
 def test_探针权重_随标注数上升且永不到1():
