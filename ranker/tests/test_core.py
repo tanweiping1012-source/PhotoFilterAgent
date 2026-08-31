@@ -427,3 +427,13 @@ def test_人脸分层_拿不到大脸标记时安全降级():
     s, used = cold_start_score(q, list("abcd"), "vision_face", stratify=True)   # 没有 big_face
     assert used == "vision_face", "没有大脸标记就退回普通排序，不报错"
 
+
+
+def test_风景池必须警告没有验证过的信号():
+    """实测 161 张风景 + 14 张人工精选：6 个通用美学模型（含翻转）AUC 全在
+    0.46–0.55，即随机。给用户一份随机排序却包装成「精选」，比诚实说「没验证过」更糟。"""
+    from photofilter_rank.quality import choose_cold_strategy
+    landscape = {"laion_aes": {"a": 1.0}, "face": {}, "face_detect_rate": 0.0}
+    assert choose_cold_strategy(landscape, ["a"], "auto") == "laion_aes"
+    portrait = _q(("a", "b", "c", "d"))          # face_detect_rate = 1.0
+    assert choose_cold_strategy(portrait, list("abcd"), "auto") == "face"
