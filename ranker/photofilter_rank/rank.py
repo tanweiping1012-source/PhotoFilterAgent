@@ -227,7 +227,7 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
             "6 个通用美学模型（clipiqa+/musiq-ava/topiq_iaa/laion_aes/nima/liqe，含翻转）"
             "AUC 全部落在 0.46–0.55，也就是掷硬币。"
             "下面这份名单按 laion_aes 排出来，**请当成一个任意顺序，不要当成精选**。"
-            "（人像那一档是验证过的：AUC 0.606、交付 4/20、p=0.032。）"
+            "（人像那一档是验证过的：AUC 0.606、交付 5/20、p=0.0056。）"
         )
     if eligibility_note:
         warnings.append(eligibility_note)
