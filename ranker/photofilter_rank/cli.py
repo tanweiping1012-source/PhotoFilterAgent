@@ -24,9 +24,12 @@ def _common(p: argparse.ArgumentParser) -> None:
                    help="Swift 本地分析引擎路径，用于闭眼资格门（不给则资格门不生效并报告）")
     p.add_argument("--no-eligibility", action="store_true",
                    help="关掉闭眼资格门。实测关掉后 20 张里有 6 张闭眼，而用户自己一张不选")
+    p.add_argument("--stratify", action="store_true",
+                   help="按人脸大小分层排序。修 Apple Vision 对小脸的系统性低估；"
+                        "K=20 时略差（3.2 vs 3.6），K=50 时接近两倍好（9.4 vs 4.8）")
     p.add_argument("--style", default="quality", choices=["quality", "mood"],
                    help="quality=挑拍得清楚好看的（默认）；mood=挑有氛围的（把美学分翻转）")
-    p.add_argument("--cold", default="auto", choices=["auto", "face", "laion_aes", "blend"],
+    p.add_argument("--cold", default="auto", choices=["auto", "vision_face", "face", "laion_aes", "blend"],
                    help="冷启动用哪个指标；blend 只为复现「融合更差」的结论，不推荐")
     p.add_argument("--quiet", action="store_true")
 
@@ -43,6 +46,7 @@ def _cfg(a) -> "RankConfig":
         device=a.device,
         cold_strategy=getattr(a, "cold", "auto"),
         style=getattr(a, "style", "quality"),
+        stratify_by_face_size=getattr(a, "stratify", False),
         block_closed_eyes=not getattr(a, "no_eligibility", False),
         engine_binary=getattr(a, "engine", None),
     )
@@ -55,6 +59,12 @@ def main(argv: list[str] | None = None) -> int:
     p_scan = sub.add_parser("scan", help="只做本地扫描：数量、指纹、人脸检出率（最快，不算向量）")
     _common(p_scan)
     p_scan.add_argument("--json", type=Path, default=None)
+
+    p_prev = sub.add_parser("preview", help="给指定照片生成无元数据的小图（base64），供成对比较用")
+    _common(p_prev)
+    p_prev.add_argument("--names", nargs="+", required=True, help="要出图的文件名")
+    p_prev.add_argument("--size", type=int, default=512, help="最长边像素（默认 512）")
+    p_prev.add_argument("--json", type=Path, required=True)
 
     p_pick = sub.add_parser("pick", help="挑出最好的 N 张")
     _common(p_pick)
@@ -99,6 +109,38 @@ def main(argv: list[str] | None = None) -> int:
         if a.json:
             a.json.write_text(json.dumps(out, ensure_ascii=False))
             print(f"→ {a.json}")
+        return 0
+
+    if a.cmd == "preview":
+        # 只从**已建好的降采样缓存**再缩一次，绝不碰原图 ——
+        # 缓存本身已经剥掉了全部元数据（实测 EXIF 字段 0 个、无 GPS 标记）。
+        import base64
+        import hashlib
+        from io import BytesIO
+
+        from PIL import Image
+
+        from .scan import list_photos
+        photos = {p.name: p for p in list_photos(cfg.folder, cfg.exclude)}
+        out: dict[str, str] = {}
+        missing: list[str] = []
+        for name in a.names:
+            src = photos.get(name)
+            if src is None:
+                missing.append(name)
+                continue
+            key = hashlib.sha256(str(src).encode()).hexdigest()[:24] + ".jpg"
+            thumb = cfg.cache_dir / "thumbs" / key
+            if not thumb.exists():
+                missing.append(name)
+                continue
+            im = Image.open(thumb).convert("RGB")
+            im.thumbnail((a.size, a.size), Image.LANCZOS)
+            buf = BytesIO()
+            im.save(buf, "JPEG", quality=82)      # 与 v3 的 low 档一致
+            out[name] = base64.b64encode(buf.getvalue()).decode()
+        a.json.write_text(json.dumps({"previews": out, "missing": missing}, ensure_ascii=False))
+        print(f"生成 {len(out)} 张 {a.size}px 预览" + (f"，{len(missing)} 张缺失" if missing else ""))
         return 0
 
     if a.cmd == "pick":

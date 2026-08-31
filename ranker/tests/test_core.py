@@ -273,15 +273,15 @@ def test_资格门_引擎缺失时报错而不是静默跳过():
         engine_facts(Path('/tmp'), Path('/nonexistent/photofilter'), Path('/tmp/wd'))
 
 
-def test_冷启动_有引擎时用vision_face没有时降级():
-    """两个数据集给出相反的偏好（0.723/0.571 vs 0.606/0.685），均值几乎打平。
-    默认选 vision_face 的唯一理由是证据强度：数据集① 有 20 张金标，② 只有 4 张。
-    这不是一个有把握的选择。"""
+def test_人像默认用topiq而不是AppleVision():
+    """中途把默认换成 Apple Vision（AUC 0.729 > topiq 0.606），是错的。
+    跨 5 次扫描的交付实测：topiq 4.0（5/5 显著、确定性），Vision 3.4（2/5、有噪声）；
+    换到第二个数据集更是反过来（topiq 0.732 / Vision 0.455）。
+    错在用 AUC 当判据 —— 在这之前已经四次记录过「AUC 和交付会背离」。"""
     q = _q(("a", "b", "c", "d"))
     q["vision_face"] = {"a": 61, "b": 38, "c": 50, "d": 44}
-    assert choose_cold_strategy(q, list("abcd"), "auto") == "vision_face"
-    assert choose_cold_strategy(_q(("a", "b", "c", "d")), list("abcd"), "auto") == "face", \
-        "拿不到引擎数据时降级到 topiq"
+    assert choose_cold_strategy(q, list("abcd"), "auto") == "face", "有 Vision 数据也不用"
+    assert choose_cold_strategy(q, list("abcd"), "vision_face") == "vision_face", "显式指定仍可用"
 
 
 def test_资格门默认开启():
@@ -316,17 +316,30 @@ def test_分组_必须与打分无关():
     assert len(set(shuffled)) > 0
 
 
-def test_引擎结果必须按指纹缓存(tmp_path):
-    """Apple Vision 的人脸质量不是确定性的（实测 106/280 张两次扫描分数不同）。
-    v4 的核心主张是「排序是确定性函数」，所以必须缓存 —— 同一个数据集只扫一次。"""
+def test_引擎结果按指纹缓存且各数据集分目录(tmp_path):
+    """两件事一起钉住：
+
+    ① **必须缓存** —— Apple Vision 的人脸质量不是确定性的（实测同一批扫两遍
+       106/280 张分数不同），而「排序是确定性函数」是 v4 的核心主张。
+    ② **必须按指纹分目录** —— 引擎每次扫描都把 index.json 写在 workdir 根下，
+       共用一个目录时后一个数据集会覆盖前一个的映射。
+    """
     import json as _json
-    from photofilter_rank.eligibility import EngineFacts, engine_facts
-    wd = tmp_path / 'wd'; wd.mkdir()
-    (wd / 'facts-abc123.json').write_text(
+    from photofilter_rank.eligibility import engine_facts
+    wd = tmp_path / 'wd'
+    (wd / 'abc123').mkdir(parents=True)
+    (wd / 'abc123' / 'facts-abc123.json').write_text(
         _json.dumps({'closed_eyes': ['x.jpg'], 'face_quality': {'y.jpg': 55}}))
-    # 引擎路径是假的：命中缓存就不该去调它
+    # 传的是 wd 根；实现应自己下钻到 wd/abc123，因此命中缓存、不去调那个假引擎
     f = engine_facts(tmp_path, tmp_path / 'no-such-binary', wd, cache_key='abc123')
     assert f.closed_eyes == {'x.jpg'} and f.face_quality == {'y.jpg': 55}
+    # 另一个指纹不该读到它
+    (wd / 'other').mkdir()
+    try:
+        engine_facts(tmp_path, tmp_path / 'no-such-binary', wd, cache_key='other')
+        raise AssertionError('不同指纹不该命中别人的缓存')
+    except Exception as e:
+        assert '不存在' in str(e), f'应该因为引擎不存在而报错，实际：{e}'
 
 
 def test_探针权重_随标注数上升且永不到1():
@@ -376,8 +389,8 @@ def test_两种风格给出不同的排序():
     q = _q(("a", "b", "c", "d"))
     q["laion_aes"] = {"a": 4.1, "b": 6.8, "c": 5.0, "d": 5.5}
     q["vision_face"] = {"a": 20, "b": 70, "c": 40, "d": 55}   # 与 laion_aes 同序
-    sq, uq = cold_start_score(q, list("abcd"), "auto", style="quality")
-    sm, um = cold_start_score(q, list("abcd"), "auto", style="mood")
+    sq, uq = cold_start_score(q, list("abcd"), "vision_face", style="quality")
+    sm, um = cold_start_score(q, list("abcd"), "vision_face", style="mood")
     assert uq == "vision_face" and um == "mood"
     assert list(np.argsort(-sq)) == list(np.argsort(-sm))[::-1], "两种风格应该给出相反的顺序"
 
@@ -387,3 +400,91 @@ def test_默认风格是质量优先():
     from pathlib import Path as _P
     from photofilter_rank.config import RankConfig
     assert RankConfig(folder=_P('/tmp')).style == "quality"
+
+
+def test_人像池里无脸照片排最后而不是中位():
+    """20/20 金标全部检出人脸，30 张无脸照里金标 0 张。
+    ⚠️ 这是正确性改进不是效果改进：实测交付一张没变（五次扫描 4,4,3,3,4 完全相同），
+    因为那些照片本来就进不了前 20。不要当成绩报。"""
+    from photofilter_rank.quality import cold_start_score
+    q = _q(("a", "b", "c", "d"))
+    q["vision_face"] = {"a": 61, "b": 38, "c": 50}      # d 没有脸
+    s, used = cold_start_score(q, list("abcd"), "vision_face")   # 默认已改为 face，这里显式指定
+    assert used == "vision_face"
+    assert s[3] < min(s[0], s[1], s[2]), "无脸的必须排在所有有脸的后面"
+
+
+def test_人脸分层_默认关且能打开():
+    """Apple Vision 的人脸质量对小脸系统性低估（中位 33 vs 56），
+    分层能修好；但它是精度/召回权衡：K=20 略差（3.2 vs 3.6），K=50 接近两倍好。
+    产品默认要 20 张，所以默认关。"""
+    from pathlib import Path as _P
+    from photofilter_rank.config import RankConfig
+    from photofilter_rank.quality import cold_start_score
+    assert RankConfig(folder=_P('/tmp')).stratify_by_face_size is False
+    q = _q(("a", "b", "c", "d"))
+    q["vision_face"] = {"a": 60, "b": 58, "c": 30, "d": 28}   # a,b 大脸高分；c,d 小脸低分
+    q["big_face"] = {"a", "b"}
+    flat, _ = cold_start_score(q, list("abcd"), "vision_face", stratify=False)
+    strat, used = cold_start_score(q, list("abcd"), "vision_face", stratify=True)
+    assert used.endswith("+stratified")
+    assert list(np.argsort(-flat)) == [0, 1, 2, 3], "平铺时大脸全部在前"
+    # 分层后每组内部各自排百分位，小脸组的第一名不再被整体压在后面
+    assert strat[2] > flat[2], "小脸组的最好一张应该被提上来"
+
+
+def test_人脸分层_拿不到大脸标记时安全降级():
+    from photofilter_rank.quality import cold_start_score
+    q = _q(("a", "b", "c", "d"))
+    q["vision_face"] = {"a": 60, "b": 58, "c": 30, "d": 28}
+    s, used = cold_start_score(q, list("abcd"), "vision_face", stratify=True)   # 没有 big_face
+    assert used == "vision_face", "没有大脸标记就退回普通排序，不报错"
+
+
+
+def test_风景池必须警告没有验证过的信号():
+    """实测 161 张风景 + 14 张人工精选：6 个通用美学模型（含翻转）AUC 全在
+    0.46–0.55，即随机。给用户一份随机排序却包装成「精选」，比诚实说「没验证过」更糟。"""
+    from photofilter_rank.quality import choose_cold_strategy
+    landscape = {"laion_aes": {"a": 1.0}, "face": {}, "face_detect_rate": 0.0}
+    assert choose_cold_strategy(landscape, ["a"], "auto") == "laion_aes"
+    portrait = _q(("a", "b", "c", "d"))          # face_detect_rate = 1.0
+    assert choose_cold_strategy(portrait, list("abcd"), "auto") == "face"
+
+
+def test_时间段配额_把选片摊开():
+    """用户自己是「每段各挑几张」（最挤 10% 窗口 5/20 = 随机期望），
+    排序器是「把最好的一段整段端走」（14/20）。挤在一段里等于自己砍掉覆盖面。"""
+    from photofilter_rank.dedupe import select_spread
+    # 100 张，分数最高的全挤在前 10 张
+    order = list(range(100))
+    fams = list(range(100))          # 每张自成一组，排除同组上限的干扰
+    picked, note = select_spread(order, fams, 100, 10, family_cap=2, segments=10)
+    assert len(picked) == 10
+    segs = {min(i * 10 // 100, 9) for i in picked}
+    assert len(segs) == 10, f"目标 10 张、切 10 段 → 每段各 1 张，实际覆盖 {len(segs)} 段"
+    assert note["segment_cap"] == 1, "下限必须是 1 不是 2，否则前几段会各拿 2 张"
+    assert max(picked) >= 90, f"必须跨到最后一段，实际最大 {max(picked)}"
+    # 不加配额时会全部挤在最前面
+    from photofilter_rank.dedupe import select_with_cap
+    flat, _ = select_with_cap(order, fams, 10, 2)
+    assert flat == list(range(10)), "对照：不加配额就是前 10 张，全挤在第 1 段"
+
+
+def test_时间段配额_凑不满时放开而不是失败():
+    """用户要 N 张就该拿到 N 张。段配额是软约束，同组上限才是硬的。"""
+    from photofilter_rank.dedupe import select_spread
+    # 同组上限是硬约束：12 张全在一组，只能出 2 张，段配额放开也救不回来
+    picked, note = select_spread(list(range(12)), [0] * 12, 12, 10, family_cap=2, segments=10)
+    assert len(picked) == 2, "同组上限是硬约束，不因为凑不满就放开"
+    assert note["segments_relaxed"] == 1, "应该尝试过放开段配额"
+    # 段配额是软约束：候选够多时正常拿满
+    picked2, _ = select_spread(list(range(12)), list(range(12)), 12, 10, family_cap=2, segments=10)
+    assert len(picked2) == 10, "用户要 10 张就该拿到 10 张"
+
+
+def test_时间段配额_可以关掉():
+    from pathlib import Path as _P
+    from photofilter_rank.config import RankConfig
+    assert RankConfig(folder=_P('/tmp')).time_segments == 10
+    assert RankConfig(folder=_P('/tmp'), time_segments=0).time_segments == 0

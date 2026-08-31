@@ -34,17 +34,26 @@ eval-people-309 实测（AUC / 前20命中 / 超几何 p 值）：
 
 结论：冷启动**只用一个指标**，按人脸检出率自动路由。
 
-━━ 后来的修正：最好的那个指标不在这张表里 ━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━ 一次被自己数据推翻的默认值 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-上面整张表比的都是「下载来的模型」。真正最强的是 v1 就有的
-**Apple Vision 人脸质量**：AUC 0.711、交付 5/20（p=0.0056），
-比这里任何一个都好，而且同样免费。
+中途我把人像默认换成了 Apple Vision 的人脸质量，理由是它 AUC 更高
+（0.729 vs topiq 的 0.606）。**这个决定是错的，而且错在用了 AUC 当判据** ——
+在这之前我已经四次记录过「AUC 和交付会背离」。
 
-它没进这张表，是因为 v1 的结论「本地技术指标和人的口味基本无关」
-把它一起否掉了 —— 那个结论对清晰度/曝光成立，对人脸质量不成立。
-详见 eligibility.py 的 EngineFacts。
+跨 5 次 Vision 扫描的交付实测（K=20，产品默认目标）：
 
-所以人像池的默认策略是 vision_face，只有拿不到引擎时才退回 face（topiq）。
+    指标                      交付均值   过显著线    AUC     确定性
+    topiq_nr-face（默认）      4.0      5/5       0.606    是
+    Apple Vision 人脸质量       3.4      2/5       0.729    否
+
+Apple Vision 还有两个额外问题：
+  · **它不是确定性的**（同一批扫两遍 106/280 张分数不同），而「同样输入
+    永远同样输出」是 v4 的核心主张，只能靠按指纹缓存来兜。
+  · 在第二个数据集（道东三湖）上它只有 0.455，而 topiq 是 0.732 —— 完全反过来。
+
+**topiq 在两个数据集上都不输，而且是确定性的。所以默认是 face。**
+Apple Vision 保留为 `--cold vision_face`：它在 K≥30 且开分层时更强
+（K=50 实测 8/20 vs 5/20），见 config.py 的 stratify_by_face_size。
 """
 from __future__ import annotations
 
@@ -143,11 +152,23 @@ def choose_cold_strategy(quality: dict, names: list[str], configured: str) -> st
     if rate is None:
         rate = sum(1 for n in names if n in quality["face"]) / max(len(names), 1)
     if rate < 0.6:
+        # 风景池：**没有任何本地指标能用。** 实测 161 张风景 + 14 张人工精选，
+        # 6 个通用美学模型（含翻转）AUC 全部落在 0.46–0.55：
+        #
+        #     clipiqa+ 0.545 · musiq-ava 0.536 · topiq_iaa 0.522
+        #     laion_aes 0.511 · nima 0.471 · liqe 0.463
+        #
+        # 对比人像的 0.606（交付 4/20，p=0.032）。差别在于人像有一个**任务对口的
+        # 窄模型**（Apple 的人脸拍摄质量，学的就是「同一张脸哪次拍得更好」），
+        # 风景没有任何等价物 —— 只有「大众觉得好不好看」，而那跟这个用户的
+        # 风景口味不相关。
+        #
+        # 仍然返回 laion_aes（总得给个顺序），但 rank_folder 会加一条警告：
+        # 给用户一份随机排序却包装成「精选」，比诚实地说「这一档没验证过」更糟。
         return "laion_aes"
-    # 人像池默认 vision_face。两个数据集给出相反的偏好、均值几乎打平，
-    # 选它的唯一理由是证据强度：数据集① 有 20 张金标，数据集② 只有 4 张。
-    # 拿不到引擎时降级到 topiq_nr-face。
-    return "vision_face" if quality.get("vision_face") else "face"
+    # 人像池默认 face（topiq_nr-face），**不是** Apple Vision ——
+    # 见下面「一次被自己数据推翻的默认值」。
+    return "face"
 
 
 def mood_score(quality: dict, names: list[str]) -> tuple[np.ndarray, str]:
@@ -170,9 +191,26 @@ def mood_score(quality: dict, names: list[str]) -> tuple[np.ndarray, str]:
     return 1.0 - lai, "mood"
 
 
+def stratified_face_rank(
+    vf: dict[str, float], names: list[str], big: set[str]
+) -> np.ndarray:
+    """按人脸大小分层，各组内部各算百分位。见 config.py 的 stratify_by_face_size。
+
+    修的是 Apple Vision 人脸质量对小脸的系统性低估（中位 33 vs 56）。
+    """
+    out = np.full(len(names), -1.0)
+    for group in (big, set(names) - big):
+        idx = [i for i, n in enumerate(names) if n in group and n in vf]
+        if len(idx) > 1:
+            out[idx] = _rank(np.array([vf[names[i]] for i in idx]))
+        elif idx:
+            out[idx[0]] = 0.5
+    return out
+
+
 def cold_start_score(
     quality: dict[str, dict[str, float]], names: list[str], strategy: str = "auto",
-    style: str = "quality",
+    style: str = "quality", stratify: bool = False,
 ) -> tuple[np.ndarray, str]:
     """返回 (分数, 实际用的策略)。
 
@@ -185,7 +223,14 @@ def cold_start_score(
         vf = quality.get("vision_face") or {}
         if vf:
             have = [i for i, n in enumerate(names) if n in vf]
-            out = np.full(len(names), NO_FACE_RANK)
+            # 人像池里检不到脸 → 排最后，不是给中位待遇。
+            # 实测 20/20 金标全部检出人脸，30 张无脸照里金标 0 张。
+            # AUC 0.723 → 0.744。⚠️ 但**交付一张没变**（4,4,3,3,4 五次扫描完全相同）——
+            # 那 30 张本来就进不了前 20，这是正确性改进不是效果改进，别当成绩报。
+            big = set(quality.get("big_face") or ())
+            if stratify and big:
+                return stratified_face_rank(vf, names, big), resolved + "+stratified"
+            out = np.full(len(names), -1.0)
             out[have] = _rank(np.array([vf[names[i]] for i in have]))
             return out, resolved
         resolved = "face"          # 引擎没给上，如实降级

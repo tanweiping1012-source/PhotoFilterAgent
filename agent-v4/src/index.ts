@@ -25,10 +25,13 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { IdentityMap } from './identity.ts'
+import { comparePairs } from './compare.ts'
+import type { HarnessVisionExecution, HarnessVisionServices } from './harness-vision.ts'
 import { Ranker, RankerError, type RankResult } from './ranker.ts'
 
 export const name = 'photo-filter-v4'
-export const inject = ['tools']
+// llm/attachments 只被 compare_within_groups 用到 —— 那是整条链路里唯一花钱的工具。
+export const inject = ['tools', 'llm', 'attachments']
 
 export interface Config {
   /** 排序器目录（含 photofilter_rank 包）。 */
@@ -170,8 +173,9 @@ export function apply(ctx: Context, config: Config): void {
     name: 'rank_photos',
     description:
       '在本机对已扫描的目录排序并挑出最好的 N 张。完全免费、零模型调用、不发送任何照片。' +
-      '**必须先问用户这一趟想要哪种风格**（quality 拍得清楚好看 / mood 有氛围）——' +
-      '实测这两种给出的名单几乎完全不重叠（0/20 和 4/20），而且各自只在对应的场合有效。' +
+      '用户没说风格就用 quality 直接跑 —— **不要卡住问**，排序 1.5 秒且不花钱，' +
+      '让用户看着真实结果说「不是这个感觉」，比让他凭空回答一个分类问题容易得多。' +
+      '出结果后用一句话提供切换到 mood 即可。' +
       '闭眼照会被资格门挡在名单外。同一场景组默认最多入选 2 张。结果是确定性的。',
     parameters: {
       target: { type: 'number', description: `要挑几张（默认 ${config.defaultTarget}）` },
@@ -179,7 +183,8 @@ export function apply(ctx: Context, config: Config): void {
         type: 'string',
         description:
           'quality = 挑拍得清楚、人脸好看的（默认）；mood = 挑有氛围的（弱光、动态、颗粒、柔焦这类）。' +
-          '这两种给出的名单几乎完全不同（实测重叠 0/20 和 4/20），所以**必须先问用户想要哪种**，不要自己猜。',
+          '这两种给出的名单几乎完全不同（实测重叠 0/20 和 4/20）。用户明确说了就用对应的；' +
+          '没说就用 quality 跑出来给他看，再提供切换 —— 不要为了问这个而不给结果。',
       },
     },
     output: {
@@ -353,7 +358,7 @@ export function apply(ctx: Context, config: Config): void {
           `实测个人口味探针在交付的前 20 张上没有可测收益：融合后 AUC 从 0.714 升到 0.754，` +
           `但交付命中从 1.83 降到 1.57，30 次随机划分里融合只赢 7 次、打平 13 次、落后 10 次。` +
           `AUC 变好而头部没变好 —— 这和之前融合两个通用美学指标时是同一个模式。\n\n` +
-          `所以不要承诺「标了就会更准」。当前排序用的是 Apple Vision 人脸质量（AUC 0.723）。\n` +
+          `所以不要承诺「标了就会更准」。当前排序用的是本机人脸质量模型，确定性、不花钱。\n` +
           `下一步：重新调用 rank_photos（结果不会因为这些标注而改变）。`,
       }
     },
@@ -412,21 +417,129 @@ export function apply(ctx: Context, config: Config): void {
             `  按分数前 ${r.k}    ${r.hits}/${r.n_gold}\n` +
             `  头部提升        ${r.lift_mean.toFixed(2)}x   （K=10/20/30/40/50 平均）\n\n` +
             `  候选 ${r.n_total} 张 · 耗时 ${r.elapsed_sec}s · **付费调用 0 次**` + trained + gap + `\n\n` +
-            `对照 v3（997 次付费调用）：AUC 0.497、交付 3/20、p=0.130。\n` +
-            `诚实的说法：v4 的**排序能力**明显更好（AUC 0.606 vs 0.497），但**交付的前 20 张**` +
-            `在这个样本量上和 v3 打平（都是 3/20）。v4 真正确定的优势是 0 次付费调用和结果可复现。`,
+            `对照 v3（997 次付费调用、同一批照片）：AUC 0.497、交付 3/20、p=0.130 不显著。\n` +
+            `⚠️ 上面这一行是历史定值；v4 的成绩以**本次运行实测**为准，不要引用记忆里的数字。\n` +
+            `v4 的默认打分器是确定性的（同一批照片每次跑都是同一份名单）。` +
+            `所以不要说「v4 完胜 v3」——` +
+            `确定的优势是 0 次付费调用、秒级、结果可复现。`,
         }
       } catch (e) { fail(e) }
     },
   }))
 
-  // ── 工具 6：导出（两步确认，只复制）─────────────────────────
+  // ── 工具 6：组内成对比较（唯一花钱的工具）────────────────────
+  ctx.tools.register(defineTool({
+    name: 'compare_within_groups',
+    description:
+      '用视觉模型比较**同一场景组内**难分高下的照片对，据此重排组内顺序。' +
+      '这是整个工具集里**唯一花钱**的一个：每对花 2 次调用（正反各一次）。' +
+      '为什么需要它：本地打分测的是拍摄技术质量，看不见表情、眼神、互动 —— ' +
+      '而同一瞬间的连拍里，差别恰恰只在这些。实测本地打分的组内排序命中率 65%（随机 47%）。' +
+      '只在用户明确要求「再精细一点」或对边界结果不满意时调用，并且**必须先说明要花多少次调用**。',
+    parameters: {
+      max_pairs: {
+        type: 'number',
+        description: '最多比较几对（默认 12，即 24 次调用）。每对 2 次调用，务必先告知用户。',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          pairs_compared: { type: 'number' },
+          calls_spent: { type: 'number' },
+          summary: { type: 'string' },
+        },
+      },
+      render: (_a, v) => [{ type: 'text', text: v.summary }],
+    },
+    async execute(args, exec) {
+      const { res, ids } = requireRanked()
+      const maxPairs = Math.max(1, Math.min(args.max_pairs ?? 12, 40))
+
+      // 只比较**影响名单**的对：入选边界附近、且同组的。
+      const selected = new Set(res.selected)
+      const rank = new Map(res.ranking.map((n, i) => [n, i]))
+      const byFam = new Map<number, string[]>()
+      for (const n of res.ranking) {
+        const f = res.families[n]
+        if (!byFam.has(f)) byFam.set(f, [])
+        byFam.get(f)!.push(n)
+      }
+      const pairs: Array<[string, string]> = []
+      for (const [, members] of byFam) {
+        if (members.length < 2) continue
+        const inSel = members.filter((m) => selected.has(m))
+        const outSel = members.filter((m) => !selected.has(m))
+        // 组里已入选的最弱一张 vs 没入选的最强一张 —— 换掉它会直接改名单。
+        if (inSel.length && outSel.length) {
+          pairs.push([inSel[inSel.length - 1]!, outSel[0]!])
+        }
+      }
+      pairs.sort((x, y) => (rank.get(x[1]) ?? 0) - (rank.get(y[1]) ?? 0))
+      const use = pairs.slice(0, maxPairs)
+      if (!use.length) {
+        return {
+          pairs_compared: 0, calls_spent: 0,
+          summary: '没有找到值得比较的组内对（每个场景组要么只有一张，要么全入选/全落选）。没有花钱。',
+        }
+      }
+
+      try {
+        const names = [...new Set(use.flat())]
+        const { previews, missing } = await ranker.preview(
+          state.folder!, names, config.excludedRelativePaths, 512, exec.signal,
+        )
+        if (missing.length) {
+          throw new Error(`这些照片没有缓存预览，无法比较：${missing.map((n) => ids.id(n)).join(' ')}`)
+        }
+        const services: HarnessVisionServices = {
+          llm: ctx.get('llm') as unknown as HarnessVisionServices['llm'],
+          attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
+        }
+        const { verdicts, route } = await comparePairs(
+          use, previews, services, exec as unknown as HarnessVisionExecution,
+        )
+
+        const swaps: string[] = []
+        const lines = verdicts.map((v) => {
+          const inId = ids.id(v.a)
+          const outId = ids.id(v.b)
+          if (v.winner === 'b') swaps.push(`${outId} 换掉 ${inId}`)
+          const mark = v.winner === 'a' ? '维持原判' : v.winner === 'b' ? '⇄ 建议换' : '平局'
+          return `  ${inId}（已入选） vs ${outId}（未入选）  →  ${mark}\n      ${v.reason}`
+        }).join('\n')
+
+        const flips = verdicts.filter((v) => v.winner === 'b').length
+        const ties = verdicts.filter((v) => v.winner === 'tie').length
+        const inconsistent = verdicts.filter((v) => !v.consistent && v.reason.includes('不一致')).length
+        return {
+          pairs_compared: verdicts.length,
+          calls_spent: verdicts.length * 2,
+          summary:
+            `组内成对比较完成：${verdicts.length} 对，**花了 ${verdicts.length * 2} 次付费调用**` +
+            `（每对正反各问一次）。模型路由 ${route}。\n\n` +
+            lines + `\n\n` +
+            `结果：维持原判 ${verdicts.length - flips - ties} 对 · 建议换 ${flips} 对 · 平局 ${ties} 对` +
+            `（其中 ${inconsistent} 对是正反答案不一致被判平局 —— 位置偏好是真实存在的，单向结果不可信）。\n` +
+            (swaps.length
+              ? `\n建议的调整：${swaps.join('，')}。要不要我按这个改名单？`
+              : `\n没有建议调整 —— 本地排序在这些边界上的判断，模型也同意。`),
+        }
+      } catch (e) { fail(e) }
+    },
+  }))
+
+  // ── 工具 7：导出（两步确认，只复制）─────────────────────────
   ctx.tools.register(defineTool({
     name: 'export_selection',
     description:
-      '把选中的照片**复制**到一个新文件夹。绝不移动、删除、改名或写回原图。' +
-      '必须两步：第一次调用只冻结名单并返回确认码；用户在新消息里明确回复确认码后，' +
-      '才带 confirmation_code 调用第二次。Agent 不得自行补出确认码。',
+      '把选中的照片**复制**到一个新文件夹。绝不移动、删除、改名或写回原图。\n' +
+      '**两步流程，而且确认码只能由本工具生成：**\n' +
+      '① 不带 confirmation_code 调用一次 → 本工具冻结名单并返回一个 6 位十六进制确认码。\n' +
+      '② 把那个码原样转达给用户，等他在新消息里回复，再带 confirmation_code 调用第二次。\n' +
+      '⚠️ **你不能自己编一个码。** 想告诉用户确认码，就必须先调用本工具拿到它 —— ' +
+      '编造的码在第二步会被拒绝（「没有待确认的导出票据」），用户会白等一轮。',
     parameters: {
       dest: { type: 'string', required: true, description: '目标目录的绝对路径' },
       confirmation_code: { type: 'string', description: '第二次调用时传入用户回复的确认码' },
@@ -456,7 +569,8 @@ export function apply(ctx: Context, config: Config): void {
           summary:
             `名单已冻结：${res.selected.length} 张（${res.selected.map((n) => ids.id(n)).join(' ')}）\n` +
             `目标目录：${dest}\n\n` +
-            `确认码 **${code}**。请在一条新消息里回复「确认导出 ${code}」，我才会执行复制。\n` +
+            `确认码 **${code}** ← 这是本工具刚生成的，原样转达给用户，不要改写。\n` +
+            `请用户在一条新消息里回复「确认导出 ${code}」，然后你才带 confirmation_code 再调一次。\n` +
             `导出只做复制，原图不移动、不删除、不改名、不写回。`,
         }
       }

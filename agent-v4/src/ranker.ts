@@ -144,6 +144,15 @@ export class Ranker {
     return (await this.runJson<ScanResult>(args, signal)).value
   }
 
+  /** 给指定照片生成无元数据的 512px base64 小图。原图不出本机。 */
+  async preview(
+    folder: string, names: string[], exclude: string[], size = 512, signal?: AbortSignal,
+  ): Promise<{ previews: Record<string, string>; missing: string[] }> {
+    const args = ['preview', folder, '--names', ...names, '--size', String(size)]
+    if (exclude.length) args.push('--exclude', ...exclude)
+    return (await this.runJson<{ previews: Record<string, string>; missing: string[] }>(args, signal)).value
+  }
+
   async rank(
     folder: string, target: number, exclude: string[], labels: string[],
     style: string, signal?: AbortSignal,

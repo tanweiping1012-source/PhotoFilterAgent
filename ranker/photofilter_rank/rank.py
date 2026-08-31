@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import RankConfig
-from .dedupe import group_by_similarity, select_with_cap, suggest_threshold
+from .dedupe import group_by_similarity, select_spread, select_with_cap, suggest_threshold
 from .eligibility import EligibilityUnavailable, engine_facts
 from .embed import embed_photos
 from .quality import cold_start_score, local_quality, zscore
@@ -88,15 +88,28 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
                 cfg.engine_workdir or (cfg.cache_dir / 'engine'),
                 cache_key=fp,      # 按数据集指纹缓存 —— Vision 的分数不是确定性的
             )
-            quality['vision_face'] = {k: v for k, v in facts.face_quality.items() if k in set(names)}
+            nameset = set(names)
+            quality['vision_face'] = {k: v for k, v in facts.face_quality.items() if k in nameset}
+            quality['big_face'] = facts.big_face & nameset
             if cfg.block_closed_eyes:
                 blocked = facts.closed_eyes & set(names)
         except EligibilityUnavailable as e:
             # 静默跳过是危险的：用户以为有资格门保护时必须知道它没生效。
             eligibility_note = f'本地分析引擎不可用，资格门与人脸质量都**没有生效**：{e}'
 
-    cold_raw, cold_strategy = cold_start_score(quality, names, cfg.cold_strategy, cfg.style)
+    cold_raw, cold_strategy = cold_start_score(
+        quality, names, cfg.cold_strategy, cfg.style, cfg.stratify_by_face_size,
+    )
     cold = zscore(cold_raw)
+
+    # 风景池没有任何经过验证的本地信号 —— 必须说出来。
+    # 实测 161 张风景 + 14 张人工精选：6 个通用美学模型（含翻转）AUC 全在
+    # 0.46–0.55，即随机。给用户一份随机排序却包装成「精选」，
+    # 比诚实地说「这一档没验证过」更糟。
+    unvalidated_domain = (
+        cold_strategy == "laion_aes"
+        and quality.get("face_detect_rate", 1.0) < 0.6
+    )
 
     # --- 决定用哪种打分模式 ---
     labels = _load_labels(cfg.labels, names)
@@ -154,10 +167,17 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
 
     # --- 分组 + 带上限地挑选 ---
     order = np.argsort(-final).tolist()
-    # 按分数从高到低处理，让每组最好的那张当组长 —— 组长会被优先选中，
-    # 这就顺带解决了 v2「连拍代表选错」的问题：代表不再是随便选的。
+    # 分组必须用**与打分无关**的顺序（不传 order = 按文件名顺序，
+    # 相机输出天然按时间递增）。
+    #
+    # 踩过的坑：最初按分数顺序分组，让每组最好的那张当组长。后果是
+    # **换一个打分器就换一套分组**，两次结果无法比较 ——
+    # 实测同一份打分只改分组顺序，交付命中在 3~5/20 之间跳，组数 122 vs 128。
+    #
+    # 这不会重新引入 v2 那个「连拍代表选错」的问题：v4 的分组**不淘汰任何人**，
+    # 只限制每组入选几张，选片仍然按分数顺序走 —— 组长是谁不影响选片。
     fam_t = suggest_threshold(X, cfg.family_percentile, cfg.cosine_floor)
-    families = group_by_similarity(X, fam_t, order)
+    families = group_by_similarity(X, fam_t)
     # 用户亲口说喜欢的照片直接置顶 —— 但只在标注**被采纳**时才置顶。
     #
     # 踩过的坑：护栏因为标注过于集中而拒绝用它们学口味时，置顶却照做了，
@@ -171,9 +191,13 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
     # 闭眼照留在候选池里（不影响分数与统计），只是不进最终名单。
     eligible = [i for i in order if names[i] not in blocked]
 
-    picked, cap_note = select_with_cap(
-        eligible, families, min(cfg.target, len(eligible)), cfg.family_cap,
-    )
+    k = min(cfg.target, len(eligible))
+    if cfg.time_segments > 0:
+        picked, cap_note = select_spread(
+            eligible, families, len(names), k, cfg.family_cap, cfg.time_segments,
+        )
+    else:
+        picked, cap_note = select_with_cap(eligible, families, k, cfg.family_cap)
 
     notes = {
         **cap_note,
@@ -183,6 +207,7 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
         "label_concentration": round(concentration, 3) if concentration is not None else None,
         "n_families": len(set(families)),
         "cold_strategy": cold_strategy,
+        "unvalidated_domain": unvalidated_domain,
         "style": cfg.style,
         "face_detect_rate": round(quality.get("face_detect_rate", float("nan")), 3),
         "labels_used": labels,
@@ -195,6 +220,15 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
             (np.triu(X @ X.T, 1) >= suggest_threshold(X, cfg.dup_percentile, cfg.cosine_floor)).sum()
         ),
     }
+    if unvalidated_domain:
+        warnings.append(
+            "⚠️ 这批照片里几乎没有人脸，属于**风景/静物**。"
+            "本项目在风景上**没有任何经过验证的信号**：实测 161 张风景 + 14 张人工精选，"
+            "6 个通用美学模型（clipiqa+/musiq-ava/topiq_iaa/laion_aes/nima/liqe，含翻转）"
+            "AUC 全部落在 0.46–0.55，也就是掷硬币。"
+            "下面这份名单按 laion_aes 排出来，**请当成一个任意顺序，不要当成精选**。"
+            "（人像那一档是验证过的：AUC 0.606、交付 5/20、p=0.0056。）"
+        )
     if eligibility_note:
         warnings.append(eligibility_note)
         notes['warnings'] = warnings

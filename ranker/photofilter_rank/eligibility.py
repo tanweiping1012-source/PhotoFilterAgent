@@ -60,9 +60,13 @@ class EngineFacts:
     说明「整张图锐不锐」和「脸清不清楚」是两件事。
     """
 
-    def __init__(self, closed_eyes: set[str], face_quality: dict[str, int]):
+    def __init__(self, closed_eyes: set[str], face_quality: dict[str, int],
+                 big_face: set[str] | None = None):
         self.closed_eyes = closed_eyes
         self.face_quality = face_quality
+        # 脸大到能做睁闭眼判定（引擎里的门槛是占画面 ≥0.8%）。
+        # 用它当「特写 vs 环境人像」的代理 —— 见 config.py 的 stratify_by_face_size。
+        self.big_face = big_face or set()
 
 
 def engine_facts(
@@ -90,13 +94,24 @@ def engine_facts(
     v4 的核心主张是「排序是确定性函数」。所以这里必须缓存：
     同一个数据集指纹只扫一次，之后永远复用。
     """
+    # 每个数据集用自己的子目录 —— 必须在读缓存之前就切过去。
+    #
+    # 踩过的坑：facts 按指纹存，但引擎每次扫描都会把 index.json 写在 workdir 根下，
+    # 后一个数据集会覆盖前一个。单看 engine_facts 内部是自洽的（写完立刻读），
+    # 但两个数据集并发扫描就会互相污染，而且任何后续想按引擎 ID 取预览的代码
+    # 都会拿到错的映射。按指纹分目录，从结构上消掉这个隐患。
+    workdir = workdir / (cache_key or "shared")
+
     if cache_key:
         cached = workdir / f'facts-{cache_key}.json'
         if cached.exists():
             d = json.loads(cached.read_text())
-            return EngineFacts(set(d['closed_eyes']), {k: int(v) for k, v in d['face_quality'].items()})
+            return EngineFacts(set(d['closed_eyes']),
+                               {k: int(v) for k, v in d['face_quality'].items()},
+                               set(d.get('big_face') or ()))
     if not engine.exists():
         raise EligibilityUnavailable(f"本地分析引擎不存在：{engine}")
+
     workdir.mkdir(parents=True, exist_ok=True)
     try:
         out = subprocess.run(
@@ -113,6 +128,7 @@ def engine_facts(
     by_anon = {k: Path(v).name for k, v in index['byAnonymous'].items()}
     closed: set[str] = set()
     quality: dict[str, int] = {}
+    big: set[str] = set()
     for c in report.get('candidates', []):
         name = by_anon.get(c['id'])
         if name is None:
@@ -121,8 +137,13 @@ def engine_facts(
             closed.add(name)
         if c.get('face_quality') is not None:
             quality[name] = int(c['face_quality'])
+        # 引擎只在脸占画面 ≥0.8% 时才做睁闭眼判定，所以摘要串里出现「眼睛」
+        # 就等价于「脸够大」。这是从现有输出里读出来的代理，没改引擎。
+        if '眼睛' in (c.get('face') or ''):
+            big.add(name)
     if cache_key:
         (workdir / f'facts-{cache_key}.json').write_text(
-            json.dumps({'closed_eyes': sorted(closed), 'face_quality': quality})
+            json.dumps({'closed_eyes': sorted(closed), 'face_quality': quality,
+                        'big_face': sorted(big)})
         )
-    return EngineFacts(closed, quality)
+    return EngineFacts(closed, quality, big)
