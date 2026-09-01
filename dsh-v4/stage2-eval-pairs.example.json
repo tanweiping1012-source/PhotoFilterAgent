@@ -26,22 +26,6 @@
       "group": 11
     },
     {
-      "a": "DSCF9332.JPG",
-      "b": "DSCF9331.JPG",
-      "answer": "a",
-      "kind": "gold",
-      "local_correct": false,
-      "group": 12
-    },
-    {
-      "a": "DSCF9332.JPG",
-      "b": "DSCF9334.JPG",
-      "answer": "a",
-      "kind": "gold",
-      "local_correct": false,
-      "group": 12
-    },
-    {
       "a": "DSCF9331.JPG",
       "b": "DSCF9333.JPG",
       "answer": "b",
@@ -58,12 +42,20 @@
       "group": 12
     },
     {
-      "a": "DSCF9395.JPG",
-      "b": "DSCF9396.JPG",
-      "answer": "b",
+      "a": "DSCF9332.JPG",
+      "b": "DSCF9331.JPG",
+      "answer": "a",
       "kind": "gold",
       "local_correct": false,
-      "group": 13
+      "group": 12
+    },
+    {
+      "a": "DSCF9332.JPG",
+      "b": "DSCF9334.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 12
     },
     {
       "a": "DSCF9394.JPG",
@@ -77,6 +69,14 @@
       "a": "DSCF9404.JPG",
       "b": "DSCF9395.JPG",
       "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 13
+    },
+    {
+      "a": "DSCF9395.JPG",
+      "b": "DSCF9396.JPG",
+      "answer": "b",
       "kind": "gold",
       "local_correct": false,
       "group": 13
@@ -114,14 +114,6 @@
       "group": 15
     },
     {
-      "a": "DSCF9427.JPG",
-      "b": "DSCF9510.JPG",
-      "answer": "a",
-      "kind": "gold",
-      "local_correct": false,
-      "group": 15
-    },
-    {
       "a": "DSCF9431.JPG",
       "b": "DSCF9510.JPG",
       "answer": "a",
@@ -130,17 +122,25 @@
       "group": 15
     },
     {
-      "a": "DSCF9422.JPG",
-      "b": "DSCF9505.JPG",
-      "answer": "b",
+      "a": "DSCF9427.JPG",
+      "b": "DSCF9510.JPG",
+      "answer": "a",
       "kind": "gold",
       "local_correct": false,
-      "group": 17
+      "group": 15
     },
     {
       "a": "DSCF9507.JPG",
       "b": "DSCF9422.JPG",
       "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 17
+    },
+    {
+      "a": "DSCF9422.JPG",
+      "b": "DSCF9505.JPG",
+      "answer": "b",
       "kind": "gold",
       "local_correct": false,
       "group": 17
@@ -397,6 +397,5 @@
       "DSCF9008.JPG"
     ],
     "mode": "full-group"
-  },
-  "_说明": "考题集示例。照片文件名保留是为了可复现；仓库里没有任何照片。"
+  }
 }
