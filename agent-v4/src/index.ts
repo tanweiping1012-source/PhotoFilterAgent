@@ -260,6 +260,7 @@ export function apply(ctx: Context, config: Config): void {
         // 模型跑在这一侧（TS），排序器在 Python 侧拿不到它，
         // 所以是「出计划 → 这里跑 → 裁决回传 → 排序器重放」三步。
         let refineNote = ''
+        let vlmCalls = 0
         const plan = (res.notes.tournament_plan ?? []) as Array<[string, string]>
         if (config.stage2Vlm && plan.length) {
           try {
@@ -293,6 +294,7 @@ export function apply(ctx: Context, config: Config): void {
               state.folder, target, config.excludedRelativePaths, state.labels, state.style,
               exec.signal, vf,
             )
+            vlmCalls = plan.length * 2
             const flips = verdicts.filter((v) => v.winner === 'b').length
             const cons = verdicts.filter((v) => v.consistent).length
             refineNote =
@@ -349,8 +351,15 @@ export function apply(ctx: Context, config: Config): void {
             `挑片风格：${styleText}\n` +
             `模式：${modeText}\n` +
             `候选 ${res.n_candidates} 张 · 场景组 ${n.n_families} 个（最大 ${n.largest_family} 张）· 耗时 ${res.elapsed_sec}s\n` +
-            `**付费模型调用 0 次** —— 全程在本机算完。\n` +
-            warn + gateNote + capNote + `\n\n` +
+            // 调用次数必须**算出来**，不能写死。
+            //
+            // 踩过的坑：这里原本硬编码「付费模型调用 0 次」。VLM 复核默认打开之后，
+            // 一次真实运行花了 114 次调用，而 agent 照旧告诉用户「0 次、全在本机算完」——
+            // 等于把成本瞒了下来。人设里另有五处同样的写死，一并清了。
+            (vlmCalls > 0
+              ? `**付费模型调用 ${vlmCalls} 次** —— 阶段 2 的组内比较用了视觉模型。\n`
+              : `**付费模型调用 0 次** —— 全程在本机算完。\n`) +
+            warn + gateNote + capNote + refineNote + `\n\n` +
             `选出 ${res.selected.length} 张，分布在 ${famCount} 个不同场景组：\n${rows}\n\n` +
             `分数是标准化后的相对值，不是绝对质量分：+1.8 表示明显高于这批照片的平均水平。\n` +
             `想看某几张为什么入选、或边界上差了什么，调 explain_ranking。`,
