@@ -28,6 +28,13 @@ struct PortraitQuality: Equatable, Sendable {
     let eyeFacePixels: Int?
     /// 眼睛读数是否来自从原图裁出的高清人脸（而非 1024px 缩略图）。
     let eyeFromHiRes: Bool
+    /// 主脸的归一化包围盒 [x, y, 宽, 高]，原点在**左下**（Vision 的约定）。
+    ///
+    /// 为什么要传出去：发给视觉模型的是 512px 小图，而这批环境人像里
+    /// 人脸只占画面 0.5% 左右 —— 在小图上只剩 **30 像素**，91% 的照片
+    /// 不足 48 像素。模型被要求判断「笑是不是到眼睛里」，但它根本看不见，
+    /// 只能猜。有了这个框，就能额外附一张高清人脸给它。
+    let faceBox: [Double]?
     /// 人脸俯仰角（弧度，正=低头）。取不到为 nil。
     ///
     /// 为什么必须有它：眼睛纵横比（EAR）分不清「闭眼」和「低头垂眼」——
@@ -138,6 +145,8 @@ enum PortraitQualityAnalyzer {
             distance($0.boundingBox, primary.boundingBox) < distance($1.boundingBox, primary.boundingBox)
         }
         let pitch = pose?.pitch?.doubleValue
+        let box = [Double(primary.boundingBox.minX), Double(primary.boundingBox.minY),
+                   Double(primary.boundingBox.width), Double(primary.boundingBox.height)]
         let landmarksFaces = landmarksRequest.results ?? []
         // 关键点与质量分来自两次独立请求，用包围盒中心距离把同一张脸对上。
         let matched = landmarksFaces.min { lhs, rhs in
@@ -163,6 +172,7 @@ enum PortraitQualityAnalyzer {
                 faceCount: faces.count,
                 eyeFacePixels: thumbFacePx,
                 eyeFromHiRes: false,
+                faceBox: box,
                 pitchRadians: pitch
             )
         }
@@ -178,6 +188,7 @@ enum PortraitQualityAnalyzer {
                 faceCount: faces.count,
                 eyeFacePixels: hi.facePixels,
                 eyeFromHiRes: true,
+                faceBox: box,
                 pitchRadians: pitch
             )
         }
@@ -190,6 +201,7 @@ enum PortraitQualityAnalyzer {
             faceCount: faces.count,
             eyeFacePixels: nil,
             eyeFromHiRes: false,
+            faceBox: box,
             pitchRadians: pitch
         )
     }

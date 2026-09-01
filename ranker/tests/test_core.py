@@ -516,3 +516,16 @@ def test_旧缓存文件没有新字段也能读():
                     {k: float(v) for k, v in (d.get('eye_openness') or {}).items()},
                     {k: float(v) for k, v in (d.get('face_area') or {}).items()})
     assert f.closed_eyes == {'a.jpg'} and f.eye_openness == {}
+
+
+def test_引擎事实带上人脸包围盒():
+    """发给视觉模型的 512px 小图上人脸只有约 30 像素，必须能裁出高清人脸。"""
+    from photofilter_rank.eligibility import EngineFacts
+    f = EngineFacts({'a.jpg'}, {'a.jpg': 50}, set(), {}, {},
+                    face_box={'a.jpg': [0.5, 0.4, 0.09, 0.06]})
+    assert f.face_box['a.jpg'] == [0.5, 0.4, 0.09, 0.06]
+
+
+def test_人脸包围盒可省略_旧缓存仍可读():
+    from photofilter_rank.eligibility import EngineFacts
+    assert EngineFacts({'a.jpg'}, {'a.jpg': 50}).face_box == {}

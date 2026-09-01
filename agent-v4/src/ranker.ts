@@ -145,12 +145,23 @@ export class Ranker {
   }
 
   /** 给指定照片生成无元数据的 512px base64 小图。原图不出本机。 */
+  /**
+   * 出小图。`withFace=true` 时额外出一张高清人脸裁切。
+   *
+   * 512px 的整幅小图上，环境人像的人脸只剩约 30 像素，91% 的照片不足 48 像素 ——
+   * 模型判断不了表情。所以凡是要发给视觉模型比较的，都必须带上人脸。
+   */
   async preview(
-    folder: string, names: string[], exclude: string[], size = 512, signal?: AbortSignal,
-  ): Promise<{ previews: Record<string, string>; missing: string[] }> {
-    const args = ['preview', folder, '--names', ...names, '--size', String(size)]
+    folder: string, names: string[], exclude: string[], size = 512,
+    signal?: AbortSignal, withFace = false,
+  ): Promise<{ previews: Record<string, string>; faces: Record<string, string>; missing: string[] }> {
+    const args = ['preview', folder, '--names', ...names, '--size', String(size), ...this.gate()]
+    if (withFace) args.push('--with-face')
     if (exclude.length) args.push('--exclude', ...exclude)
-    return (await this.runJson<{ previews: Record<string, string>; missing: string[] }>(args, signal)).value
+    const v = (await this.runJson<{
+      previews: Record<string, string>; faces?: Record<string, string>; missing: string[]
+    }>(args, signal)).value
+    return { previews: v.previews, faces: v.faces ?? {}, missing: v.missing }
   }
 
   async rank(
