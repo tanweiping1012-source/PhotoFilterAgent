@@ -182,7 +182,13 @@ export async function comparePairs(
           ...bundle(firstFull, firstFace), ...bundle(secondFull, secondFace),
         ],
         tool: TOOL,
-        maxTokens: 400,
+        // 400 太小。MiniMax-M3 这类会先推理再输出的模型，思考 token 也算在输出里，
+        // 18 张图 + 6 条判据的题目上经常没写到工具调用就用光了 ——
+        // 表现是「结构化视觉输出达到 maxTokens，结果未接受」，整轮中断。
+        //
+        // 实测：47 对的那轮 400 勉强够（没中断），换成体检题就撞上了。
+        // 边界这么近说明本来就该放宽，不是运气问题。
+        maxTokens: 2000,
       }, exec.signal),
     )
     const ab = await ask(ja, fa, jb, fb)
