@@ -17,6 +17,7 @@ from .config import RankConfig
 from .dedupe import group_by_similarity, select_spread, select_with_cap, suggest_threshold
 from .eligibility import EligibilityUnavailable, engine_facts
 from .embed import embed_photos
+from .pipeline import Judge, LocalJudge, stage2_reorder
 from .quality import cold_start_score, local_quality, zscore
 from .scan import build_cache, fingerprint, list_photos
 from .taste import TasteProbe, label_concentration
@@ -58,7 +59,7 @@ def _load_labels(path: Path | None, names: list[str]) -> list[str]:
     return sorted(wanted & known)
 
 
-def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
+def rank_folder(cfg: RankConfig, verbose: bool = True, judge: Judge | None = None) -> RankResult:
     t0 = time.time()
     device = cfg.resolve_device()
 
@@ -188,6 +189,26 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
     if label_idx:
         order = label_idx + [i for i in order if i not in set(label_idx)]
 
+    # --- 阶段 2：组内选优 ---
+    #
+    # v4.2 之前这一步**从来没有真正发生过** —— 分组只被用来限制「同组最多进几张」，
+    # 谁当冠军完全由全局分数顺序决定。现在让组内先打一轮，冠军置顶。
+    #
+    # 默认裁判是本地分（0 次调用），此时冠军就是组内本地分最高的那张，
+    # 与旧行为**完全一致**，所以这个改动本身不会动交付数字。
+    # 换成 VLM 裁判时，组内顺序才会真正改变。
+    stage2_matches = 0
+    within_rank: dict[str, int] = {}
+    if cfg.stage2:
+        j: Judge = judge or LocalJudge({names[i]: float(final[i]) for i in range(len(names))})
+        within_rank, _outcomes, stage2_matches = stage2_reorder(
+            names, list(families), {names[i]: float(final[i]) for i in range(len(names))},
+            j, cfg.stage2_cap,
+        )
+        # 组内名次是**第一排序键**，全局分数退为第二键。
+        # 这样「组内冠军」才真的比「组内第二但全局分高」优先。
+        order = sorted(order, key=lambda i: (within_rank.get(names[i], 0), -float(final[i])))
+
     # 闭眼照留在候选池里（不影响分数与统计），只是不进最终名单。
     eligible = [i for i in order if names[i] not in blocked]
 
@@ -206,6 +227,8 @@ def rank_folder(cfg: RankConfig, verbose: bool = True) -> RankResult:
         "n_blocked": len(blocked),
         "label_concentration": round(concentration, 3) if concentration is not None else None,
         "n_families": len(set(families)),
+        "stage2_matches": stage2_matches,
+        "stage2_judge": (judge.name if judge else ("local" if cfg.stage2 else "off")),
         "cold_strategy": cold_strategy,
         "unvalidated_domain": unvalidated_domain,
         "style": cfg.style,
