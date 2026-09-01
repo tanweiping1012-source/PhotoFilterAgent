@@ -22,11 +22,17 @@
           - "20260221开拓小屋线+防潮坝/景色pick"
         # 闭眼资格门用的本地引擎（免费、不联网）。不配的话资格门不生效：
         # 实测 20 张名单里会有 6 张闭眼，而用户自己的精选里闭眼 0 张。
-        engineBinary: "@@REPO@@/engine/.build/release/photofilter"
+        engineBinary: @@REPO@@/engine/.build/release/photofilter
         allowedExportRoots: ["@@EXPORT@@"]
         # 首次跑要建 1024px 缓存 + 算 embedding + 两个质量模型，309 张约 5 分钟。
         rankerTimeoutMs: 1800000
         defaultTarget: 20
+        # 锚点范例：这个人自己挑照片的几组例子，连图带原话放进提示词。
+        anchorsFile: @@REPO@@/dsh-v4/anchors-default.json
+        # 阶段 2 的组内比较默认用视觉模型。
+        # ⚠️ 这一档实测 AB/BA 一致率 45%，通过线 60% —— 没过。
+        #    默认开启是产品决定，agent 必须在报告里如实说明。
+        stage2Vlm: true
 
 # 关掉全部通用文件系统与 shell 能力。
 #

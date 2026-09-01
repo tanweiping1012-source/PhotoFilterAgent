@@ -145,6 +145,13 @@ class RankConfig:
     stage2: bool = True
     # 组内最多几张进擂台。>=10 张的组很少，为它们多花一倍的钱不值。
     stage2_cap: int = 8
+    # VLM 复核的预算与门槛。
+    #
+    # 全池打完擂台是 157~170 局 = 314+ 次调用、约 26 分钟 —— 作为默认太重。
+    # 只复核「冠军进了名单」且「本地分前两名分差 < refine_min_gap」的组，
+    # 再按分差从小到大截到 refine_max_matches，成本可预期（40 局 = 80 次调用）。
+    refine_max_matches: int = 40
+    refine_min_gap: float = 0.15
     family_percentile: float = 98.0      # 同场景组
     dup_percentile: float = 99.5         # 近重复
     cosine_floor: float = 0.90           # 分位数再低也不低于此值

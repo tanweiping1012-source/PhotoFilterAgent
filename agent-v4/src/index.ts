@@ -59,6 +59,22 @@ export interface Config {
   rankerTimeoutMs: number
   /** 默认保留几张。 */
   defaultTarget: number
+  /**
+   * 锚点范例文件。非空则**默认启用** —— 组内比较时把「这个人怎么挑的」
+   * 连图带原话放进提示词。
+   *
+   * 实测：光是把提示词里的序数歧义去掉（第一张/第二张 → 照片甲/乙），
+   * AB/BA 一致率就从 23% 翻到 45%。锚点是同一个方向的改进 ——
+   * 与其让模型猜判据，不如直接示范。
+   */
+  anchorsFile: string
+  /**
+   * 阶段 2 的组内比较是否默认用视觉模型。
+   *
+   * ⚠️ 这一档**没有通过自己的验收线**：实测 AB/BA 一致率 45%，通过线是 60%。
+   * 默认开启是产品决定，不是数据支持的结论。agent 必须在报告里如实说明。
+   */
+  stage2Vlm: boolean
   /** 摘要里直接列 ID 的上限。 */
   maxInlineIdList: number
   /**
@@ -81,6 +97,8 @@ export const Config: z<Config> = z.object({
   engineBinary: z.string().default(''),
   rankerTimeoutMs: z.number().step(1).min(10_000).default(900_000),
   defaultTarget: z.number().step(1).min(1).default(20),
+  anchorsFile: z.string().default(''),
+  stage2Vlm: z.boolean().default(true),
   maxInlineIdList: z.number().step(1).min(0).default(60),
   evalPairsFile: z.string().default(''),
 })
@@ -96,6 +114,16 @@ interface RunState {
   exportTicket?: { code: string; dest: string; names: string[] }
 }
 
+/** 读锚点配置。文件不存在或格式不对就返回 null —— 锚点是增强，不是必需。 */
+function readAnchors(file: string): { folder: string; text: string; photos: string[] } | null {
+  if (!file || !existsSync(file)) return null
+  try {
+    const d = JSON.parse(readFileSync(file, 'utf8'))
+    if (!d.text || !Array.isArray(d.photos) || !d.photos.length) return null
+    return { folder: String(d.folder ?? ''), text: String(d.text), photos: d.photos.map(String) }
+  } catch { return null }
+}
+
 export function apply(ctx: Context, config: Config): void {
   const ranker = new Ranker(
     config.python, config.rankerDir, config.cacheDir, config.rankerTimeoutMs,
@@ -104,6 +132,8 @@ export function apply(ctx: Context, config: Config): void {
   const state: RunState = { labels: [], style: 'quality' }
 
   /** 目录必须落在授权根目录内。这是结构约束，不靠 agent 自觉。 */
+  const loadAnchors = () => readAnchors(config.anchorsFile)
+
   function assertAllowed(folder: string, roots: string[], what: string): string {
     const abs = resolvePath(folder)
     if (!roots.length) throw new Error(`没有配置任何${what}授权目录，拒绝执行。`)
@@ -216,9 +246,68 @@ export function apply(ctx: Context, config: Config): void {
           throw new Error(`style 只能是 quality 或 mood，收到 "${args.style}"。`)
         }
         state.style = args.style ?? state.style
-        const res = await ranker.rank(
+        let res = await ranker.rank(
           state.folder, target, config.excludedRelativePaths, state.labels, state.style, exec.signal,
         )
+
+        // ── 阶段 2 的 VLM 复核 ──────────────────────────────────
+        //
+        // 排序器先用本地分跑完一遍（免费、瞬时），同时产出一份「复核计划」：
+        // 哪几组的冠军进了最终名单、而且本地分前两名咬得很紧。
+        // 只有这些组值得花钱 —— 全池打完擂台是 157~170 局（314+ 次调用、
+        // 约 26 分钟），而绝大多数局根本不影响交给用户的那 20 张。
+        //
+        // 模型跑在这一侧（TS），排序器在 Python 侧拿不到它，
+        // 所以是「出计划 → 这里跑 → 裁决回传 → 排序器重放」三步。
+        let refineNote = ''
+        const plan = (res.notes.refine_plan ?? []) as Array<[string, string]>
+        if (config.stage2Vlm && plan.length) {
+          try {
+            const names = [...new Set(plan.flat())]
+            const { previews, faces, missing } = await ranker.preview(
+              state.folder, names, config.excludedRelativePaths, 512, exec.signal, true,
+            )
+            if (missing.length) throw new Error(`${missing.length} 张缺少预览`)
+            const anchors = loadAnchors()
+            let anchorBlock: AnchorBlock | null = null
+            if (anchors) {
+              const ap = await ranker.preview(
+                anchors.folder, anchors.photos, config.excludedRelativePaths, 512, exec.signal,
+              )
+              anchorBlock = {
+                text: anchors.text,
+                jpegs: anchors.photos.map((x) => ap.previews[x]).filter(Boolean),
+              }
+            }
+            const services: HarnessVisionServices = {
+              llm: ctx.get('llm') as unknown as HarnessVisionServices['llm'],
+              attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
+            }
+            const { verdicts, route } = await comparePairs(
+              plan, previews, faces, anchorBlock, services,
+              exec as unknown as HarnessVisionExecution,
+            )
+            const vf = join(config.workdir, `verdicts-${res.fingerprint}.json`)
+            writeFileSync(vf, JSON.stringify({ verdicts }))
+            res = await ranker.rank(
+              state.folder, target, config.excludedRelativePaths, state.labels, state.style,
+              exec.signal, vf,
+            )
+            const flips = verdicts.filter((v) => v.winner === 'b').length
+            const cons = verdicts.filter((v) => v.consistent).length
+            refineNote =
+              `\n\n**阶段 2 · 视觉模型复核**（${route}）：复核了 ${plan.length} 组难分的，` +
+              `花了 ${plan.length * 2} 次调用，改判 ${flips} 组。\n` +
+              `⚠️ 这一档**没有通过自己的验收线**：实测 AB/BA 双向一致率 ` +
+              `${((cons / Math.max(verdicts.length, 1)) * 100).toFixed(0)}%（本次）、` +
+              `45%（47 对的完整评测），而通过线是 60%。` +
+              `也就是说它的判断有相当一部分是噪声，改判不一定是改对。`
+          } catch (e) {
+            refineNote = `\n\n**阶段 2 · 视觉模型复核未执行**：${e instanceof Error ? e.message : String(e)}。` +
+              `已回落到本地分排序（0 次调用、结果确定）。`
+          }
+        }
+
         const ids = IdentityMap.load(config.workdir, res.fingerprint)
         ids.assign([...res.ranking].sort())
         state.ids = ids

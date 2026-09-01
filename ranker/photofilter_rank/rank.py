@@ -17,7 +17,7 @@ from .config import RankConfig
 from .dedupe import group_by_similarity, select_spread, select_with_cap, suggest_threshold
 from .eligibility import EligibilityUnavailable, engine_facts
 from .embed import embed_photos
-from .pipeline import Judge, LocalJudge, stage2_reorder
+from .pipeline import Judge, LocalJudge, ReplayJudge, refine_plan, stage2_reorder
 from .quality import cold_start_score, local_quality, zscore
 from .scan import build_cache, fingerprint, list_photos
 from .taste import TasteProbe, label_concentration
@@ -220,8 +220,20 @@ def rank_folder(cfg: RankConfig, verbose: bool = True, judge: Judge | None = Non
     else:
         picked, cap_note = select_with_cap(eligible, families, k, cfg.family_cap)
 
+    # VLM 复核计划：哪些对局值得花钱让模型再判一次。
+    #
+    # 只挑「冠军进了最终名单」且「本地分前两名咬得紧」的组 ——
+    # 全打是 157~170 局（314+ 次调用、26 分钟），而绝大多数局不影响交付。
+    # 这一步只出计划，不调用模型；模型跑在 TS 侧，结果通过 --verdicts 回放。
+    plan = refine_plan(
+        names, list(families), {names[i]: float(final[i]) for i in range(len(names))},
+        set(names[i] for i in picked), cfg.stage2_cap, cfg.refine_max_matches,
+        cfg.refine_min_gap,
+    ) if cfg.stage2 else []
+
     notes = {
         **cap_note,
+        "refine_plan": [list(x) for x in plan],
         "warnings": warnings,
         "blocked_closed_eyes": sorted(blocked),
         "n_blocked": len(blocked),

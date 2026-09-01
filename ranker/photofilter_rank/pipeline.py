@@ -183,3 +183,51 @@ def stage2_reorder(
         for rank, n in enumerate(out.ranked):
             within[n] = rank
     return within, outcomes, n_matches
+
+
+# ── VLM 复核：只复核影响名单的那几组 ────────────────────────────
+
+
+def refine_plan(
+    names: list[str],
+    families: list[int],
+    score: dict[str, float],
+    selected: set[str],
+    cap: int = 8,
+    max_matches: int = 40,
+    min_gap: float = 0.15,
+) -> list[tuple[str, str]]:
+    """挑出值得让 VLM 复核的对局。
+
+    ━━ 为什么不全打 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    整个池子打完擂台是 157~170 局 = 314~340 次调用，约 26 分钟。
+    作为「开箱即用」的默认太重，而且绝大多数局跟结果无关 ——
+    最终只留 20 张，只有那些**冠军真的进了名单**的组才影响交付。
+
+    两道筛选：
+      1. 只看冠军进了最终名单的组（其余组打赢打输都不改变结果）
+      2. 组内前两名分差 < min_gap 才复核 —— 本地分很有把握时，
+         VLM 的边际价值低，而它自己的一致率只有 45%，
+         贸然让它推翻一个高置信度的判断是负收益
+
+    再按分差从小到大截断到 max_matches，保证成本可预期。
+    """
+    by_fam: dict[int, list[str]] = {}
+    for i, f in enumerate(families):
+        by_fam.setdefault(f, []).append(names[i])
+
+    cand: list[tuple[float, str, str]] = []
+    for members in by_fam.values():
+        if len(members) < 2:
+            continue
+        ranked = sorted(members, key=lambda n: -score.get(n, 0.5))[:cap]
+        if not any(n in selected for n in ranked):
+            continue                                  # 这一组不影响名单
+        gap = score.get(ranked[0], 0.5) - score.get(ranked[1], 0.5)
+        if gap >= min_gap:
+            continue                                  # 本地分很有把握，不劳烦模型
+        for challenger in ranked[1:]:
+            cand.append((gap, ranked[0], challenger))
+    cand.sort(key=lambda x: x[0])                     # 分差越小越该复核
+    return [(a, b) for _, a, b in cand[:max_matches]]

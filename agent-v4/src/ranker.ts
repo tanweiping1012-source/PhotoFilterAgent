@@ -167,6 +167,13 @@ export class Ranker {
   async rank(
     folder: string, target: number, exclude: string[], labels: string[],
     style: string, signal?: AbortSignal,
+    /**
+     * VLM 复核的裁决文件。给了就用回放裁判重出名单。
+     *
+     * 为什么要绕这一圈：擂台赛跑在 Python 侧，视觉模型跑在这一侧（TS）。
+     * 所以流程是「排序器出复核计划 → 这里跑模型 → 裁决写文件 → 排序器重放」。
+     */
+    verdictsFile?: string,
   ): Promise<RankResult> {
     const dir = mkdtempSync(join(tmpdir(), 'pfv4-lbl-'))
     try {
@@ -177,6 +184,7 @@ export class Ranker {
         writeFileSync(p, labels.join('\n'))
         args.push('--labels', p)
       }
+      if (verdictsFile) args.push('--verdicts', verdictsFile)
       return (await this.runJson<RankResult>(args, signal)).value
     } finally {
       rmSync(dir, { recursive: true, force: true })

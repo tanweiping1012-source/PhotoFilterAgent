@@ -88,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
     _common(p_pick)
     p_pick.add_argument("--labels", type=Path, default=None, help="你喜欢的照片文件名清单，每行一个")
     p_pick.add_argument("--json", type=Path, default=None, help="把完整结果写到这个文件")
+    p_pick.add_argument("--verdicts", type=Path, default=None,
+                        help="VLM 复核的裁决（TS 侧跑完回传）。用它替换组内名次后重出名单")
 
     p_eval = sub.add_parser("eval", help="有人工答案时，测排序器到底行不行")
     _common(p_eval)
@@ -278,6 +280,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if a.cmd == "pick":
+        # 有 VLM 裁决就用回放裁判：Python 这边拿不到模型，
+
+        # 所以先出计划、TS 侧跑完、再把裁决喂回来重放。
+
+        judge = None
+
+        if getattr(a, "verdicts", None) and a.verdicts.exists():
+
+            import json as _json
+
+            from .pipeline import LocalJudge, ReplayJudge
+
+            raw = _json.loads(a.verdicts.read_text())
+
+            vd = {(r["a"], r["b"]): r["winner"] for r in raw.get("verdicts", [])}
+
+            judge = ReplayJudge(vd, LocalJudge({}))
+
         res = rank_folder(cfg, verbose)
         print(f"\n模式 {res.mode}（{res.n_labels} 张标注）· {res.n_candidates} 张候选 "
               f"· {res.notes['n_families']} 个场景组 · {res.elapsed_sec}s")
