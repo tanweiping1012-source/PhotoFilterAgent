@@ -66,6 +66,11 @@ def main(argv: list[str] | None = None) -> int:
     p_prev.add_argument("--size", type=int, default=512, help="最长边像素（默认 512）")
     p_prev.add_argument("--json", type=Path, required=True)
 
+    p_pairs = sub.add_parser("pairs", help="阶段2：导出组内比较的考题（含正确答案），供成对评测用")
+    _common(p_pairs)
+    p_pairs.add_argument("--gold", type=Path, required=True, help="人工精选清单")
+    p_pairs.add_argument("--json", type=Path, required=True)
+
     p_pick = sub.add_parser("pick", help="挑出最好的 N 张")
     _common(p_pick)
     p_pick.add_argument("--labels", type=Path, default=None, help="你喜欢的照片文件名清单，每行一个")
@@ -141,6 +146,68 @@ def main(argv: list[str] | None = None) -> int:
             out[name] = base64.b64encode(buf.getvalue()).decode()
         a.json.write_text(json.dumps({"previews": out, "missing": missing}, ensure_ascii=False))
         print(f"生成 {len(out)} 张 {a.size}px 预览" + (f"，{len(missing)} 张缺失" if missing else ""))
+        return 0
+
+    if a.cmd == "pairs":
+        # 阶段 2 的考题。组级验收（13 组）功效不足 —— 连 12/13 都只有 p=0.057，
+        # 所以改成对级：同组内「金标 vs 非金标」每一对算一道题，样本量 13 → 99。
+        import numpy as np
+
+        from .dedupe import group_by_similarity, suggest_threshold
+        from .eligibility import EligibilityUnavailable, engine_facts
+        from .embed import embed_photos
+        from .quality import local_quality
+        from .scan import build_cache, fingerprint, list_photos
+        from .stage2 import eval_pairs, multi_groups
+
+        photos = list_photos(cfg.folder, cfg.exclude)
+        fp = fingerprint(photos, cfg.folder)
+        cm = build_cache(photos, cfg.cache_dir / "thumbs", cfg.max_side, cfg.jpeg_quality, not a.quiet)
+        X, names = embed_photos(cm, cfg.cache_dir, fp, cfg.resolve_device(), not a.quiet)
+        q = local_quality(cm, names, cfg.cache_dir, fp, cfg.resolve_device(), not a.quiet)
+
+        blocked: set[str] = set()
+        if cfg.engine_binary is not None:
+            try:
+                facts = engine_facts(cfg.folder, cfg.engine_binary,
+                                     cfg.cache_dir / "engine", cache_key=fp)
+                blocked = facts.closed_eyes & set(names)
+            except EligibilityUnavailable:
+                pass
+
+        rank = lambda v: (np.argsort(np.argsort(v)) / (len(v) - 1.0))
+        face = q.get("face", {})
+        have = [i for i, n in enumerate(names) if n in face]
+        score = np.full(len(names), 0.5)
+        if have:
+            score[have] = rank(np.array([face[names[i]] for i in have]))
+        else:
+            score = rank(np.array([q["laion_aes"][n] for n in names]))
+
+        fams = group_by_similarity(X, suggest_threshold(X, cfg.family_percentile, cfg.cosine_floor))
+        gold = {ln.strip() for ln in a.gold.read_text().splitlines() if ln.strip()} & set(names)
+        pairs = eval_pairs(names, list(fams), score.tolist(), gold, blocked)
+        groups = multi_groups(list(fams))
+
+        payload = {
+            "fingerprint": fp,
+            "n_photos": len(names),
+            "n_groups": len(set(fams)),
+            "n_multi_groups": len(groups),
+            "n_gold": len(gold),
+            "local_baseline": round(sum(p.local_correct for p in pairs) / max(len(pairs), 1), 4),
+            "pairs": [
+                {"a": p.a, "b": p.b, "answer": p.answer, "kind": p.kind,
+                 "local_correct": p.local_correct, "group": p.group}
+                for p in pairs
+            ],
+        }
+        a.json.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
+        ng = sum(1 for p in pairs if p.kind == "gold")
+        ne = sum(1 for p in pairs if p.kind == "eyes")
+        wrong = sum(1 for p in pairs if not p.local_correct)
+        print(f"考题 {len(pairs)} 道：金标类 {ng} · 闭眼类 {ne}")
+        print(f"本地分基线 {payload['local_baseline']:.1%}，其中判错 {wrong} 道 —— 那是模型的增量空间")
         return 0
 
     if a.cmd == "pick":

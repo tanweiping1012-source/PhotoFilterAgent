@@ -488,3 +488,31 @@ def test_时间段配额_可以关掉():
     from photofilter_rank.config import RankConfig
     assert RankConfig(folder=_P('/tmp')).time_segments == 10
     assert RankConfig(folder=_P('/tmp'), time_segments=0).time_segments == 0
+
+
+# ── 高清人脸眼部检测（阶段 1 的核心信号）─────────────────────────
+
+def test_引擎事实带上睁眼程度与低头():
+    from photofilter_rank.eligibility import EngineFacts
+    f = EngineFacts({'a.jpg'}, {'a.jpg': 50}, {'a.jpg'},
+                    eye_openness={'a.jpg': 0.09}, face_area={'a.jpg': 0.003})
+    assert f.eye_openness['a.jpg'] == 0.09
+    assert f.face_area['a.jpg'] == 0.003
+
+
+def test_引擎事实的新字段可省略_向后兼容旧缓存():
+    from photofilter_rank.eligibility import EngineFacts
+    f = EngineFacts({'a.jpg'}, {'a.jpg': 50})
+    assert f.eye_openness == {} and f.face_area == {}
+
+
+def test_旧缓存文件没有新字段也能读():
+    import json
+    from photofilter_rank.eligibility import EngineFacts
+    d = json.loads(json.dumps({'closed_eyes': ['a.jpg'], 'face_quality': {'a.jpg': 50}}))
+    f = EngineFacts(set(d['closed_eyes']),
+                    {k: int(v) for k, v in d['face_quality'].items()},
+                    set(d.get('big_face') or ()),
+                    {k: float(v) for k, v in (d.get('eye_openness') or {}).items()},
+                    {k: float(v) for k, v in (d.get('face_area') or {}).items()})
+    assert f.closed_eyes == {'a.jpg'} and f.eye_openness == {}
