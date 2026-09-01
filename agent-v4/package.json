@@ -1,0 +1,11 @@
+{
+  "name": "@photo-filter-agent/dsh-photo-filter-v4",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "照片筛选 v4：本地确定性排序器接成 DeepSeek Harness 工具，零付费视觉调用",
+  "main": "src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "peerDependencies": { "@deepseek-ai/cordis": "*" },
+  "dependencies": { "@deepseek-ai/dsh-tools": "*" }
+}

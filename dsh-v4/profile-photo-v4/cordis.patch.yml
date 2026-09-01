@@ -1,0 +1,48 @@
+# 照片筛选 v4 profile。
+#
+# 与 v3（photo-web）的根本差别：这个 profile 里**没有任何视觉模型调用**。
+# 排序是本机的确定性函数，模型只负责听懂意图、选参数、解释结果。
+# 所以 v3 那一整套让噪声可信的机制（双向盲比、独立盲审、账本、熔断）在这里都不需要。
+#
+# 隔离：本 profile 只存在于 $DSH_HOME=~/.dsh-v4，不碰 ~/.dsh 里 Codex 的 v3。
+
+- insert:
+    - id: photo-filter-v4
+      name: '@photo-filter-agent/dsh-photo-filter-v4'
+      config:
+        rankerDir: @@REPO@@/ranker
+        python: @@DSH_HOME@@/ranker-venv/bin/python
+        workdir: @@DSH_HOME@@/photo-filter-v4
+        cacheDir: @@CACHE@@
+        allowedRoots: ["@@PHOTOS@@"]
+        # 人工答案子目录必须在**枚举之前**排除。排除晚一步，整轮重合率就作废。
+        excludedRelativePaths:
+          - "me-pick"
+          - "20260221开拓小屋线+防潮坝/me/me-pick"
+          - "20260221开拓小屋线+防潮坝/景色pick"
+        # 闭眼资格门用的本地引擎（免费、不联网）。不配的话资格门不生效：
+        # 实测 20 张名单里会有 6 张闭眼，而用户自己的精选里闭眼 0 张。
+        engineBinary: "@@REPO@@/engine/.build/release/photofilter"
+        allowedExportRoots: ["@@EXPORT@@"]
+        # 首次跑要建 1024px 缓存 + 算 embedding + 两个质量模型，309 张约 5 分钟。
+        rankerTimeoutMs: 1800000
+        defaultTarget: 20
+
+# 关掉全部通用文件系统与 shell 能力。
+#
+# v4 的排序链路本身一张照片都不外发，但通用工具会绕过这个结构：
+# read_image 把**原图**（全分辨率、带 EXIF 与 GPS）直接读进对话，
+# glob/grep 泄露真实文件名。v3 实测模型确实尝试过这两条路。
+- id: tool-bash
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: skill-filesystem
+  disabled: true
+# 它能改写磁盘上的文件——"原图只读"不能靠 agent 自觉遵守。
+- id: tool-str-replace-editor
+  disabled: true
+- id: tool-web
+  disabled: true
