@@ -495,8 +495,10 @@ export function apply(ctx: Context, config: Config): void {
 
       try {
         const names = [...new Set(use.flat())]
-        const { previews, missing } = await ranker.preview(
-          state.folder!, names, config.excludedRelativePaths, 512, exec.signal,
+        // withFace=true：必须带高清人脸，否则模型在 30 像素的脸上判断表情，
+        // 那和瞎猜没区别（v3 的重评一致率只有 30%，正是这个原因）。
+        const { previews, faces, missing } = await ranker.preview(
+          state.folder!, names, config.excludedRelativePaths, 512, exec.signal, true,
         )
         if (missing.length) {
           throw new Error(`这些照片没有缓存预览，无法比较：${missing.map((n) => ids.id(n)).join(' ')}`)
@@ -506,7 +508,7 @@ export function apply(ctx: Context, config: Config): void {
           attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
         }
         const { verdicts, route } = await comparePairs(
-          use, previews, services, exec as unknown as HarnessVisionExecution,
+          use, previews, faces, services, exec as unknown as HarnessVisionExecution,
         )
 
         const swaps: string[] = []
@@ -641,8 +643,8 @@ export function apply(ctx: Context, config: Config): void {
         const use = args.limit ? all.slice(0, args.limit) : all
 
         const names = [...new Set(use.flatMap((p) => [p.a, p.b]))]
-        const { previews, missing } = await ranker.preview(
-          folder, names, config.excludedRelativePaths, 512, exec.signal,
+        const { previews, faces, missing } = await ranker.preview(
+          folder, names, config.excludedRelativePaths, 512, exec.signal, true,
         )
         if (missing.length) throw new Error(`${missing.length} 张缺少缓存预览，评测中止`)
 
@@ -651,7 +653,7 @@ export function apply(ctx: Context, config: Config): void {
           attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
         }
         const { verdicts, route } = await comparePairs(
-          use.map((p) => [p.a, p.b] as const), previews, services,
+          use.map((p) => [p.a, p.b] as const), previews, faces, services,
           exec as unknown as HarnessVisionExecution,
         )
 

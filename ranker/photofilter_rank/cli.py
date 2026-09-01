@@ -64,6 +64,11 @@ def main(argv: list[str] | None = None) -> int:
     _common(p_prev)
     p_prev.add_argument("--names", nargs="+", required=True, help="要出图的文件名")
     p_prev.add_argument("--size", type=int, default=512, help="最长边像素（默认 512）")
+    p_prev.add_argument("--with-face", action="store_true",
+                        help="额外出一张高清人脸。发给视觉模型的 512px 小图上，"
+                             "环境人像的脸只剩约 30 像素，91%% 的照片不足 48 像素 —— "
+                             "模型看不见表情，只能猜")
+    p_prev.add_argument("--face-size", type=int, default=448, help="人脸裁切的边长（默认 448）")
     p_prev.add_argument("--json", type=Path, required=True)
 
     p_pairs = sub.add_parser("pairs", help="阶段2：导出组内比较的考题（含正确答案），供成对评测用")
@@ -123,12 +128,23 @@ def main(argv: list[str] | None = None) -> int:
         import hashlib
         from io import BytesIO
 
-        from PIL import Image
+        from PIL import Image, ImageOps
 
         from .scan import list_photos
         photos = {p.name: p for p in list_photos(cfg.folder, cfg.exclude)}
         out: dict[str, str] = {}
+        faces: dict[str, str] = {}
         missing: list[str] = []
+        boxes: dict[str, list[float]] = {}
+        if getattr(a, "with_face", False):
+            from .eligibility import EligibilityUnavailable, engine_facts
+            from .scan import fingerprint
+            try:
+                fp = fingerprint(list_photos(cfg.folder, cfg.exclude), cfg.folder)
+                boxes = engine_facts(cfg.folder, cfg.engine_binary,
+                                     cfg.cache_dir / 'engine', cache_key=fp).face_box
+            except (EligibilityUnavailable, TypeError):
+                boxes = {}
         for name in a.names:
             src = photos.get(name)
             if src is None:
@@ -144,8 +160,31 @@ def main(argv: list[str] | None = None) -> int:
             buf = BytesIO()
             im.save(buf, "JPEG", quality=82)      # 与 v3 的 low 档一致
             out[name] = base64.b64encode(buf.getvalue()).decode()
-        a.json.write_text(json.dumps({"previews": out, "missing": missing}, ensure_ascii=False))
-        print(f"生成 {len(out)} 张 {a.size}px 预览" + (f"，{len(missing)} 张缺失" if missing else ""))
+            if getattr(a, "with_face", False) and name in boxes:
+                # 人脸从**原图**裁，不从缩略图 —— 缩略图上的脸本来就已经糊了。
+                # Vision 的包围盒原点在左下，PIL 在左上，Y 要翻。
+                x, y, bw, bh = boxes[name]
+                # 必须先应用 EXIF 方向再裁。
+                #
+                # 踩过：引擎解码时带 kCGImageSourceCreateThumbnailWithTransform，
+                # 坐标是在**旋转后**的画面里；而 PIL 的 Image.open 不应用方向标记。
+                # 这批照片的 orientation = 8（旋转 90°），两个坐标系差一次旋转 ——
+                # 裁出来的是天空和树，而且不会报错，会静默把废图发给模型。
+                full = ImageOps.exif_transpose(Image.open(src)).convert("RGB")
+                W, H = full.size
+                cx, cy = (x + bw / 2) * W, (1 - (y + bh / 2)) * H
+                half = max(bw * W, bh * H) * 0.95      # 外扩，要看得见眉毛和脸颊
+                crop = full.crop((int(max(0, cx - half)), int(max(0, cy - half)),
+                                  int(min(W, cx + half)), int(min(H, cy + half))))
+                crop = crop.resize((a.face_size, a.face_size), Image.LANCZOS)
+                fb = BytesIO()
+                crop.save(fb, "JPEG", quality=86)
+                faces[name] = base64.b64encode(fb.getvalue()).decode()
+        a.json.write_text(json.dumps(
+            {"previews": out, "faces": faces, "missing": missing}, ensure_ascii=False))
+        print(f"生成 {len(out)} 张 {a.size}px 预览"
+              + (f" + {len(faces)} 张 {a.face_size}px 高清人脸" if faces else "")
+              + (f"，{len(missing)} 张缺失" if missing else ""))
         return 0
 
     if a.cmd == "pairs":
