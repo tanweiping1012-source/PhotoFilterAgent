@@ -529,3 +529,34 @@ def test_引擎事实带上人脸包围盒():
 def test_人脸包围盒可省略_旧缓存仍可读():
     from photofilter_rank.eligibility import EngineFacts
     assert EngineFacts({'a.jpg'}, {'a.jpg': 50}).face_box == {}
+
+
+# ── EXIF 方向（缩略图缓存）─────────────────────────────────────
+
+def test_缩略图按EXIF方向摆正(tmp_path):
+    """相机竖着拍时像素常按横向存储，靠 EXIF 方向标记告诉看图软件转多少度。
+
+    这一层不转，后面全部是横躺的：CLIP 特征、人脸质量分、发给视觉模型的图。
+    而且完全无声 —— 不会报错，只是所有结果都基于一张躺倒的图。
+    """
+    from PIL import Image
+    from photofilter_rank.scan import build_cache
+
+    src = tmp_path / "sideways.jpg"
+    im = Image.new("RGB", (400, 200), "white")
+    ex = Image.Exif()
+    ex[274] = 8                                     # 8 = 需逆时针转 90°
+    im.save(src, exif=ex)
+    m = build_cache([src], tmp_path / "thumbs", max_side=256, quality=90, verbose=False)
+    w, h = Image.open(m["sideways.jpg"]).size
+    assert h > w, f"没有按方向摆正：缓存出来还是 {w}x{h}（宽>高）"
+
+
+def test_修方向必须换缓存键(tmp_path):
+    """原图一个字节没变，缓存键只由路径决定 —— 不换键就会继续读旧的横躺图。"""
+    from photofilter_rank.scan import build_cache
+    from PIL import Image
+    src = tmp_path / "a.jpg"
+    Image.new("RGB", (10, 10)).save(src)
+    m = build_cache([src], tmp_path / "t", max_side=8, quality=90, verbose=False)
+    assert "-o1" in m["a.jpg"].name, "缓存键里没有版本后缀，修方向的改动不会生效"

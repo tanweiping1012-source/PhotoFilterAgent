@@ -10,7 +10,7 @@ import hashlib
 import time
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 Image.MAX_IMAGE_PIXELS = None  # 40MP 原图会触发 PIL 的解压炸弹保护
 
@@ -55,7 +55,10 @@ def build_cache(
     mapping: dict[str, Path] = {}
     todo = []
     for p in photos:
-        key = hashlib.sha256(str(p).encode()).hexdigest()[:24] + ".jpg"
+        # 键里带上 -o1：修「不处理 EXIF 方向」这个 bug 时必须让旧缓存失效。
+        # 缓存键只由**路径**决定，而原图一个字节没变 —— 不换键的话，
+        # 修好的代码会继续读着横躺的旧缓存，而且完全无声。
+        key = hashlib.sha256(str(p).encode()).hexdigest()[:24] + "-o1.jpg"
         dst = cache_dir / key
         mapping[p.name] = dst
         if not dst.exists():
@@ -70,6 +73,15 @@ def build_cache(
         # draft() 让 JPEG 解码器直接以 1/2、1/4、1/8 尺寸解码，不用先解全尺寸再缩
         im.draft("RGB", (max_side, max_side))
         im = im.convert("RGB")
+        # 必须按 EXIF 方向摆正。
+        #
+        # 相机竖着拍时，像素通常仍按横向存储，靠 EXIF 的方向标记告诉看图软件转多少度。
+        # 这一层不转，后面**全部**是横躺的：CLIP 特征、人脸质量分、发给视觉模型的图。
+        # 实测这批 309 张里有 28 张（9%）方向标记是「逆时针转 90°」——
+        # 也就是说它们的特征和分数一直是躺着算出来的，而且没有任何报错。
+        #
+        # 注意 draft() 之后再 transpose：draft 只影响解码尺寸，不动方向。
+        im = ImageOps.exif_transpose(im)
         im.thumbnail((max_side, max_side), Image.LANCZOS)
         dst.parent.mkdir(parents=True, exist_ok=True)
         im.save(dst, "JPEG", quality=quality)
