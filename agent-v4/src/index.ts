@@ -18,7 +18,7 @@
  * @module @photo-filter-agent/dsh-photo-filter-v4
  */
 
-import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve as resolvePath } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
@@ -61,6 +61,13 @@ export interface Config {
   defaultTarget: number
   /** 摘要里直接列 ID 的上限。 */
   maxInlineIdList: number
+  /**
+   * 阶段 2 的成对评测考题文件。**非空才注册评测工具**。
+   *
+   * 生产 profile 不设这一项，agent 就看不见这个工具 —— 评测脚手架不该
+   * 出现在真实用户的工具面上。
+   */
+  evalPairsFile: string
 }
 
 export const Config: z<Config> = z.object({
@@ -75,6 +82,7 @@ export const Config: z<Config> = z.object({
   rankerTimeoutMs: z.number().step(1).min(10_000).default(900_000),
   defaultTarget: z.number().step(1).min(1).default(20),
   maxInlineIdList: z.number().step(1).min(0).default(60),
+  evalPairsFile: z.string().default(''),
 })
 
 /** 一次会话内的运行状态。只存在内存里，工具之间靠它传递上下文。 */
@@ -597,4 +605,86 @@ export function apply(ctx: Context, config: Config): void {
       }
     },
   }))
+
+  // ── 评测专用：阶段 2 成对准确率 ─────────────────────────────
+  //
+  // 只在 config.evalPairsFile 非空时注册。生产 profile 不设它。
+  //
+  // 为什么需要这个工具而不是让 agent 自己一对对调 compare_within_groups：
+  // 评测必须**跑完全部考题**且中途不许改判据。交给 agent 逐对决定要不要比，
+  // 它会挑简单的比、会中途改主意 —— 那样测出来的数字没法用。
+  if (config.evalPairsFile) {
+    ctx.tools.register(defineTool({
+      name: 'run_pair_eval',
+      description:
+        '【评测专用】跑完考题文件里的全部照片对，输出阶段 2 的成对准确率。' +
+        `每对花 2 次调用（AB/BA 双向）。考题：${config.evalPairsFile}`,
+      parameters: {
+        limit: { type: 'number', description: '最多跑几对（留空=全部）' },
+        out: { type: 'string', description: '结果写到哪个文件' },
+      },
+      output: {
+        schema: {
+          type: 'object', additionalProperties: false,
+          properties: { summary: { type: 'string' }, calls_spent: { type: 'number' } },
+        },
+        render: (_a, v) => [{ type: 'text', text: v.summary }],
+      },
+      async execute(args, exec) {
+        const spec = JSON.parse(readFileSync(config.evalPairsFile, 'utf8')) as {
+          folder?: string
+          pairs: Array<{ a: string; b: string; answer: string; kind: string; local_correct: boolean; group: number }>
+        }
+        const folder = spec.folder ?? state.folder
+        if (!folder) throw new Error('考题文件里没有 folder，且当前会话还没扫描过文件夹。')
+        const all = spec.pairs
+        const use = args.limit ? all.slice(0, args.limit) : all
+
+        const names = [...new Set(use.flatMap((p) => [p.a, p.b]))]
+        const { previews, missing } = await ranker.preview(
+          folder, names, config.excludedRelativePaths, 512, exec.signal,
+        )
+        if (missing.length) throw new Error(`${missing.length} 张缺少缓存预览，评测中止`)
+
+        const services: HarnessVisionServices = {
+          llm: ctx.get('llm') as unknown as HarnessVisionServices['llm'],
+          attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
+        }
+        const { verdicts, route } = await comparePairs(
+          use.map((p) => [p.a, p.b] as const), previews, services,
+          exec as unknown as HarnessVisionExecution,
+        )
+
+        // 判分。tie 一律算**没答对** —— 平局不能算赢，否则模型全答平局就 100% 了。
+        const rows = use.map((p, i) => {
+          const v = verdicts[i]!
+          return { ...p, winner: v.winner, consistent: v.consistent, ab: v.ab, ba: v.ba,
+                   reason: v.reason, model_correct: v.winner === p.answer }
+        })
+        const n = rows.length
+        const pct = (x: number) => `${((x / Math.max(n, 1)) * 100).toFixed(1)}%`
+        const gold = rows.filter((r) => r.kind === 'gold')
+        const eyes = rows.filter((r) => r.kind === 'eyes')
+        const wrong = rows.filter((r) => !r.local_correct)   // 本地分判错的 —— 真正的增量空间
+        const right = rows.filter((r) => r.local_correct)
+        const hit = (rs: typeof rows) =>
+          rs.length ? `${rs.filter((r) => r.model_correct).length}/${rs.length}` : '—'
+
+        const outPath = args.out || `${config.evalPairsFile}.result.json`
+        writeFileSync(outPath, JSON.stringify({ route, rows }, null, 2))
+
+        return {
+          calls_spent: n * 2,
+          summary:
+            `阶段 2 成对评测完成 · 模型 ${route} · ${n} 对 / ${n * 2} 次调用\n` +
+            `T0 机制 · AB/BA 双向一致率  ${pct(rows.filter((r) => r.consistent).length)}\n` +
+            `T1 体检 · 睁眼 vs 闭眼      ${hit(eyes)}\n` +
+            `T2 增量 · 金标 vs 非金标    ${hit(gold)}（本地分 ${gold.filter((r) => r.local_correct).length}/${gold.length}）\n` +
+            `  └ 本地分判错的           ${hit(wrong)}  ← 救回来的\n` +
+            `  └ 本地分判对的           ${hit(right)}  ← 别毁掉的\n` +
+            `明细写入 ${outPath}`,
+        }
+      },
+    }))
+  }
 }

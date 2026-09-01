@@ -61,9 +61,15 @@ class EngineFacts:
     """
 
     def __init__(self, closed_eyes: set[str], face_quality: dict[str, int],
-                 big_face: set[str] | None = None):
+                 big_face: set[str] | None = None,
+                 eye_openness: dict[str, float] | None = None,
+                 face_area: dict[str, float] | None = None):
         self.closed_eyes = closed_eyes
         self.face_quality = face_quality
+        # 连续的睁眼程度。绝对阈值对眼型细长的人是系统性误判，
+        # 真正该用的是「在这个人自己的分布里排第几」—— 那需要原始数值。
+        self.eye_openness = eye_openness or {}
+        self.face_area = face_area or {}
         # 脸大到能做睁闭眼判定（引擎里的门槛是占画面 ≥0.8%）。
         # 用它当「特写 vs 环境人像」的代理 —— 见 config.py 的 stratify_by_face_size。
         self.big_face = big_face or set()
@@ -108,7 +114,9 @@ def engine_facts(
             d = json.loads(cached.read_text())
             return EngineFacts(set(d['closed_eyes']),
                                {k: int(v) for k, v in d['face_quality'].items()},
-                               set(d.get('big_face') or ()))
+                               set(d.get('big_face') or ()),
+                               {k: float(v) for k, v in (d.get('eye_openness') or {}).items()},
+                               {k: float(v) for k, v in (d.get('face_area') or {}).items()})
     if not engine.exists():
         raise EligibilityUnavailable(f"本地分析引擎不存在：{engine}")
 
@@ -129,6 +137,11 @@ def engine_facts(
     closed: set[str] = set()
     quality: dict[str, int] = {}
     big: set[str] = set()
+    openness: dict[str, float] = {}
+    area: dict[str, float] = {}
+    eye_px: dict[str, int] = {}
+    pitch: dict[str, float] = {}
+    head_down: set[str] = set()
     for c in report.get('candidates', []):
         name = by_anon.get(c['id'])
         if name is None:
@@ -141,9 +154,21 @@ def engine_facts(
         # 就等价于「脸够大」。这是从现有输出里读出来的代理，没改引擎。
         if '眼睛' in (c.get('face') or ''):
             big.add(name)
+        if c.get('eye_openness') is not None:
+            openness[name] = float(c['eye_openness'])
+        if c.get('face_area') is not None:
+            area[name] = float(c['face_area'])
+        if c.get('eye_face_px') is not None:
+            eye_px[name] = int(c['eye_face_px'])
+        if c.get('pitch') is not None:
+            pitch[name] = float(c['pitch'])
+        if c.get('head_down'):
+            head_down.add(name)
     if cache_key:
         (workdir / f'facts-{cache_key}.json').write_text(
             json.dumps({'closed_eyes': sorted(closed), 'face_quality': quality,
-                        'big_face': sorted(big)})
+                        'big_face': sorted(big), 'eye_openness': openness,
+                        'face_area': area, 'eye_face_px': eye_px,
+                        'pitch': pitch, 'head_down': sorted(head_down)})
         )
-    return EngineFacts(closed, quality, big)
+    return EngineFacts(closed, quality, big, openness, area)

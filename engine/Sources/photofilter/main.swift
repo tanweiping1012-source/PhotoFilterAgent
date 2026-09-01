@@ -219,6 +219,28 @@ func runAnalyze(_ options: Options) async {
             row["face"] = portrait.summary
             row["face_quality"] = Int((portrait.captureQuality * 100).rounded())
             if portrait.eyesLikelyClosed { row["eyes_closed"] = true }
+            // 连续的睁眼程度必须导出来，不能只留一个布尔。
+            //
+            // 绝对阈值 0.22 是在**一个人的六张照片**上标定的（见 PortraitQualityAnalyzer
+            // 的注释）。眼型天生细长的人，睁到最大也可能低于它 —— 那不是准确率问题，
+            // 是对特定眼型的系统性误判。
+            //
+            // 用户实际的判据是「相比于**这个人的其他照片**来说，眼睛睁开了没有」——
+            // 那是个相对量。相对量只能在拿到连续值之后才算得出来，
+            // 所以这里必须把原始数值传出去，由上层按人/按连拍组做归一。
+            // 不再按面积占比过滤 —— 分析器现在只在人脸像素数够大时才产生读数，
+            // 有读数就说明可信。再套一层面积门会把高清补测的成果全部挡掉
+            // （实测：补测跑了，但这里过滤后覆盖率纹丝不动）。
+            if let openness = portrait.eyeOpenness {
+                row["eye_openness"] = openness
+            }
+            row["face_area"] = portrait.faceAreaRatio
+            // 眼睛读数是在多大的人脸上做出来的 —— 用来判断这个读数可不可信，
+            // 也用来验证高清补测到底覆盖了多少张。
+            if let px = portrait.eyeFacePixels { row["eye_face_px"] = px }
+            if portrait.eyeFromHiRes { row["eye_hires"] = true }
+            if let pitch = portrait.pitchRadians { row["pitch"] = pitch }
+            if portrait.isHeadDown { row["head_down"] = true }
         }
         return row
     }
