@@ -37,6 +37,21 @@ class AnchorCase:
     chosen: list[str]          # 空 = 整组淘汰
     reason: str
 
+    def as_pair(self) -> tuple[str, str] | None:
+        """把这一组压成「一对」：他选的 vs 他淘汰的。
+
+        为什么不发整组：整组要 6 张图，而锚点每次调用都要重发。
+        实测整组锚点占了一次调用 18 张图里的 14 张、684KB 里的 560KB ——
+        比考题本身贵 4 倍，94 次调用就是 53MB。
+
+        而任务本身就是**成对**比较，锚点用同样的格式反而更贴切。
+        整组淘汰的那种没有胜者，用不了这个形态。
+        """
+        if not self.chosen:
+            return None
+        lost = [p for p in self.photos if p not in self.chosen]
+        return (self.chosen[0], lost[0]) if lost else None
+
     def describe(self, idx: int) -> str:
         if not self.chosen:
             verdict = "整组都不要"
@@ -96,6 +111,41 @@ def split_annotation(
 
     anchors = [AnchorCase(k, groups[k], chosen.get(k, []), reasons.get(k, "")) for k in picked]
     return Split(anchors=anchors, test_groups=[k for k in keys if k not in picked])
+
+
+def build_pair_anchor_block(anchors: list[AnchorCase]) -> tuple[str, list[str]]:
+    """成对形态的锚点：文本 + 要附的照片（按文本里的顺序）。
+
+    返回 (文本, 照片名列表)。调用方只需给这些照片出**人脸特写** ——
+    要示范的判断以眼神为主（用户 35 次判断里 27 次提到），
+    而人脸特写正是能看清眼神的那张。
+    """
+    lines, photos = [], []
+    n = 0
+    for a in anchors:
+        pr = a.as_pair()
+        if pr is None:
+            # 整组淘汰没有胜者，只能用文字描述，不附图
+            lines.append(f"· 另有一组他**全都不要**（没附图），理由是「{a.reason}」")
+            continue
+        n += 1
+        photos += [pr[0], pr[1]]
+        # 理由是**整组**的（原话里会提到没附图的那几张），所以必须说明
+        # 这两张只是那一组里的一对，否则模型会去找不存在的「第 4、5、6 张」。
+        lines.append(
+            f"· 第 {2*n-1} 张和第 {2*n} 张来自同一组连拍，他留下了**第 {2*n-1} 张**、"
+            f"淘汰了第 {2*n} 张。\n"
+            f"  他对那一整组的原话是「{a.reason}」"
+            f"（这句提到的其他张没有附图，看前半句就好）"
+        )
+    if not lines:
+        return "", []
+    return (
+        "先看这个人自己挑照片的几个例子（下面前几张人脸就是例子）：\n\n"
+        + "\n".join(lines)
+        + "\n\n他允许「整组都不要」，也允许「几张都可以」—— 不要硬凑一个赢家。\n",
+        photos,
+    )
 
 
 def build_anchor_block(anchors: list[AnchorCase]) -> str:
