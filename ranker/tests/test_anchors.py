@@ -59,3 +59,33 @@ def test_锚点块提醒允许不选():
     s = split_annotation(GROUPS, CHOSEN, REASONS, n_anchors=3)
     block = build_anchor_block(s.anchors)
     assert "整组都不要" in block and "不要硬凑" in block
+
+
+def test_成对锚点只取一对而不是整组():
+    """整组锚点占了一次调用 18 张图里的 14 张、684KB 里的 560KB ——
+    比考题本身贵 4 倍，94 次调用就是 51MB。"""
+    from photofilter_rank.anchors import build_pair_anchor_block
+    s = split_annotation(GROUPS, CHOSEN, REASONS, n_anchors=3)
+    _, photos = build_pair_anchor_block(s.anchors)
+    all_photos = [p for a in s.anchors for p in a.photos]
+    assert len(photos) < len(all_photos), "成对形态没有减少图片数"
+    assert len(photos) % 2 == 0, "成对形态的图片数必须是偶数"
+
+
+def test_整组淘汰的锚点不附图():
+    """它没有胜者，压不成一对，只能用文字描述。"""
+    from photofilter_rank.anchors import build_pair_anchor_block
+    c = AnchorCase("g", ["a.jpg", "b.jpg"], [], "都不选：都没睁眼")
+    txt, photos = build_pair_anchor_block([c])
+    assert photos == []
+    assert "全都不要" in txt and "都不选：都没睁眼" in txt
+
+
+def test_成对锚点说明理由覆盖的是整组():
+    """理由原话会提到没附图的那几张，不说明的话模型会去找不存在的图。"""
+    from photofilter_rank.anchors import build_pair_anchor_block
+    c = AnchorCase("g", ["w.jpg", "l.jpg", "x.jpg"], ["w.jpg"], "1 好；2、3 闭眼")
+    txt, photos = build_pair_anchor_block([c])
+    assert len(photos) == 2
+    assert "同一组连拍" in txt
+    assert "没有附图" in txt, "必须说明原话里提到的其他张没附图"
