@@ -188,23 +188,6 @@ def main(argv: list[str] | None = None) -> int:
                 crop.save(fb, "JPEG", quality=86)
                 faces[name] = base64.b64encode(fb.getvalue()).decode()
 
-                # 人物区域：以人脸为锚，上留 1.5 个脸高、下扩 6 个脸高（覆盖躯干）、
-                # 左右各 2.5 个脸宽。**覆盖掉整幅小图**。
-                #
-                # 为什么不发整个场景：512px 的整幅图上人脸只剩约 30 像素，
-                # 模型被要求判表情却看不见。而把整幅图放大到能看清脸需要
-                # 中位 1625px / 220KB（最难的一张要 3562px），代价过高。
-                #
-                # 换成人物区域后，768px 下人脸有 100~134 像素，只要 40~60KB。
-                # 丢掉的远景在阶段 2 里本来就没有信息 —— 同一组连拍的背景是一样的。
-                fw, fh = bw * W, bh * H
-                ftop = (1 - (y + bh)) * H
-                sub = full.crop((int(max(0, cx - 2.5 * fw)), int(max(0, ftop - 1.5 * fh)),
-                                 int(min(W, cx + 2.5 * fw)), int(min(H, ftop + 6.0 * fh))))
-                sub.thumbnail((a.subject_size, a.subject_size), Image.LANCZOS)
-                sb = BytesIO()
-                sub.save(sb, "JPEG", quality=84)
-                out[name] = base64.b64encode(sb.getvalue()).decode()
         report: dict[str, list[str]] = {}
         if getattr(a, "verify", False):
             # 不看过程，看东西本身。这是唯一能自动发现「规格错了」的办法 ——

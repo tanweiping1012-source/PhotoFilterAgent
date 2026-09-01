@@ -99,31 +99,67 @@ def check_sent_pair(
 ) -> CheckResult:
     """检查「为一张照片发出去的那一组图」。
 
-    规则：**这张照片里有脸，那么发出去的每一张图都得看得清这张脸。**
+    ━━ 判据是「覆盖」，不是「逐图」━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    我一度把规则写成「至少有一张能看清就行」，理由是整幅图上脸小是设计如此
-    （旁边配了人脸特写）。那是错的 —— 它把一个真实发现降级成了「设计意图」。
-    模型收到一张脸只有 30 像素的图，仍然会拿它做判断，而它在那张图上
-    只能瞎猜。发一张自己都知道读不了的图，是在给模型喂噪声。
+    这条规则我写错过两次，两次方向相反：
 
-    正确的做法不是放宽判据，是改发送逻辑：不发整个场景，发**人物区域** ——
-    阶段 2 比的是同一组连拍，背景在组内完全一样，对「哪张更好」贡献零信息。
+      第一版「至少一张能看清脸就行」—— 太松。它把「整幅图上脸只有 30 像素」
+      这个真实发现降级成了「设计意图」，等于替 bug 辩护。
+
+      第二版「每一张都得看清脸」—— 太紧，而且**代价是把照片好在哪裁掉了**。
+      为了满足它，整幅场景被换成了人物区域裁切，那座雪山没了 ——
+      而它正是这张环境人像好看的一半。结果图更大（179KB vs 134KB）、
+      信息更少。
+
+    正确的问法不是「每张图都合格吗」，是「**这一组图合起来，够不够回答
+    全部判据**」。用户标注里的判据分成三类，各自需要不同的图：
+
+        表情 / 眼神 / 脸型光影   需要一张人脸 ≥96 像素的图
+        取景 / 视觉引导物        需要一张**未经裁切**的完整画面
+        姿态 / 手                需要能看到身体
+
+    「整张缩略图 + 人脸放大」正好同时满足三条，而任何一张单独拿出来都不够。
     """
     r = CheckResult()
+
+    # 每张图都必须干净 —— 这条是逐图的，元数据不存在「覆盖」一说。
     for kind, jpeg in images.items():
         im = Image.open(BytesIO(jpeg))
         if len(im.getexif()):
             r.issues.append(ImageIssue(f"元数据·{kind}", "error",
                                        f"残留 {len(im.getexif())} 个 EXIF 字段"))
-        px = detect_largest_face_px(im)
-        if px is None:
-            r.issues.append(ImageIssue(f"人脸·{kind}", "warn",
-                                       "这张图上检不出人脸（风景照正常，人像照就是裁歪了）"))
-        elif px < min_face_px:
-            r.issues.append(ImageIssue(
-                f"人脸·{kind}", "error",
-                f"人脸只有 {px} 像素（要求 ≥{min_face_px}）—— 模型在这张图上只能瞎猜",
-            ))
+
+    # 覆盖检查①：至少有一张能看清脸。
+    best_px = 0
+    detected_any = False
+    for kind, jpeg in images.items():
+        px = detect_largest_face_px(Image.open(BytesIO(jpeg)))
+        if px is not None:
+            detected_any = True
+            best_px = max(best_px, px)
+    if not detected_any:
+        r.issues.append(ImageIssue("人脸覆盖", "warn",
+                                   "这一组图里都检不出人脸（风景照正常；人像照就是裁歪了）"))
+    elif best_px < min_face_px:
+        r.issues.append(ImageIssue(
+            "人脸覆盖", "error",
+            f"最大的一张脸也只有 {best_px} 像素（要求 ≥{min_face_px}）—— "
+            f"模型判不了表情和眼神，只能瞎猜",
+        ))
+
+    # 覆盖检查②：至少有一张是完整画面（未裁切）。
+    #
+    # 判据是长宽比与原图（按 EXIF 摆正后）一致 —— 任何裁切都会改变它。
+    # 少了这一张，「取景」「有没有视觉引导物」这类判据就没有依据。
+    ow, oh = _oriented_size(source)
+    want = ow / oh
+    if not any(abs(Image.open(BytesIO(j)).size[0] / Image.open(BytesIO(j)).size[1] - want) <= 0.02
+               for j in images.values()):
+        r.issues.append(ImageIssue(
+            "构图覆盖", "error",
+            f"没有一张是完整画面（原图长宽比 {want:.3f}）—— "
+            f"模型看不到取景和环境，判不了构图",
+        ))
     return r
 
 
