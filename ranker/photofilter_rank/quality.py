@@ -94,7 +94,7 @@ def local_quality(
     device: str, verbose: bool = True
 ) -> dict[str, dict[str, float]]:
     """返回 {'laion_aes': {name: score}, 'face': {...}, 'face_missing': {...}}。"""
-    path = cache_dir / f"quality-v2-{fp}.json"
+    path = cache_dir / f"quality-v3-{fp}.json"
     if path.exists():
         data = json.loads(path.read_text())
         if set(data.get("laion_aes", {})) == set(names):
