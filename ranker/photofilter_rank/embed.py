@@ -27,7 +27,10 @@ def embed_photos(
     结果按数据集指纹缓存到 npz，重跑不必重算。
     """
     names = sorted(cache_map)
-    npz = cache_dir / f"emb-{fp}-{MODEL_NAME.replace('/', '')}.npz"
+    # -o1：缩略图开始按 EXIF 方向摆正之后，旧的 embedding 全部作废。
+    # 指纹只由原图的路径/大小/修改时间决定，而原图一个字节没变 ——
+    # 不换文件名就会继续读着横躺图算出来的向量，而且完全无声。
+    npz = cache_dir / f"emb-{fp}-{MODEL_NAME.replace('/', '')}-o1.npz"
     if npz.exists():
         z = np.load(npz, allow_pickle=True)
         if list(z["names"]) == names:

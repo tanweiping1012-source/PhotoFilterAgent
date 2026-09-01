@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
 
         from PIL import Image, ImageOps
 
-        from .scan import list_photos
+        from .scan import list_photos, thumb_key
         photos = {p.name: p for p in list_photos(cfg.folder, cfg.exclude)}
         out: dict[str, str] = {}
         faces: dict[str, str] = {}
@@ -150,8 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             if src is None:
                 missing.append(name)
                 continue
-            key = hashlib.sha256(str(src).encode()).hexdigest()[:24] + ".jpg"
-            thumb = cfg.cache_dir / "thumbs" / key
+            thumb = cfg.cache_dir / "thumbs" / thumb_key(src)
             if not thumb.exists():
                 missing.append(name)
                 continue
