@@ -61,7 +61,7 @@ enum PhotoAnalysisPipeline {
             perceptualHash: fingerprintRaster.flatMap { PerceptualHasher.hash(from: $0) },
             technicalQuality: qualityRaster.map { TechnicalQualityAnalyzer.analyze($0) },
             // 只对人物照做人脸分析：风景照上跑关键点检测是白花 CPU。
-            portraitQuality: category == .people ? PortraitQualityAnalyzer.analyze(image) : nil,
+            portraitQuality: category == .people ? PortraitQualityAnalyzer.analyze(image, source: source) : nil,
             curationCategory: category
         )
     }
