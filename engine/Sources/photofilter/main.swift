@@ -241,6 +241,7 @@ func runAnalyze(_ options: Options) async {
             if portrait.eyeFromHiRes { row["eye_hires"] = true }
             if let pitch = portrait.pitchRadians { row["pitch"] = pitch }
             if portrait.isHeadDown { row["head_down"] = true }
+            if let box = portrait.faceBox { row["face_box"] = box }
         }
         return row
     }

@@ -31,14 +31,25 @@ import { HarnessVisionTransport, resolveHarnessModelRoute } from './harness-visi
 const SYSTEM = `你在帮一个人从自己的旅行照片里挑出值得留下的几张。
 现在给你同一场景、几乎同时拍的两张照片，请判断哪一张更值得留下。
 
-这两张在清晰度、曝光、构图上通常几乎没有差别 —— 真正的差别在：
+**每张照片给你两幅图**：先是整幅画面（看构图、姿态、环境），
+紧接着是同一张照片里**人脸放大后的高清裁切**（看表情、眼神）。
+所以你会依次看到：第一张的全景、第一张的人脸、第二张的全景、第二张的人脸。
+
+为什么要给你人脸特写：这类照片人物往往只占画面很小一块，
+在缩小后的整幅画面上人脸只有**几十个像素**，表情和眼神根本看不出来。
+判断表情请以人脸特写为准，判断构图和姿态请以全景为准。
+
+这两张在曝光、构图上通常几乎没有差别 —— 真正的差别在：
+- 眼神：眼睛睁开的程度，有没有落点，是不是在看镜头或看向有意义的方向
 - 表情：笑是不是到眼睛里，有没有僵硬、口型怪异、被抓拍到的中间态
 - 眼神：有没有落点，是不是在看镜头或看向有意义的方向
 - 姿态与手：身体和手的位置自然不自然，有没有多余的动作
 - 人物关系：如果有多个人，互动是不是成立
 
-**不要因为「更清楚」「更亮」这类技术理由做决定** —— 那些本机已经算过了，
-你被调用正是因为本机看不出上面这些。
+曝光、亮度这类整体技术指标本机已经算过了，不用你重复判断。
+**但清晰度是例外** —— 如果有一张明显失焦、人脸糊掉，那是真实的淘汰理由，
+可以据此判断。（实测照片主人 35 次判断里有 5 次用的正是「失焦」，
+而早先的提示词禁止模型用清晰度做决定 —— 那是错的。）
 
 如果两张确实分不出高下，就诚实地选 TIE，不要硬凑一个赢家。`
 
@@ -92,6 +103,17 @@ function readVerdict(raw: Record<string, unknown>): { w: 'first' | 'second' | 't
 export async function comparePairs(
   pairs: ReadonlyArray<readonly [string, string]>,
   previews: Record<string, string>,
+  /**
+   * 每张照片的高清人脸裁切（base64 JPEG）。
+   *
+   * 为什么必须有：512px 的整幅小图上，环境人像的人脸只剩约 **30 像素**，
+   * 91% 的照片不足 48 像素。而提示词却在要求模型判断「笑是不是到眼睛里」——
+   * 它看不见，只能猜。v3 那 997 次调用的重评一致率只有 30%，
+   * 正是瞎猜该有的样子。
+   *
+   * 没有人脸裁切的照片（没检出脸、脸太小）只发整幅图，不阻塞比较。
+   */
+  faces: Record<string, string>,
   services: HarnessVisionServices,
   exec: HarnessVisionExecution,
   onProgress?: (done: number, total: number) => void,
@@ -109,17 +131,25 @@ export async function comparePairs(
       out.push({ a, b, winner: 'tie', consistent: false, ab: 'tie', ba: 'tie', reason: '缺少预览图，跳过' })
       continue
     }
-    const ask = async (first: string, second: string) => readVerdict(
+    const fa = faces[a]
+    const fb = faces[b]
+    // 顺序：X 全景 → X 人脸 → Y 全景 → Y 人脸。提示词里说明了这个顺序。
+    const bundle = (full: string, face: string | undefined) =>
+      face ? [full, face] : [full]
+    const ask = async (
+      firstFull: string, firstFace: string | undefined,
+      secondFull: string, secondFace: string | undefined,
+    ) => readVerdict(
       await transport.invokeStructured({
         system: SYSTEM,
         user: '第一张和第二张，哪一张更值得留下？',
-        jpegs: [first, second],
+        jpegs: [...bundle(firstFull, firstFace), ...bundle(secondFull, secondFace)],
         tool: TOOL,
         maxTokens: 400,
       }, exec.signal),
     )
-    const ab = await ask(ja, jb)
-    const ba = await ask(jb, ja)
+    const ab = await ask(ja, fa, jb, fb)
+    const ba = await ask(jb, fb, ja, fa)
     // BA 的 first 指的是 b，所以要翻回 a/b 语义再比。
     const abPick = ab.w === 'first' ? 'a' : ab.w === 'second' ? 'b' : 'tie'
     const baPick = ba.w === 'first' ? 'b' : ba.w === 'second' ? 'a' : 'tie'
