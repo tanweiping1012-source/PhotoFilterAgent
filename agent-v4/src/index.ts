@@ -641,8 +641,15 @@ export function apply(ctx: Context, config: Config): void {
           /** 锚点：文本 + 范例照片文件名。由 Python 侧切分好，这里只负责取图。 */
           anchors?: { text: string; photos: string[] }
         }
-        const folder = spec.folder ?? state.folder
-        if (!folder) throw new Error('考题文件里没有 folder，且当前会话还没扫描过文件夹。')
+        // 考题文件里的 folder **也必须过 allowedRoots**。
+        //
+        // 这一条原来漏了：其他工具都校验（scan_folder 等），只有它直接用
+        // 文件里写的路径。虽然能改这个文件的人本来就有文件系统权限，
+        // 但「照片只能来自授权目录」是这个 agent 的结构性保证之一 ——
+        // 有一处例外，这个保证就不成立了。
+        const rawFolder = spec.folder ?? state.folder
+        if (!rawFolder) throw new Error('考题文件里没有 folder，且当前会话还没扫描过文件夹。')
+        const folder = assertAllowed(rawFolder, config.allowedRoots, '照片')
         const all = spec.pairs
         const use = args.limit ? all.slice(0, args.limit) : all
 
