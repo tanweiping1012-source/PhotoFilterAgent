@@ -39,12 +39,19 @@ const SYSTEM = `你在帮一个人从自己的旅行照片里挑出值得留下�
 在缩小后的整幅画面上人脸只有**几十个像素**，表情和眼神根本看不出来。
 判断表情请以人脸特写为准，判断构图和姿态请以全景为准。
 
-这两张在曝光、构图上通常几乎没有差别 —— 真正的差别在：
-- 眼神：眼睛睁开的程度，有没有落点，是不是在看镜头或看向有意义的方向
-- 表情：笑是不是到眼睛里，有没有僵硬、口型怪异、被抓拍到的中间态
-- 眼神：有没有落点，是不是在看镜头或看向有意义的方向
-- 姿态与手：身体和手的位置自然不自然，有没有多余的动作
-- 人物关系：如果有多个人，互动是不是成立
+这两张在曝光、构图上通常几乎没有差别。下面的判据**按重要性排列**，
+顺序来自照片主人自己 35 次判断的实际频次 —— 不是猜的：
+
+- **眼神（27/35 次）**：睁开到位没有、有没有落点。
+  他的标准比「能看见眼睛」严得多 —— 眯着、半睁、无神、瞪眼，他都算不合格。
+  这一条压倒性重要，其余几条加起来都没它多。
+- **脸型与光影（8/35）**：这个角度、这束光下，脸型五官顺不顺，
+  脸上的光影层次乱不乱
+- **失焦（5/35）**：主体是不是实的
+- **构图引导物（4/35）**：人在低头或看向别处时，画面里有没有对应的视觉落点。
+  单纯低头看路、没有引导物，他认为没有意义
+- **姿态与手（2/35）**：身体和手自然不自然
+- **表情（2/35）**：僵硬、口型怪异、被抓拍到的中间态
 
 曝光、亮度这类整体技术指标本机已经算过了，不用你重复判断。
 **但清晰度是例外** —— 如果有一张明显失焦、人脸糊掉，那是真实的淘汰理由，
@@ -54,6 +61,14 @@ const SYSTEM = `你在帮一个人从自己的旅行照片里挑出值得留下�
 如果两张确实分不出高下，就诚实地选 TIE，不要硬凑一个赢家。`
 
 /** 一次比较的结果。ids 用调用方给的顺序语义（FIRST/SECOND）。 */
+/** 锚点块：提示词文本 + 按顺序附上的图片。 */
+export interface AnchorBlock {
+  /** 由 photofilter_rank.anchors.build_anchor_block 生成的说明文本。 */
+  text: string
+  /** 范例照片的 base64 JPEG，顺序必须与 text 里的编号一致。 */
+  jpegs: string[]
+}
+
 export interface PairVerdict {
   a: string
   b: string
@@ -81,7 +96,9 @@ const TOOL = {
       },
       reason: {
         type: 'string',
-        description: '30 字以内，必须指出具体差别（表情/眼神/姿态/互动），不要说「更清晰」',
+        // 「不要说更清晰」这句已删 —— 它和上面刚撤销的清晰度禁令自相矛盾。
+        // 照片主人 35 次判断里有 5 次正是因为失焦淘汰的。
+        description: '30 字以内，必须指出具体差别（眼神/脸型光影/失焦/构图/姿态），不要泛泛说「更好看」',
       },
     },
   },
@@ -114,6 +131,19 @@ export async function comparePairs(
    * 没有人脸裁切的照片（没检出脸、脸太小）只发整幅图，不阻塞比较。
    */
   faces: Record<string, string>,
+  /**
+   * 锚点：几组「这个人自己怎么挑的」范例，连图带原话放进提示词。
+   *
+   * 为什么需要：提示词里的判据清单原先是猜的，既没有「失焦」也没有「头歪」，
+   * 而且还禁止模型用清晰度做判断 —— 正好和照片主人的第一条理由相反。
+   * 范例能直接把他的标准示范出来，比任何描述都准。
+   *
+   * **锚点组必须与考题组互斥**，否则是泄题 —— 模型在提示词里见过答案了。
+   * 切分由 photofilter_rank.anchors 负责，这里只负责把它拼进提示词。
+   *
+   * 传空数组 = 不用锚点。
+   */
+  anchors: AnchorBlock | null,
   services: HarnessVisionServices,
   exec: HarnessVisionExecution,
   onProgress?: (done: number, total: number) => void,
@@ -141,9 +171,16 @@ export async function comparePairs(
       secondFull: string, secondFace: string | undefined,
     ) => readVerdict(
       await transport.invokeStructured({
-        system: SYSTEM,
-        user: '第一张和第二张，哪一张更值得留下？',
-        jpegs: [...bundle(firstFull, firstFace), ...bundle(secondFull, secondFace)],
+        // 锚点拼在系统提示词末尾，范例图排在待比较的图之前 ——
+        // 模型先看懂这个人在意什么，再回答问题。
+        system: anchors ? `${SYSTEM}\n\n${anchors.text}` : SYSTEM,
+        user: anchors
+          ? '现在看最后四张图：第一张和第二张，按上面那个人的标准，哪一张更值得留下？'
+          : '第一张和第二张，哪一张更值得留下？',
+        jpegs: [
+          ...(anchors?.jpegs ?? []),
+          ...bundle(firstFull, firstFace), ...bundle(secondFull, secondFace),
+        ],
         tool: TOOL,
         maxTokens: 400,
       }, exec.signal),

@@ -25,7 +25,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { IdentityMap } from './identity.ts'
-import { comparePairs } from './compare.ts'
+import { comparePairs, type AnchorBlock } from './compare.ts'
 import type { HarnessVisionExecution, HarnessVisionServices } from './harness-vision.ts'
 import { Ranker, RankerError, type RankResult } from './ranker.ts'
 
@@ -508,7 +508,9 @@ export function apply(ctx: Context, config: Config): void {
           attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
         }
         const { verdicts, route } = await comparePairs(
-          use, previews, faces, services, exec as unknown as HarnessVisionExecution,
+          // 生产路径不用锚点：锚点需要一批已标注的范例，而普通用户没有。
+          // 它只在评测里用（run_pair_eval 那条路径）。
+          use, previews, faces, null, services, exec as unknown as HarnessVisionExecution,
         )
 
         const swaps: string[] = []
@@ -636,6 +638,8 @@ export function apply(ctx: Context, config: Config): void {
         const spec = JSON.parse(readFileSync(config.evalPairsFile, 'utf8')) as {
           folder?: string
           pairs: Array<{ a: string; b: string; answer: string; kind: string; local_correct: boolean; group: number }>
+          /** 锚点：文本 + 范例照片文件名。由 Python 侧切分好，这里只负责取图。 */
+          anchors?: { text: string; photos: string[] }
         }
         const folder = spec.folder ?? state.folder
         if (!folder) throw new Error('考题文件里没有 folder，且当前会话还没扫描过文件夹。')
@@ -652,8 +656,26 @@ export function apply(ctx: Context, config: Config): void {
           llm: ctx.get('llm') as unknown as HarnessVisionServices['llm'],
           attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
         }
+        // 锚点图另外取一次预览。**它们必须不在考题里** —— Python 侧切分时保证，
+        // 这里再断言一次：泄题是静默的，跑完看数字看不出来。
+        let anchorBlock: AnchorBlock | null = null
+        if (spec.anchors?.photos?.length) {
+          const testNames = new Set(use.flatMap((p) => [p.a, p.b]))
+          const leaked = spec.anchors.photos.filter((n) => testNames.has(n))
+          if (leaked.length) {
+            throw new Error(`锚点和考题重叠 ${leaked.length} 张，这是泄题：${leaked.slice(0, 3).join(' ')}`)
+          }
+          const ap = await ranker.preview(
+            folder, spec.anchors.photos, config.excludedRelativePaths, 512, exec.signal,
+          )
+          anchorBlock = {
+            text: spec.anchors.text,
+            jpegs: spec.anchors.photos.map((n) => ap.previews[n]).filter(Boolean),
+          }
+        }
+
         const { verdicts, route } = await comparePairs(
-          use.map((p) => [p.a, p.b] as const), previews, faces, services,
+          use.map((p) => [p.a, p.b] as const), previews, faces, anchorBlock, services,
           exec as unknown as HarnessVisionExecution,
         )
 
