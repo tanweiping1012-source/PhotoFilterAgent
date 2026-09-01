@@ -62,29 +62,43 @@ def test_抓到残留的元数据(tmp_path):
     assert any(i.name == "元数据" for i in res.issues), res.summary()
 
 
-def test_每一张发出去的图都要单独查(tmp_path):
-    """规则是「照片里有脸，发出去的每一张都得看得清」。
+def test_只发整张缩略图会被拦下(tmp_path):
+    """真实发生过：只发 512px 整幅图，环境人像的脸在上面只剩 30 像素，
+    而提示词要求模型判断「笑是不是到眼睛里」—— 它只能猜。"""
+    src = _source(tmp_path, 400, 200)
+    res = check_sent_pair({"整张": _jpeg(Image.new("RGB", (512, 256)))}, src)
+    assert any(i.name == "人脸覆盖" for i in res.issues), res.summary()
 
-    我一度写成「至少一张能看清就行」，理由是整幅图上脸小是设计如此
-    （旁边配了人脸特写）。那是错的：模型收到一张脸只有 30 像素的图，
-    仍然会拿它做判断，而在那张图上它只能瞎猜。
+
+def test_只发人脸特写也会被拦下(tmp_path):
+    """光有脸不够 —— 「取景」「有没有视觉引导物」这类判据需要完整画面。
+
+    第二版判据要求「每张都看清脸」，为了满足它把整幅场景换成了人物区域裁切，
+    结果那座雪山没了 —— 而它正是这张环境人像好看的一半。
     """
     src = _source(tmp_path, 400, 200)
+    res = check_sent_pair({"人脸": _jpeg(Image.new("RGB", (448, 448)))}, src)
+    assert not res.ok
+    assert any(i.name == "构图覆盖" for i in res.issues), res.summary()
+
+
+def test_整张加人脸两张一起才算覆盖齐(tmp_path):
+    """长宽比与原图一致的那张负责构图，人脸特写负责表情 —— 缺一不可。"""
+    src = _source(tmp_path, 400, 200)
     res = check_sent_pair({
-        "人物区域": _jpeg(Image.new("RGB", (512, 256))),
-        "人脸特写": _jpeg(Image.new("RGB", (448, 448))),
+        "整张": _jpeg(Image.new("RGB", (512, 256))),      # 长宽比 2.0 == 原图
+        "人脸": _jpeg(Image.new("RGB", (448, 448))),
     }, src)
-    names = {i.name for i in res.issues}
-    assert "人脸·人物区域" in names and "人脸·人脸特写" in names, \
-        f"两张都该被单独查，实际只查了 {names}"
+    assert not any(i.name == "构图覆盖" for i in res.issues), res.summary()
 
 
 def test_任意一张残留元数据都算错(tmp_path):
+    """元数据是逐图检查 —— 它不存在「覆盖」一说，任何一张脏了都不能发。"""
     src = _source(tmp_path, 400, 200)
     im = Image.new("RGB", (448, 448))
     ex = Image.Exif()
     ex[271] = "SomeCamera"
     b = BytesIO()
     im.save(b, "JPEG", exif=ex)
-    res = check_sent_pair({"人脸特写": b.getvalue()}, src)
-    assert any(i.name == "元数据·人脸特写" and i.severity == "error" for i in res.issues)
+    res = check_sent_pair({"人脸": b.getvalue()}, src)
+    assert any(i.name == "元数据·人脸" and i.severity == "error" for i in res.issues)
