@@ -10,7 +10,7 @@ import hashlib
 import time
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 Image.MAX_IMAGE_PIXELS = None  # 40MP 原图会触发 PIL 的解压炸弹保护
 
@@ -47,6 +47,20 @@ def fingerprint(photos: list[Path], folder: Path) -> str:
     return h.hexdigest()[:16]
 
 
+def thumb_key(photo: Path) -> str:
+    """缩略图缓存的文件名。**只此一处**计算，别的地方一律调这个函数。
+
+    踩过的坑：cli.py 的 preview 子命令自己复制了一份同样的算法。
+    给缓存加 -o1 版本后缀（修 EXIF 方向那次）时只改了这里，
+    preview 那份没跟着改 —— 于是它继续读着旧的横躺缓存，
+    发给视觉模型的图还是转了 90° 的，而且没有任何报错。
+
+    -o1 这个后缀本身也是那次留下的：缓存键只由**原图路径**决定，
+    而修 bug 时原图一个字节没变，不换键旧缓存就永远不会失效。
+    """
+    return hashlib.sha256(str(photo).encode()).hexdigest()[:24] + "-o1.jpg"
+
+
 def build_cache(
     photos: list[Path], cache_dir: Path, max_side: int = 1024, quality: int = 95, verbose: bool = True
 ) -> dict[str, Path]:
@@ -55,8 +69,7 @@ def build_cache(
     mapping: dict[str, Path] = {}
     todo = []
     for p in photos:
-        key = hashlib.sha256(str(p).encode()).hexdigest()[:24] + ".jpg"
-        dst = cache_dir / key
+        dst = cache_dir / thumb_key(p)
         mapping[p.name] = dst
         if not dst.exists():
             todo.append((p, dst))
@@ -70,6 +83,15 @@ def build_cache(
         # draft() 让 JPEG 解码器直接以 1/2、1/4、1/8 尺寸解码，不用先解全尺寸再缩
         im.draft("RGB", (max_side, max_side))
         im = im.convert("RGB")
+        # 必须按 EXIF 方向摆正。
+        #
+        # 相机竖着拍时，像素通常仍按横向存储，靠 EXIF 的方向标记告诉看图软件转多少度。
+        # 这一层不转，后面**全部**是横躺的：CLIP 特征、人脸质量分、发给视觉模型的图。
+        # 实测这批 309 张里有 28 张（9%）方向标记是「逆时针转 90°」——
+        # 也就是说它们的特征和分数一直是躺着算出来的，而且没有任何报错。
+        #
+        # 注意 draft() 之后再 transpose：draft 只影响解码尺寸，不动方向。
+        im = ImageOps.exif_transpose(im)
         im.thumbnail((max_side, max_side), Image.LANCZOS)
         dst.parent.mkdir(parents=True, exist_ok=True)
         im.save(dst, "JPEG", quality=quality)
