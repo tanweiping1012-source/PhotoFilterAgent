@@ -69,6 +69,14 @@ def main(argv: list[str] | None = None) -> int:
                              "环境人像的脸只剩约 30 像素，91%% 的照片不足 48 像素 —— "
                              "模型看不见表情，只能猜")
     p_prev.add_argument("--face-size", type=int, default=448, help="人脸裁切的边长（默认 448）")
+    p_prev.add_argument("--subject-size", type=int, default=768,
+                        help="人物区域裁切的长边（默认 768，此时人脸约 100~134 像素）")
+    p_prev.add_argument("--verify", action="store_true",
+                        help="把即将发出去的每张图打开量一遍：方向对不对、元数据剥干净没有、"
+                             "人脸够不够大。这个项目最贵的两个 bug 日志和指标全是正常的，"
+                             "只有真的打开图才看得见")
+    p_prev.add_argument("--min-face-px", type=int, default=96,
+                        help="整幅小图上人脸至少要有多少像素才算模型看得见（默认 96）")
     p_prev.add_argument("--json", type=Path, required=True)
 
     p_pairs = sub.add_parser("pairs", help="阶段2：导出组内比较的考题（含正确答案），供成对评测用")
@@ -179,8 +187,46 @@ def main(argv: list[str] | None = None) -> int:
                 fb = BytesIO()
                 crop.save(fb, "JPEG", quality=86)
                 faces[name] = base64.b64encode(fb.getvalue()).decode()
+
+                # 人物区域：以人脸为锚，上留 1.5 个脸高、下扩 6 个脸高（覆盖躯干）、
+                # 左右各 2.5 个脸宽。**覆盖掉整幅小图**。
+                #
+                # 为什么不发整个场景：512px 的整幅图上人脸只剩约 30 像素，
+                # 模型被要求判表情却看不见。而把整幅图放大到能看清脸需要
+                # 中位 1625px / 220KB（最难的一张要 3562px），代价过高。
+                #
+                # 换成人物区域后，768px 下人脸有 100~134 像素，只要 40~60KB。
+                # 丢掉的远景在阶段 2 里本来就没有信息 —— 同一组连拍的背景是一样的。
+                fw, fh = bw * W, bh * H
+                ftop = (1 - (y + bh)) * H
+                sub = full.crop((int(max(0, cx - 2.5 * fw)), int(max(0, ftop - 1.5 * fh)),
+                                 int(min(W, cx + 2.5 * fw)), int(min(H, ftop + 6.0 * fh))))
+                sub.thumbnail((a.subject_size, a.subject_size), Image.LANCZOS)
+                sb = BytesIO()
+                sub.save(sb, "JPEG", quality=84)
+                out[name] = base64.b64encode(sb.getvalue()).decode()
+        report: dict[str, list[str]] = {}
+        if getattr(a, "verify", False):
+            # 不看过程，看东西本身。这是唯一能自动发现「规格错了」的办法 ——
+            # 每一步都按规格执行了，但规格本身把图转了 90°、或者让人脸只剩 30 像素。
+            from .sent_image_check import check_sent_pair
+            for name, b64 in out.items():
+                fb = faces.get(name)
+                imgs = {"人物区域": base64.b64decode(b64)}
+                if fb:
+                    imgs["人脸特写"] = base64.b64decode(fb)
+                res = check_sent_pair(imgs, photos[name], a.min_face_px)
+                if res.issues:
+                    report[name] = [f"[{i.severity}] {i.name}: {i.detail}" for i in res.issues]
+
         a.json.write_text(json.dumps(
-            {"previews": out, "faces": faces, "missing": missing}, ensure_ascii=False))
+            {"previews": out, "faces": faces, "missing": missing, "verify": report},
+            ensure_ascii=False))
+        if getattr(a, "verify", False):
+            errs = sum(1 for v in report.values() if any("[error]" in x for x in v))
+            print(f"  自检：{len(out) + len(faces)} 张图，{len(report)} 张有问题（其中 {errs} 张是硬错误）")
+            for k, v in list(report.items())[:8]:
+                print(f"    {k}  {v[0]}")
         print(f"生成 {len(out)} 张 {a.size}px 预览"
               + (f" + {len(faces)} 张 {a.face_size}px 高清人脸" if faces else "")
               + (f"，{len(missing)} 张缺失" if missing else ""))
