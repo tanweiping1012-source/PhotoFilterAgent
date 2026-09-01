@@ -31,9 +31,18 @@ import { HarnessVisionTransport, resolveHarnessModelRoute } from './harness-visi
 const SYSTEM = `你在帮一个人从自己的旅行照片里挑出值得留下的几张。
 现在给你同一场景、几乎同时拍的两张照片，请判断哪一张更值得留下。
 
-**每张照片给你两幅图**：先是整幅画面（看构图、姿态、环境），
-紧接着是同一张照片里**人脸放大后的高清裁切**（看表情、眼神）。
-所以你会依次看到：第一张的全景、第一张的人脸、第二张的全景、第二张的人脸。
+要比较的是**两张照片**，这里叫**照片甲**和**照片乙**。
+
+每张照片给你两幅图：整幅画面（看构图、姿态、环境）+ 人脸放大后的高清裁切
+（看表情、眼神）。所以最后四幅图依次是：
+
+    第 1 幅 = 照片甲的整幅画面
+    第 2 幅 = 照片甲的人脸特写      ← 这两幅是**同一张照片**
+    第 3 幅 = 照片乙的整幅画面
+    第 4 幅 = 照片乙的人脸特写      ← 这两幅是**同一张照片**
+
+**注意：不要拿第 1 幅和第 2 幅比** —— 它们是同一张照片的两个视角。
+要比的是「甲」和「乙」这两张照片。
 
 为什么要给你人脸特写：这类照片人物往往只占画面很小一块，
 在缩小后的整幅画面上人脸只有**几十个像素**，表情和眼神根本看不出来。
@@ -91,8 +100,9 @@ const TOOL = {
     properties: {
       winner: {
         type: 'string',
-        enum: ['FIRST', 'SECOND', 'TIE'],
-        description: '哪一张更值得留下；确实分不出就 TIE',
+        // 枚举也不能用序数 —— FIRST/SECOND 同样有「第几幅图」的歧义。
+        enum: ['JIA', 'YI', 'TIE'],
+        description: '哪一张照片更值得留下：JIA=照片甲，YI=照片乙；确实分不出就 TIE',
       },
       reason: {
         type: 'string',
@@ -107,7 +117,9 @@ const TOOL = {
 function readVerdict(raw: Record<string, unknown>): { w: 'first' | 'second' | 'tie'; reason: string } {
   const w = String(raw.winner ?? '').toUpperCase()
   return {
-    w: w === 'FIRST' ? 'first' : w === 'SECOND' ? 'second' : 'tie',
+    // 内部仍用 first/second 表示「这次调用里排前/排后的那张照片」，
+    // 只是问模型时不再用序数措辞。
+    w: w === 'JIA' ? 'first' : w === 'YI' ? 'second' : 'tie',
     reason: typeof raw.reason === 'string' ? raw.reason.slice(0, 60) : '',
   }
 }
@@ -174,9 +186,15 @@ export async function comparePairs(
         // 锚点拼在系统提示词末尾，范例图排在待比较的图之前 ——
         // 模型先看懂这个人在意什么，再回答问题。
         system: anchors ? `${SYSTEM}\n\n${anchors.text}` : SYSTEM,
+        // 绝不能用「第一张/第二张」这种序数。
+        //
+        // 踩过的坑：一次调用有 18 幅图（14 幅锚点 + 4 幅考题），说「第一张和第二张」
+        // 时模型完全可以理解成「最后四幅里的第 1、2 幅」—— 而那两幅
+        // **都属于照片甲**（甲的全景 + 甲的人脸）。也就是说它在拿一张照片
+        // 跟它自己比。这能解释体检题里 40% 的平局和那些自相矛盾的理由。
         user: anchors
-          ? '现在看最后四张图：第一张和第二张，按上面那个人的标准，哪一张更值得留下？'
-          : '第一张和第二张，哪一张更值得留下？',
+          ? '按上面那个人的标准，照片甲和照片乙，哪一张更值得留下？'
+          : '照片甲和照片乙，哪一张更值得留下？',
         jpegs: [
           ...(anchors?.jpegs ?? []),
           ...bundle(firstFull, firstFace), ...bundle(secondFull, secondFace),
