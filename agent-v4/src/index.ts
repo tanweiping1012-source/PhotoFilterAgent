@@ -260,7 +260,7 @@ export function apply(ctx: Context, config: Config): void {
         // 模型跑在这一侧（TS），排序器在 Python 侧拿不到它，
         // 所以是「出计划 → 这里跑 → 裁决回传 → 排序器重放」三步。
         let refineNote = ''
-        const plan = (res.notes.refine_plan ?? []) as Array<[string, string]>
+        const plan = (res.notes.tournament_plan ?? []) as Array<[string, string]>
         if (config.stage2Vlm && plan.length) {
           try {
             const names = [...new Set(plan.flat())]
@@ -296,7 +296,7 @@ export function apply(ctx: Context, config: Config): void {
             const flips = verdicts.filter((v) => v.winner === 'b').length
             const cons = verdicts.filter((v) => v.consistent).length
             refineNote =
-              `\n\n**阶段 2 · 视觉模型复核**（${route}）：复核了 ${plan.length} 组难分的，` +
+              `\n\n**阶段 2 · 视觉模型复核**（${route}）：打了 ${plan.length} 局擂台，` +
               `花了 ${plan.length * 2} 次调用，改判 ${flips} 组。\n` +
               `⚠️ 这一档**没有通过自己的验收线**：实测 AB/BA 双向一致率 ` +
               `${((cons / Math.max(verdicts.length, 1)) * 100).toFixed(0)}%（本次）、` +

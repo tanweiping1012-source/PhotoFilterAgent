@@ -188,46 +188,47 @@ def stage2_reorder(
 # ── VLM 复核：只复核影响名单的那几组 ────────────────────────────
 
 
-def refine_plan(
+def tournament_plan(
     names: list[str],
     families: list[int],
     score: dict[str, float],
-    selected: set[str],
     cap: int = 8,
-    max_matches: int = 40,
-    min_gap: float = 0.15,
+    max_matches: int | None = None,
 ) -> list[tuple[str, str]]:
-    """挑出值得让 VLM 复核的对局。
+    """产出**擂台赛**要打的全部对局 —— 和 stage2_reorder 打的是同一套。
 
-    ━━ 为什么不全打 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ━━ 为什么不做「聪明的筛选」━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    整个池子打完擂台是 157~170 局 = 314~340 次调用，约 26 分钟。
-    作为「开箱即用」的默认太重，而且绝大多数局跟结果无关 ——
-    最终只留 20 张，只有那些**冠军真的进了名单**的组才影响交付。
+    上一版这里叫 refine_plan，只打「冠军进了最终名单」且「本地分前两名
+    咬得紧」的组，理由是省钱（314 次调用 → 80 次）。那是错的：
 
-    两道筛选：
-      1. 只看冠军进了最终名单的组（其余组打赢打输都不改变结果）
-      2. 组内前两名分差 < min_gap 才复核 —— 本地分很有把握时，
-         VLM 的边际价值低，而它自己的一致率只有 45%，
-         贸然让它推翻一个高置信度的判断是负收益
+      · 被验证过的是**擂台赛**（先知裁判 17/17 证明赛制不丢分）
+      · refine_plan 的三条筛选规则一条都没验证过
+      · 更要命的是它改变了送去判的对的**分布** —— 评测测的是
+        「用户有明确偏好」的对（VLM 一致率 45%），而 refine_plan 挑的是
+        「本地分拿不准」的对。VLM 在后者上表现如何，完全没有数据
 
-    再按分差从小到大截断到 max_matches，保证成本可预期。
+    省钱要省在**看得见的地方**：max_matches 是一刀切的预算上限，
+    按组从大到小排（大组的信息量高），截断在哪一目了然。
+    它不改变「打哪些对」的规则，只改变「打到第几组为止」。
+
+    注意：擂台赛是**动态**的 —— 谁当擂主取决于前面的胜负。这里产出的是
+    「假设本地分的擂主一直守擂」时的对局；模型改判之后，
+    stage2_reorder 会用 ReplayJudge 重放，届时实际对局可能不同。
+    缺裁决的那些局由 ReplayJudge 退回本地分，并计入 missing。
     """
     by_fam: dict[int, list[str]] = {}
     for i, f in enumerate(families):
         by_fam.setdefault(f, []).append(names[i])
 
-    cand: list[tuple[float, str, str]] = []
-    for members in by_fam.values():
-        if len(members) < 2:
-            continue
+    groups = [m for m in by_fam.values() if len(m) >= 2]
+    groups.sort(key=len, reverse=True)                 # 大组优先：信息量更高
+
+    out: list[tuple[str, str]] = []
+    for members in groups:
         ranked = sorted(members, key=lambda n: -score.get(n, 0.5))[:cap]
-        if not any(n in selected for n in ranked):
-            continue                                  # 这一组不影响名单
-        gap = score.get(ranked[0], 0.5) - score.get(ranked[1], 0.5)
-        if gap >= min_gap:
-            continue                                  # 本地分很有把握，不劳烦模型
-        for challenger in ranked[1:]:
-            cand.append((gap, ranked[0], challenger))
-    cand.sort(key=lambda x: x[0])                     # 分差越小越该复核
-    return [(a, b) for _, a, b in cand[:max_matches]]
+        pairs = [(ranked[0], c) for c in ranked[1:]]
+        if max_matches is not None and len(out) + len(pairs) > max_matches:
+            break                                      # 整组要么全打要么不打
+        out += pairs
+    return out

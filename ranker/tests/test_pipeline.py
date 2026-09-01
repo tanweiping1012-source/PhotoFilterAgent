@@ -87,3 +87,49 @@ def test_先知裁判在擂主未标注时仍能判():
     j = OracleJudge({"g": {"good"}}, {"good": "g"})     # unlabeled 不在表里
     assert j.compare("unlabeled", "good") == "b"
     assert j.compare("good", "unlabeled") == "a"
+
+
+def test_生产的对局计划与擂台赛完全一致():
+    """生产链路必须打**验证过的那套对局**，不能自己发明筛选规则。
+
+    踩过的坑：上一版叫 refine_plan，只打「冠军进了最终名单」且
+    「本地分前两名咬得紧」的组，理由是省钱（314 次 → 80 次）。
+    问题是它改变了送去判的对的**分布** —— 评测测的是「用户有明确偏好」
+    的对，refine_plan 挑的是「本地分拿不准」的对，两者的表现毫无可比性。
+    """
+    from photofilter_rank.pipeline import tournament_plan
+    names = [f"p{i}.jpg" for i in range(9)]
+    fams = [0, 0, 0, 1, 1, 2, 2, 2, 2]
+    sc = {n: 1.0 - i * 0.1 for i, n in enumerate(names)}
+
+    plan = tournament_plan(names, fams, sc)
+    # 擂台赛自己会打哪些局
+    expected = []
+    for f in sorted(set(fams)):
+        mem = [names[i] for i, x in enumerate(fams) if x == f]
+        if len(mem) < 2:
+            continue
+        ranked = sorted(mem, key=lambda n: -sc[n])
+        expected += [(ranked[0], c) for c in ranked[1:]]
+    assert sorted(plan) == sorted(expected), "计划里的对局和擂台赛不一致"
+
+
+def test_预算按组截断而不是按对():
+    """整组要么全打要么不打 —— 打一半的组，冠军是谁就说不清了。"""
+    from photofilter_rank.pipeline import tournament_plan
+    names = [f"p{i}.jpg" for i in range(10)]
+    fams = [0] * 5 + [1] * 5
+    sc = {n: 1.0 - i * 0.05 for i, n in enumerate(names)}
+    plan = tournament_plan(names, fams, sc, max_matches=6)
+    assert len(plan) == 4, f"应当只打得下一整组（4 局），实际 {len(plan)}"
+    assert len({names.index(a) // 5 for a, _ in plan}) == 1, "不该跨组截断"
+
+
+def test_大组优先():
+    """预算有限时先打大组 —— 组越大，一局比较带来的信息越多。"""
+    from photofilter_rank.pipeline import tournament_plan
+    names = [f"p{i}.jpg" for i in range(7)]
+    fams = [0, 0, 1, 1, 1, 1, 1]          # 组0 两张、组1 五张
+    sc = {n: 1.0 - i * 0.1 for i, n in enumerate(names)}
+    plan = tournament_plan(names, fams, sc, max_matches=4)
+    assert all(names.index(a) >= 2 for a, _ in plan), "应当先打五张那组"
