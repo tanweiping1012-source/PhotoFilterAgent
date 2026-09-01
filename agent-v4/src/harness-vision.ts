@@ -214,6 +214,15 @@ function parseToolArguments(
  * preflight caching belongs to the caller so an aborted/failed probe is never
  * retained as a false positive.
  */
+/**
+ * 一次视觉调用最多几张图。
+ *
+ * 这是「照片不外泄」的护栏之一：调用方拼错参数时，宁可整轮失败，
+ * 也不能把一整批照片发出去。24 张足够放下「3 组整组锚点 + 一对考题」，
+ * 又远小于任何一批真实照片的规模。
+ */
+export const MAX_JPEGS_PER_CALL = 24
+
 export class HarnessVisionTransport {
   readonly route: HarnessModelRoute
   private readonly services: HarnessVisionServices
@@ -330,10 +339,21 @@ export class HarnessVisionTransport {
         code: 'MODEL_PREFLIGHT_REQUIRED',
       })
     }
-    if (request.jpegs.length < 1 || request.jpegs.length > 2) {
-      throw new HarnessVisionError('视觉评分只允许 1 张 baseline 或 2 张 pairwise JPEG。', {
-        code: 'INVALID_IMAGE_COUNT',
-      })
+    // 上限从 2 提到 MAX_JPEGS_PER_CALL。
+    //
+    // 原来的 2 是 v3 的设计（1 张基线 / 2 张对比）。v4 一次要发的更多：
+    //   · 每张照片 2 幅（整幅 + 高清人脸）—— 512px 上人脸只剩 30 像素，
+    //     不配人脸特写模型判不了表情
+    //   · 加上锚点范例（几组「这个人自己怎么挑的」）
+    // 一次典型调用是 18 张：3 组整组锚点 14 张 + 考题 2 张 × 2 幅。
+    //
+    // 上限保留而不是取消 —— 它是防止误把整批照片发出去的护栏，
+    // 而「照片不外泄」是这个项目的硬约束。
+    if (request.jpegs.length < 1 || request.jpegs.length > MAX_JPEGS_PER_CALL) {
+      throw new HarnessVisionError(
+        `一次视觉调用最多 ${MAX_JPEGS_PER_CALL} 张 JPEG，这次给了 ${request.jpegs.length} 张。`,
+        { code: 'INVALID_IMAGE_COUNT' },
+      )
     }
     return this.callTool(request, signal)
   }
