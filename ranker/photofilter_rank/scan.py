@@ -47,6 +47,20 @@ def fingerprint(photos: list[Path], folder: Path) -> str:
     return h.hexdigest()[:16]
 
 
+def thumb_key(photo: Path) -> str:
+    """缩略图缓存的文件名。**只此一处**计算，别的地方一律调这个函数。
+
+    踩过的坑：cli.py 的 preview 子命令自己复制了一份同样的算法。
+    给缓存加 -o1 版本后缀（修 EXIF 方向那次）时只改了这里，
+    preview 那份没跟着改 —— 于是它继续读着旧的横躺缓存，
+    发给视觉模型的图还是转了 90° 的，而且没有任何报错。
+
+    -o1 这个后缀本身也是那次留下的：缓存键只由**原图路径**决定，
+    而修 bug 时原图一个字节没变，不换键旧缓存就永远不会失效。
+    """
+    return hashlib.sha256(str(photo).encode()).hexdigest()[:24] + "-o1.jpg"
+
+
 def build_cache(
     photos: list[Path], cache_dir: Path, max_side: int = 1024, quality: int = 95, verbose: bool = True
 ) -> dict[str, Path]:
@@ -55,11 +69,7 @@ def build_cache(
     mapping: dict[str, Path] = {}
     todo = []
     for p in photos:
-        # 键里带上 -o1：修「不处理 EXIF 方向」这个 bug 时必须让旧缓存失效。
-        # 缓存键只由**路径**决定，而原图一个字节没变 —— 不换键的话，
-        # 修好的代码会继续读着横躺的旧缓存，而且完全无声。
-        key = hashlib.sha256(str(p).encode()).hexdigest()[:24] + "-o1.jpg"
-        dst = cache_dir / key
+        dst = cache_dir / thumb_key(p)
         mapping[p.name] = dst
         if not dst.exists():
             todo.append((p, dst))

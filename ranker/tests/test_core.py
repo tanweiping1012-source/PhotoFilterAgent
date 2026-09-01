@@ -560,3 +560,11 @@ def test_修方向必须换缓存键(tmp_path):
     Image.new("RGB", (10, 10)).save(src)
     m = build_cache([src], tmp_path / "t", max_side=8, quality=90, verbose=False)
     assert "-o1" in m["a.jpg"].name, "缓存键里没有版本后缀，修方向的改动不会生效"
+
+
+def test_缩略图缓存键只有一处计算():
+    """preview 曾经自己复制了一份键算法，加版本后缀时没跟着改 ——
+    于是它继续读旧的横躺缓存，发给视觉模型的图还是转了 90° 的，且无报错。"""
+    import pathlib
+    cli = (pathlib.Path(__file__).parent.parent / 'photofilter_rank' / 'cli.py').read_text()
+    assert 'hexdigest()[:24]' not in cli, "cli.py 里又出现了自己算缓存键 —— 必须调 scan.thumb_key"
