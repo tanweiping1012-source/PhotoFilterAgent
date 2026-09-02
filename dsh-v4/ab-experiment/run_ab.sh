@@ -45,10 +45,28 @@ for r in d['rows'][:1]: print('   ', r['reason'][:400])
 if [ "${1:-}" = "冒烟" ]; then echo; echo "只跑冒烟，停在这里。"; exit 0; fi
 
 echo
-echo "═══ ② 全量：三臂 × 2 方向 ═══"
+echo "═══ ② 全量：三臂 × 2 方向 × （主分析 + 同层探索）═══"
+# 跑之前先数考题文件。**缺了直接停，不许静默少跑一整档。**
+#
+# 踩过：第 ② 段的 glob 只收 primary，第 ③ 段却去读 equal 的结果文件，
+# 于是同层档一次都没跑、第 ③ 段又因为 `if rows:` 安静跳过 ——
+# 判分照常输出，看起来一切正常。用户批了 936 实际只花 486，
+# 而他以为买到的那 42% 覆盖，拿到的是 0。
+for tag in primary equal; do
+  for cond in "无提示" "仅规则" "规则加范例"; do
+    n=$(ls "$PAIRS"/${tag}__*__"$cond".json 2>/dev/null | wc -l | tr -d " ")
+    if [ "$n" -eq 0 ]; then
+      echo "  ❌ 缺考题：${tag}__*__${cond}.json 一个都没有。先跑 make_pairs.py。"
+      exit 3
+    fi
+    echo "  考题 ${tag} / ${cond}：${n} 个文件"
+  done
+done
+echo
 # 臂名不用字母 —— 见 make_pairs.py 里那段注释。
 for cond in "无提示" "仅规则" "规则加范例"; do
-  for f in "$PAIRS"/primary__*__"$cond".json; do
+  # 两档都要跑。primary = 跨层（主检验），equal = 同层（探索性，正确答案是平局）。
+  for f in "$PAIRS"/primary__*__"$cond".json "$PAIRS"/equal__*__"$cond".json; do
     [ -e "$f" ] || continue
     base=$(basename "$f")
     echo "--- $base ---"
@@ -66,9 +84,10 @@ import glob, json, os
 out, cond = os.environ["OUT"], os.environ["COND"]
 rows = [r for f in glob.glob(f"{out}/equal__*__{cond}.result.json")
         for r in json.load(open(f))["rows"]]
-if rows:
-    ok = sum(1 for r in rows if r.get("winner") == "tie")
-    print(f"  {cond:<10} 答平局 {ok}/{len(rows)} = {ok/len(rows):.1%}   <- 越高越贴近标注者")
+if not rows:
+    raise SystemExit(f"  ERROR {cond}: 同层档没有任何结果 —— 这一档没跑成，不要当作跑过了")
+ok = sum(1 for r in rows if r.get("winner") == "tie")
+print(f"  {cond:<10} 答平局 {ok}/{len(rows)} = {ok/len(rows):.1%}   <- 越高越贴近标注者")
 '
 done
 
