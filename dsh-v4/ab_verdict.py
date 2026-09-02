@@ -14,6 +14,13 @@ import pathlib
 from math import comb
 
 
+def scene_of(path: str) -> str:
+    """结果文件名里带数据集名：primary__<数据集>__A-有锚点.result.json"""
+    base = pathlib.Path(path).name
+    parts = base.split("__")
+    return parts[1] if len(parts) > 2 else "未知"
+
+
 def load(paths: list[str]) -> dict[tuple[str, str], bool]:
     """{(照片a, 照片b): 模型答对了吗}
 
@@ -28,7 +35,30 @@ def load(paths: list[str]) -> dict[tuple[str, str], bool]:
             k = (r["a"], r["b"])
             assert k not in out, f"同一对出现在两个结果文件里：{k}"
             out[k] = bool(r["model_correct"])
+            SCENE[k] = scene_of(p)
     return out
+
+
+def table(keys, W, WO, title):
+    """一张 2×2 加 McNemar。分层和合并共用，保证算法完全一样。"""
+    both = sum(1 for k in keys if W[k] and WO[k])
+    only_w = sum(1 for k in keys if W[k] and not WO[k])
+    only_wo = sum(1 for k in keys if not W[k] and WO[k])
+    neither = sum(1 for k in keys if not W[k] and not WO[k])
+    n = len(keys)
+    p = mcnemar(only_w, only_wo)
+    print(f"\n── {title} · {n} 对 ──")
+    print(f"  {'':<16}{'有锚点对':>10}{'有锚点错':>10}")
+    print(f"  {'无锚点对':<16}{both:>10}{only_wo:>10}")
+    print(f"  {'无锚点错':<16}{only_w:>10}{neither:>10}")
+    if n:
+        print(f"  有锚点 {both + only_w}/{n} = {(both + only_w) / n:.1%}"
+              f"   无锚点 {both + only_wo}/{n} = {(both + only_wo) / n:.1%}"
+              f"   差 {(only_w - only_wo) / n:+.1%}   p = {p:.4f}")
+    return only_w, only_wo, p
+
+
+SCENE: dict[tuple[str, str], str] = {}
 
 
 def mcnemar(b: int, c: int) -> float:
@@ -73,6 +103,18 @@ def main() -> int:
     print(f"\n  有锚点准确率   {both + only_w}/{n} = {(both + only_w) / n:.1%}")
     print(f"  无锚点准确率   {both + only_wo}/{n} = {(both + only_wo) / n:.1%}")
     print(f"  差值           {(only_w - only_wo) / n:+.1%}")
+
+    # 分层：锚点全部来自雪山那一趟，每个考题场景它都没见过。
+    # 两层方向一致 = 跨场景的重复验证，比只在一个场景上测证据更强。
+    # ⚠️ **主结论仍然是合并的那一张表。** 分层只有 15 对和 66 对，
+    # 单独看都不足以判显著；它回答的是「方向一不一致」，不是「显著不显著」。
+    scenes = sorted({SCENE[k] for k in keys})
+    if len(scenes) > 1:
+        print("\n" + "-" * 62)
+        print("  分层（锚点来自雪山那一趟，下面每个场景它都没见过）")
+        for sc in scenes:
+            table([k for k in keys if SCENE[k] == sc], W, WO, sc)
+        print("-" * 62)
 
     p = mcnemar(only_w, only_wo)
     disc = only_w + only_wo
