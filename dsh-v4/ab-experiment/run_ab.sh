@@ -113,6 +113,7 @@ for tag in primary equal; do
 done
 echo
 
+RUN_FAIL=0
 for cond in "无提示" "仅规则" "规则加范例"; do
   for f in "$PAIRS"/primary__*__"$cond".json "$PAIRS"/equal__*__"$cond".json; do
     [ -e "$f" ] || continue
@@ -123,6 +124,17 @@ for cond in "无提示" "仅规则" "规则加范例"; do
     if has_result "$dst"; then echo "--- $base （已有结果，跳过）"; continue; fi
     echo "--- $base ---"
     ask "$base" "$dst" | tail -8
+    # 失败重试一次。
+    #
+    # 实测一次 66 对的文件因为「模型没有且仅调用结构化工具」整份报废 ——
+    # 结果是跑完才写盘，失败前花掉的 132 次调用全作废。
+    # 考题已经切到每份最多 20 对，所以重试的代价有上限。
+    # 只重一次：连着两次同样失败多半不是偶发，再重就是烧钱。
+    if ! has_result "$dst"; then
+      echo "    ⚠️ 没出结果，重试一次"
+      ask "$base" "$dst" | tail -5
+      has_result "$dst" || { echo "    ❌ 重试仍失败，跳过（续跑时会再补）"; RUN_FAIL=1; }
+    fi
   done
 done
 
@@ -162,12 +174,22 @@ print(sum(len(json.load(open(f))["pairs"])
 ')
 echo "  预期题量：primary $EXPECT_PRIMARY 对"
 
+# 判分必须检查退出码。
+#
+# 踩过：三个判分全部因为「同一对出现在两个结果文件里」崩掉，
+# 而脚本最后照样打印「✅ 两档三臂全部跑完」+ exit 0 ——
+# 丢了一个 66 对的文件、吃了两次 429、零判据输出，它报成功。
+# 跟已经修掉的两个静默成功同一类，只是换了位置。
+VERDICT_FAIL=0
 verdict() {   # $1=标题  $2=实验臂  $3=对照臂
   echo
   echo "── $1 ──"
-  python3 "$(dirname "$0")/../ab_verdict.py" --expect "$EXPECT_PRIMARY" \
+  if ! python3 "$(dirname "$0")/../ab_verdict.py" --expect "$EXPECT_PRIMARY" \
     --with  "$OUT"/primary__*__"$2".result.json \
-    --without "$OUT"/primary__*__"$3".result.json
+    --without "$OUT"/primary__*__"$3".result.json; then
+    echo "  ❌ 这一组判分失败"
+    VERDICT_FAIL=1
+  fi
 }
 verdict "规则加范例 vs 无提示（原本的两臂问题）" "规则加范例" "无提示"
 verdict "仅规则 vs 无提示（rubric 能不能传递）"   "仅规则"     "无提示"
@@ -175,8 +197,13 @@ verdict "规则加范例 vs 仅规则（范例的增量）"       "规则加范�
 
 echo
 echo "本轮 RUN_ID = $RUN_ID · 结果在 $OUT"
-if [ "$STAGE3_FAIL" -ne 0 ]; then
-  echo "❌ 同层档有臂没跑成（见第 ③ 段）。**不要把这一轮当作完整交付。**"
+FAIL=0
+[ "$RUN_FAIL"     -ne 0 ] && { echo "❌ 有考题文件重试后仍失败 —— 数据不全"; FAIL=1; }
+[ "$STAGE3_FAIL"  -ne 0 ] && { echo "❌ 同层档有臂没跑成（见第 ③ 段）"; FAIL=1; }
+[ "$VERDICT_FAIL" -ne 0 ] && { echo "❌ 有判分没跑成 —— **没有判据输出**"; FAIL=1; }
+if [ "$FAIL" -ne 0 ]; then
+  echo
+  echo "**不要把这一轮当作完整交付。** 续跑：RUN_ID=$RUN_ID bash $0"
   exit 4
 fi
-echo "✅ 两档三臂全部跑完"
+echo "✅ 两档三臂全部跑完，三组判分全部产出"

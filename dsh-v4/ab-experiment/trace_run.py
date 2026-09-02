@@ -36,6 +36,7 @@ def load(run: pathlib.Path):
             print(f"  ⚠️ 文件名不合预期，跳过：{f.name}")
             continue
         tag, _ds, arm = parts
+        _ds = _ds.split("~")[0]   # 剥片号，见 ab_verdict.scene_of
         d = json.loads(f.read_text())
         rows[(tag, arm)].extend(d.get("rows", []))
     return rows

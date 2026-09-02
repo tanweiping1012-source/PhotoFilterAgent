@@ -12,7 +12,7 @@
 用法：
   python3 make_pairs.py --truth truth.json --questions <绝对路径版 ab-questions.json> --out-dir <目录>
 """
-import argparse, collections, itertools, json, os
+import argparse, collections, hashlib, itertools, json, os
 
 RUBRIC = ""
 
@@ -33,6 +33,8 @@ def main():
     ap.add_argument("--anchors", required=True)
     ap.add_argument("--rubric", required=True, help="rubric 提示词版（rubric-prompt.txt）")
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--max-per-file", type=int, default=20,
+                    help="单个考题文件最多几对。一次工具调用出错会赔掉整份，切小赔得少")
     a = ap.parse_args()
 
     T = json.load(open(a.truth))
@@ -99,10 +101,58 @@ def main():
     anchors = {"folder": A["folder"], "text": A["text"],
                "photos": A["photos"], "labels": A["labels"]}
 
+    # ── 对级去重 ────────────────────────────────────────────────
+    #
+    # 组级去重（40 题 → 33 组）做过了，**对级没做**，结果判分直接崩：
+    #   AssertionError: 同一对出现在两个结果文件里：('DSCF5526','DSCF5521')
+    # 因为 eval-me-133 和 三湖 是同一批 133 张的副本目录，
+    # 同一对被抽进了两个考题文件。实测 primary 81 行里有 3 对重复。
+    #
+    # 那个断言是对的 —— 它拦住了一次会虚增样本量、让 p 值失真的判分。
+    # 但代价是整轮零结论，所以这里必须先去干净。
+    # 按**内容哈希**去，不按文件名 —— PLAN §3.1 那条规矩。
+    def content(folder, name):
+        for root, _dirs, files in os.walk(folder):
+            if name in files:
+                with open(os.path.join(root, name), 'rb') as fh:
+                    return hashlib.md5(fh.read(1 << 20)).hexdigest()
+        return 'MISSING:' + name
+
+    for bucket in (primary, secondary, equal):
+        seen = set()
+        for folder in sorted(bucket):
+            keep = []
+            for x in bucket[folder]:
+                key = tuple(sorted((content(folder, x['a']), content(folder, x['b']))))
+                if key in seen:
+                    stat['去重丢弃'] += 1
+                    continue
+                seen.add(key)
+                keep.append(x)
+            bucket[folder] = keep
+
+    # ── 大文件切片 ──────────────────────────────────────────────
+    #
+    # 一次工具调用里任何一对出错（比如模型没调结构化工具），
+    # 整份跑完才写盘 → 已花的调用**全作废**。实测一次报废了 66 对 / 132 次调用。
+    # 切成小片，最坏只赔一片。
+    #
+    # 片号写进数据集字段（me自然瀑布线~2），判分和 trace 解析时把 ~N 去掉，
+    # 这样分层仍然按数据集聚合，不会被切片拆散。
+    def chunk(bucket):
+        out = collections.defaultdict(list)
+        for folder, ps in bucket.items():
+            if len(ps) <= a.max_per_file:
+                out[(folder, '')] = ps
+                continue
+            for i in range(0, len(ps), a.max_per_file):
+                out[(folder, f'~{i // a.max_per_file + 1}')] = ps[i:i + a.max_per_file]
+        return out
+
     written = []
     for tag, data in (("primary", primary), ("secondary", secondary), ("equal", equal)):
-        for folder, ps in sorted(data.items()):
-            slug = os.path.basename(folder)
+        for (folder, part), ps in sorted(chunk(data).items()):
+            slug = os.path.basename(folder) + part
             # 臂名**不用字母**。
             #
             # 这个项目已经在「符号的含义要靠记」上栽过四次：三次序数歧义
@@ -125,6 +175,7 @@ def main():
     print(f"主分析配对   {stat['primary']} 对（跨层，正确答案 = 赢家）")
     print(f"次分析配对   {stat['secondary']} 对（整组都淘汰的，仍是跨层，不进主结论）")
     print(f"同层配对     {stat['equal']} 对（用户判两张一样，正确答案 = 平局）")
+    print(f"对级去重丢弃 {stat['去重丢弃']} 对（副本目录里的同一对，按内容哈希）")
     print(f"调用预算     主分析 {stat['primary']} × 2 方向 × 3 臂 = {stat['primary'] * 6} 次")
     print()
     for path, n in written:

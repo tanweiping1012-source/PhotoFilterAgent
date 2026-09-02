@@ -800,3 +800,32 @@ def test_双向原话必须都落盘():
         'comparePairs 没有保留两个方向的原话'
     assert 'reason_ab: v.reasonAb' in idx_ts and 'reason_ba: v.reasonBa' in idx_ts, \
         '结果行没有落盘双向原话'
+
+
+def test_考题必须对级去重():
+    """组级去重（40 题→33 组）做过了，对级没做，判分直接崩：
+
+        AssertionError: 同一对出现在两个结果文件里：('DSCF5526','DSCF5521')
+
+    因为 eval-me-133 和 三湖 是同一批 133 张的副本目录，同一对被抽进两个考题文件。
+    那个断言是对的（它拦住了会虚增样本量的判分），但代价是整轮零结论。
+    """
+    import json
+    import glob
+    import collections
+    from pathlib import Path
+    files = glob.glob('/tmp/claude-501/ab-pairs/primary__*__无提示.json')
+    if not files:
+        import pytest
+        pytest.skip('考题文件不在，跳过')
+    seen = collections.Counter()
+    biggest = 0
+    for f in files:
+        d = json.loads(Path(f).read_text())
+        biggest = max(biggest, len(d['pairs']))
+        for p in d['pairs']:
+            seen[(p['a'], p['b'])] += 1
+    dup = [k for k, v in seen.items() if v > 1]
+    assert not dup, f'考题里有重复的对，判分会 assert 崩掉：{dup[:3]}'
+    # 切片：一次工具调用出错会赔掉整份，切小赔得少（实测赔过 66 对 / 132 次调用）
+    assert biggest <= 20, f'单个考题文件 {biggest} 对，太大 —— 一次失败赔太多'

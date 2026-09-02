@@ -18,7 +18,9 @@ def scene_of(path: str) -> str:
     """结果文件名里带数据集名：primary__<数据集>__<臂名>.result.json"""
     base = pathlib.Path(path).name
     parts = base.split("__")
-    return parts[1] if len(parts) > 2 else "未知"
+    # 片号 ~N 要剥掉 —— 大文件被切片是为了「出错只赔一片」，
+    # 但分层必须仍按**数据集**聚合，不能被切片拆成 me自然瀑布线~1/~2/~3/~4
+    return parts[1].split("~")[0] if len(parts) > 2 else "未知"
 
 
 def load(paths: list[str]) -> dict[tuple[str, str], bool]:
