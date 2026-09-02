@@ -37,6 +37,25 @@ echo
 
 run() { (cd "$HARNESS" && pnpm dsh --profile photo-v4-ab "$1" 2>&1); }
 
+# 一份结果文件算不算「已经跑过了」。
+#
+# 不能只用 `[ -s ... ]`：上一轮如果是在写文件的中途被杀掉的，
+# 文件非空但是截断的 JSON —— 续跑会把它当成已有结果跳过，
+# 然后第 ③ 段 json.load 抛错、第 ④ 段 ab_verdict.py 直接崩。
+# 崩比静默好，但代价是这一轮判分拿不到。所以跳过的条件必须是
+# 「能解析出来、而且 rows 非空」。
+has_result() {
+  [ -s "$1" ] || return 1
+  python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if d.get("rows") else 1)
+' "$1" 2>/dev/null
+}
+
 ask() {   # $1=考题文件名  $2=结果文件  $3=limit（空=全部）
   local lim=""
   [ -n "${3:-}" ] && lim="，limit=$3"
@@ -45,6 +64,11 @@ ask() {   # $1=考题文件名  $2=结果文件  $3=limit（空=全部）
 
 # ─────────────────────────────────────────────────────────────
 echo "═══ ① 冒烟：确认单次 32 幅图（28 锚点 + 4 考题）能被接受 ═══"
+# 续跑时不重复花这 2 次。936 断几次就多花几个 2 次，而且会覆盖上一轮的 smoke.json。
+if has_result "$OUT/smoke.json"; then
+  echo "  ✅ 本轮冒烟已通过，跳过（RUN_ID=$RUN_ID）"
+  smoke="成对评测完成（沿用本轮已有结果）"
+else
 smoke=$(ask "primary__三湖__规则加范例.json" "$OUT/smoke.json" 1)
 if printf '%s' "$smoke" | grep -qE 'RATE_LIMIT|429|AccountOverdue|403'; then
   echo "  ❌ 配额或账户不可用，一次调用都没花："
@@ -55,6 +79,7 @@ if ! printf '%s' "$smoke" | grep -q "成对评测完成"; then
   echo "  ❌ 冒烟没跑通，原样贴出："; printf '%s\n' "$smoke" | tail -15; exit 1
 fi
 echo "  ✅ 通过（2 次调用）"
+fi
 echo
 echo "  模型给的理由 —— **看它用不用烧进图里的名字**（「例1丁」而不是「第 4 幅」）："
 OUT="$OUT" python3 -c '
@@ -93,8 +118,9 @@ for cond in "无提示" "仅规则" "规则加范例"; do
     [ -e "$f" ] || continue
     base=$(basename "$f")
     dst="$OUT/${base%.json}.result.json"
-    # 续跑：已经有结果的跳过，不重复花钱
-    if [ -s "$dst" ]; then echo "--- $base （已有结果，跳过）"; continue; fi
+    # 续跑：已经有**合法且非空**结果的跳过，不重复花钱。
+    # 截断的半个 JSON 不算 —— 见 has_result 的注释。
+    if has_result "$dst"; then echo "--- $base （已有结果，跳过）"; continue; fi
     echo "--- $base ---"
     ask "$base" "$dst" | tail -8
   done
@@ -128,10 +154,18 @@ done
 # ─────────────────────────────────────────────────────────────
 echo
 echo "═══ ④ 判分（判据在跑之前就定死了；只收 primary，同层不进主检验）═══"
+# 预期题量从考题文件数出来，不写死 —— 写死的数字迟早和考题漂移。
+EXPECT_PRIMARY=$(PAIRS="$PAIRS" python3 -c '
+import glob, json, os
+print(sum(len(json.load(open(f))["pairs"])
+          for f in glob.glob(os.path.join(os.environ["PAIRS"], "primary__*__无提示.json"))))
+')
+echo "  预期题量：primary $EXPECT_PRIMARY 对"
+
 verdict() {   # $1=标题  $2=实验臂  $3=对照臂
   echo
   echo "── $1 ──"
-  python3 "$(dirname "$0")/../ab_verdict.py" \
+  python3 "$(dirname "$0")/../ab_verdict.py" --expect "$EXPECT_PRIMARY" \
     --with  "$OUT"/primary__*__"$2".result.json \
     --without "$OUT"/primary__*__"$3".result.json
 }

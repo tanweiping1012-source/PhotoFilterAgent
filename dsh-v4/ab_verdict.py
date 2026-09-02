@@ -43,6 +43,13 @@ def load(paths: list[str]) -> dict[tuple[str, str], bool]:
 
 def table(keys, W, WO, title):
     """一张 2×2 加 McNemar。分层和合并共用，保证算法完全一样。"""
+    shortfall = ""
+    if a.expect and len(keys) != a.expect:
+        shortfall = (f"⚠️ **本轮只有 {len(keys)} 对，不是预期的 {a.expect} 对。**\n"
+                     f"   少了 {a.expect - len(keys)} 对，功效比方案里算的更低。\n"
+                     f"   两臂同等残缺时「对不齐」告警不会触发 —— 所以这一条单独查。\n")
+        print("\n" + shortfall)
+
     both = sum(1 for k in keys if W[k] and WO[k])
     only_w = sum(1 for k in keys if W[k] and not WO[k])
     only_wo = sum(1 for k in keys if not W[k] and WO[k])
@@ -150,6 +157,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--with", dest="w", required=True, nargs="+", help="有锚点的结果（可多份）")
     ap.add_argument("--without", dest="wo", required=True, nargs="+", help="无锚点的结果（可多份）")
+    ap.add_argument("--expect", type=int, default=0,
+                    help="预期题量。对不上就在结论里显式写出来 —— "
+                         "两臂**同等**残缺时三个数相等，下面那条『对不齐』告警不会触发，"
+                         "它会安静地按残缺的题量算完，功效比方案里算的更低而没人知道。")
     a = ap.parse_args()
 
     W, WO = load(a.w), load(a.wo)
@@ -157,6 +168,13 @@ def main() -> int:
     if len(keys) != len(W) or len(keys) != len(WO):
         print(f"⚠️ 两轮的题目对不齐：有锚点 {len(W)} 对、无锚点 {len(WO)} 对、"
               f"共有 {len(keys)} 对。只用共有的部分。")
+
+    shortfall = ""
+    if a.expect and len(keys) != a.expect:
+        shortfall = (f"⚠️ **本轮只有 {len(keys)} 对，不是预期的 {a.expect} 对。**\n"
+                     f"   少了 {a.expect - len(keys)} 对，功效比方案里算的更低。\n"
+                     f"   两臂同等残缺时「对不齐」告警不会触发 —— 所以这一条单独查。\n")
+        print("\n" + shortfall)
 
     both = sum(1 for k in keys if W[k] and WO[k])
     only_w = sum(1 for k in keys if W[k] and not WO[k])
@@ -199,6 +217,8 @@ def main() -> int:
     print(f"  McNemar p = {p:.4f}   （参考）")
     print(f"  **组级置换 p = {perm_p:.4f}   ← 主检验，与 McNemar 冲突时以此为准**")
     print("\n" + "=" * 62)
+    if shortfall:
+        print("  " + shortfall.strip().replace("\n", "\n  "))
     if perm_p < 0.05 and only_w > only_wo:
         print("  结论：锚点有显著帮助。")
     elif perm_p < 0.05:
