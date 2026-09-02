@@ -57,7 +57,23 @@ for cond in "无提示" "仅规则" "规则加范例"; do
 done
 
 echo
-echo "═══ ③ 判分（判据在跑之前就定死了）═══"
+echo "═══ ③ 同层探索档（不进主检验，判据不因它改动）═══"
+echo "  问的是：标注者判「两张一样」时，模型会不会硬选一张。"
+echo "  ⚠️ 同层真值只有约 61% 会重现（跨层方向是 90.5%），只当探索性证据。"
+for cond in "无提示" "仅规则" "规则加范例"; do
+  OUT="$OUT" COND="$cond" python3 -c '
+import glob, json, os
+out, cond = os.environ["OUT"], os.environ["COND"]
+rows = [r for f in glob.glob(f"{out}/equal__*__{cond}.result.json")
+        for r in json.load(open(f))["rows"]]
+if rows:
+    ok = sum(1 for r in rows if r.get("winner") == "tie")
+    print(f"  {cond:<10} 答平局 {ok}/{len(rows)} = {ok/len(rows):.1%}   <- 越高越贴近标注者")
+'
+done
+
+echo
+echo "═══ ④ 判分（判据在跑之前就定死了）═══"
 python3 "$(dirname "$0")/../ab_verdict.py" \
   --with "$OUT"/primary__*__规则加范例.result.json \
   --without "$OUT"/primary__*__无提示.result.json
