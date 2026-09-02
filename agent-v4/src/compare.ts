@@ -160,6 +160,14 @@ export async function comparePairs(
    * 传空数组 = 不用锚点。
    */
   anchors: AnchorBlock | null,
+  /**
+   * 用户的判据文本（rubric）。拼在系统提示词里，排在锚点之前 ——
+   * 先给规则，再给演示规则的范例。
+   *
+   * 它和 anchors **相互独立**：可以只给规则不给范例（AB 实验的「仅规则」臂），
+   * 也可以两个都给。别把它塞进 AnchorBlock —— 那样「仅规则」就没法表达了。
+   */
+  rubric: string | null,
   services: HarnessVisionServices,
   exec: HarnessVisionExecution,
   onProgress?: (done: number, total: number) => void,
@@ -189,7 +197,8 @@ export async function comparePairs(
       await transport.invokeStructured({
         // 锚点拼在系统提示词末尾，范例图排在待比较的图之前 ——
         // 模型先看懂这个人在意什么，再回答问题。
-        system: anchors ? `${SYSTEM}\n\n${anchors.text}` : SYSTEM,
+        system: [SYSTEM, rubric || null, anchors ? anchors.text : null]
+          .filter(Boolean).join('\n\n'),
         // 绝不能用「第一张/第二张」这种序数。
         //
         // 踩过的坑：一次调用有 18 幅图（14 幅锚点 + 4 幅考题），说「第一张和第二张」

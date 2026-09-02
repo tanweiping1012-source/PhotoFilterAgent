@@ -31,8 +31,11 @@
         rankerTimeoutMs: 1800000
         defaultTarget: 20
         # 评测专用：非空才注册 run_pair_eval。生产 profile 不设这一项。
-        evalPairsFile: /tmp/claude-501/ab-pairs/primary__me自然瀑布线__无提示.json
+        evalPairsFile: /tmp/claude-501/ab-pairs/primary__三湖__无提示.json
         evalPairsDir: /tmp/claude-501/ab-pairs
+        # 判据文本。「仅规则」和「规则加范例」两臂靠考题文件里的 rubric 字段
+        # 覆盖它；这里给的是缺省值（生产路径也用它）。
+        rubricFile: /Users/bytedance/deepseek-harness/PhotoFilterAgent/dsh-v4/rubric/rubric-prompt.txt
 
 # 关掉全部通用文件系统与 shell 能力。
 #

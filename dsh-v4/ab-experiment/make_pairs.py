@@ -105,7 +105,7 @@ def main():
 
     print(f"主分析配对   {stat['primary']} 对")
     print(f"次分析配对   {stat['secondary']} 对（整组都淘汰的，不进主结论）")
-    print(f"调用预算     主分析 {stat['primary']} × 2 方向 × 2 条件 = {stat['primary'] * 4} 次")
+    print(f"调用预算     主分析 {stat['primary']} × 2 方向 × 3 臂 = {stat['primary'] * 6} 次")
     print()
     for path, n in written:
         print(f"  {n:3d} 对  {os.path.basename(path)}")

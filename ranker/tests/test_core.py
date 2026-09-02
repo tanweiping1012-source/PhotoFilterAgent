@@ -617,3 +617,23 @@ def test_实验臂不能用字母命名():
             if tag in txt:
                 bad.append(f'{f.name}:{tag}')
     assert not bad, f'实验臂又用字母命名了：{bad}。用「无提示/仅规则/规则加范例」这种自解释的名字。'
+
+
+def test_三臂必须真的不一样():
+    """「仅规则」臂如果不把 rubric 拼进提示词，它就等于「无提示」——
+    而且不报错，跑完两臂数字接近，看起来像「rubric 没用」。
+
+    这是最贵的一类 bug：不失败，只让结论反过来。
+    """
+    from pathlib import Path
+    src = Path(__file__).resolve().parents[2] / 'agent-v4' / 'src'
+    cmp_ts = (src / 'compare.ts').read_text(encoding='utf-8')
+    idx_ts = (src / 'index.ts').read_text(encoding='utf-8')
+
+    assert 'rubric: string | null' in cmp_ts, 'comparePairs 没有 rubric 参数'
+    # rubric 必须真的进 system，而不是收下就丢
+    assert 'rubric' in cmp_ts.split('system:')[1][:200], \
+        'rubric 没有拼进 system —— 「仅规则」臂会静默退化成「无提示」'
+    # 两个调用点都要传
+    assert idx_ts.count('loadRubric()') >= 2, \
+        '生产路径和评测路径都要传 rubric，否则两边又分叉'

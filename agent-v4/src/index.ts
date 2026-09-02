@@ -68,6 +68,8 @@ export interface Config {
    * 与其让模型猜判据，不如直接示范。
    */
   anchorsFile: string
+  /** 用户判据文本的路径。整份进模型 —— 见 dsh-v4/rubric/routing.md。 */
+  rubricFile: string
   /**
    * 阶段 2 的组内比较是否默认用视觉模型。
    *
@@ -101,6 +103,7 @@ export const Config: z<Config> = z.object({
   rankerTimeoutMs: z.number().step(1).min(10_000).default(900_000),
   defaultTarget: z.number().step(1).min(1).default(20),
   anchorsFile: z.string().default(''),
+  rubricFile: z.string().default(''),
   stage2Vlm: z.boolean().default(true),
   maxInlineIdList: z.number().step(1).min(0).default(60),
   evalPairsFile: z.string().default(''),
@@ -141,6 +144,10 @@ export function apply(ctx: Context, config: Config): void {
 
   /** 目录必须落在授权根目录内。这是结构约束，不靠 agent 自觉。 */
   const loadAnchors = () => readAnchors(config.anchorsFile)
+  /** rubric 是用户的，整份原样进提示词；文件不存在就是没有，不报错。 */
+  const loadRubric = (): string | null =>
+    config.rubricFile && existsSync(config.rubricFile)
+      ? readFileSync(config.rubricFile, 'utf8').trim() || null : null
 
   /**
    * 锚点 → 提示词块。**生产路径和评测路径必须走这一个函数。**
@@ -312,7 +319,7 @@ export function apply(ctx: Context, config: Config): void {
               attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
             }
             const { verdicts, route } = await comparePairs(
-              plan, previews, faces, anchorBlock, services,
+              plan, previews, faces, anchorBlock, loadRubric(), services,
               exec as unknown as HarnessVisionExecution,
             )
             const vf = join(config.workdir, `verdicts-${res.fingerprint}.json`)
@@ -779,6 +786,8 @@ export function apply(ctx: Context, config: Config): void {
            *  folder 可以和考题不同（锚点通常来自另一个数据集，也必须如此 ——
            *  锚点和考题同源就是泄题）。 */
           anchors?: { folder?: string; text: string; photos: string[]; labels?: Record<string, string> }
+          /** 判据文本。缺省时回落到 config.rubricFile —— AB 实验靠它区分「无提示 / 仅规则」两臂。 */
+          rubric?: string
         }
         // 考题文件里的 folder **也必须过 allowedRoots**。
         //
@@ -822,7 +831,8 @@ export function apply(ctx: Context, config: Config): void {
         }
 
         const { verdicts, route } = await comparePairs(
-          use.map((p) => [p.a, p.b] as const), previews, faces, anchorBlock, services,
+          use.map((p) => [p.a, p.b] as const), previews, faces, anchorBlock,
+          spec.rubric ?? loadRubric(), services,
           exec as unknown as HarnessVisionExecution,
         )
 
