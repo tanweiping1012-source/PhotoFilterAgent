@@ -42,14 +42,15 @@ def load(paths: list[str]) -> dict[tuple[str, str], bool]:
 
 
 def table(keys, W, WO, title):
-    """一张 2×2 加 McNemar。分层和合并共用，保证算法完全一样。"""
-    shortfall = ""
-    if a.expect and len(keys) != a.expect:
-        shortfall = (f"⚠️ **本轮只有 {len(keys)} 对，不是预期的 {a.expect} 对。**\n"
-                     f"   少了 {a.expect - len(keys)} 对，功效比方案里算的更低。\n"
-                     f"   两臂同等残缺时「对不齐」告警不会触发 —— 所以这一条单独查。\n")
-        print("\n" + shortfall)
+    """一张 2×2 加 McNemar。分层和合并共用，保证算法完全一样。
 
+    ⚠️ **题量检查不属于这里。** 它只属于 main()：
+    分层按设计就是 15 对和 66 对，拿每一层去跟 expect=81 比，
+    会给每个场景各打一次「本轮只有 15 对，不是预期的 81 对」—— 是误导。
+    （这里一度被塞进过一份 main() 的拷贝，引用 main() 的局部变量 a，
+    单场景测试跑不到分层分支所以没抓到；真跑有 4 个场景，必进，
+    936 次花完才在主检验之前 NameError。）
+    """
     both = sum(1 for k in keys if W[k] and WO[k])
     only_w = sum(1 for k in keys if W[k] and not WO[k])
     only_wo = sum(1 for k in keys if not W[k] and WO[k])

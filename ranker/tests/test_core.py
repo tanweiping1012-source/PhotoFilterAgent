@@ -637,3 +637,48 @@ def test_三臂必须真的不一样():
     # 两个调用点都要传
     assert idx_ts.count('loadRubric()') >= 2, \
         '生产路径和评测路径都要传 rubric，否则两边又分叉'
+
+
+def _fake_ab_results(tmpdir, scenes, n_per_scene=15):
+    """造判分用的假结果。scenes 多于一个才会走到分层分支。"""
+    import json
+    import random
+    rng = random.Random(7)
+    out = {}
+    for cond, acc in (('规则加范例', 0.72), ('无提示', 0.55)):
+        paths = []
+        for sc in scenes:
+            rows = [{'a': f'{sc}_a{i}.JPG', 'b': f'{sc}_b{i}.JPG', 'group': i // 3,
+                     'winner': 'a', 'model_correct': rng.random() < acc}
+                    for i in range(n_per_scene)]
+            p = tmpdir / f'primary__{sc}__{cond}.result.json'
+            p.write_text(json.dumps({'rows': rows}), encoding='utf-8')
+            paths.append(str(p))
+        out[cond] = paths
+    return out
+
+
+def test_判分在多场景下跑得完(tmp_path):
+    """分层分支必须有测试覆盖。
+
+    踩过：题量检查被误塞进 table()，引用的是 main() 的局部变量 ——
+    单场景测试 len(scenes)==1，分层分支根本不进，table() 一次都没被调用，
+    所以测试全绿。而真跑 primary 有 4 个文件夹，scenes>1 必然成立：
+    936 次调用花完、合并表打印完，在**主检验之前** NameError。
+
+    「单场景通过」不等于「分层路径通过」。
+    """
+    import subprocess
+    from pathlib import Path
+    r = _fake_ab_results(tmp_path, ['me自然瀑布线', '三湖'])
+    script = Path(__file__).resolve().parents[2] / 'dsh-v4' / 'ab_verdict.py'
+    p = subprocess.run(['python3', str(script), '--expect', '30',
+                        '--with', *r['规则加范例'], '--without', *r['无提示']],
+                       capture_output=True, text=True)
+    assert p.returncode == 0, f'判分崩了：\n{p.stderr[-800:]}'
+    assert '分层' in p.stdout, '多场景应该走分层分支'
+    for must in ('组级置换 p', '平局拆解', '结论'):
+        assert must in p.stdout, f'主检验没跑完，缺「{must}」——「{must}」在分层之后'
+    # 题量检查只能出现在合并那一层，不能每个场景各打一次
+    assert p.stdout.count('不是预期的') <= 2, \
+        '题量检查漏进了 table()，会给每个分层各打一次 —— 那是误导'
