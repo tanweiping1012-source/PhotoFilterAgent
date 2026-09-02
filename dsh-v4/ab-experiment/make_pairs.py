@@ -44,6 +44,17 @@ def main():
 
     primary = collections.defaultdict(list)    # folder -> pairs
     secondary = collections.defaultdict(list)
+    # 同层对：用户把两张放进同一层 = 他判「这两张一样」。
+    #
+    # 这批对**以前一对都没进过考题**，因为 pairs_from_tiers 只出跨层对。
+    # 后果是选择偏差：留下的全是标注者当初能一眼叫向的题，
+    # 而被移走的恰恰是他说不清、要犹豫的那些 —— 也正是范例锚点
+    # 最该起作用的人群。在「一眼能分」的题上测「范例有没有用」，
+    # 问的已经不是原来那个问题了。
+    #
+    # 它们有真值：**正确答案是平局**。模型在用户判等价的两张上
+    # 自信地选一张，就是判错 —— 而这种错在现在的设计里完全看不见。
+    equal = collections.defaultdict(list)
     stat = collections.Counter()
 
     for q, spec in T["tiers"].items():
@@ -61,8 +72,16 @@ def main():
                 "kind": "ab", "local_correct": False,
                 "group": int(q),
             })
+        for tier in spec["t"]:
+            for i, j in itertools.combinations(tier, 2):
+                equal[folder].append({
+                    "a": name(i), "b": name(j), "answer": "tie",
+                    "kind": "equal", "local_correct": False,
+                    "group": int(q),
+                })
         stat["secondary" if spec.get("all_rejected") else "primary"] += \
             len(pairs_from_tiers(spec["t"]))
+        stat["equal"] += sum(len(t) * (len(t) - 1) // 2 for t in spec["t"])
 
     # 取图时是按**文件名**在目录里找的（photos = {p.name: p}），
     # 同一个 folder 下重名会被静默覆盖，取到另一张照片还不报错。
@@ -81,7 +100,7 @@ def main():
                "photos": A["photos"], "labels": A["labels"]}
 
     written = []
-    for tag, data in (("primary", primary), ("secondary", secondary)):
+    for tag, data in (("primary", primary), ("secondary", secondary), ("equal", equal)):
         for folder, ps in sorted(data.items()):
             slug = os.path.basename(folder)
             # 臂名**不用字母**。
@@ -103,8 +122,9 @@ def main():
                 json.dump(spec, open(path, "w"), ensure_ascii=False, indent=2)
                 written.append((path, len(ps)))
 
-    print(f"主分析配对   {stat['primary']} 对")
-    print(f"次分析配对   {stat['secondary']} 对（整组都淘汰的，不进主结论）")
+    print(f"主分析配对   {stat['primary']} 对（跨层，正确答案 = 赢家）")
+    print(f"次分析配对   {stat['secondary']} 对（整组都淘汰的，仍是跨层，不进主结论）")
+    print(f"同层配对     {stat['equal']} 对（用户判两张一样，正确答案 = 平局）")
     print(f"调用预算     主分析 {stat['primary']} × 2 方向 × 3 臂 = {stat['primary'] * 6} 次")
     print()
     for path, n in written:
