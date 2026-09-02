@@ -50,8 +50,8 @@ def main():
             hit += ok
             miss += not ok
         per_file[os.path.basename(path)] = (hit, miss, unknown)
-        # A/B 两版是同一批对，只统计一次
-        if "A-有锚点" in path:
+        # 三臂是同一批对，只统计一次
+        if "规则加范例" in path:   # 三臂是同一批对，只统计一次
             tally[tag + "_hit"] += hit
             tally[tag + "_miss"] += miss
             tally[tag + "_unknown"] += unknown
@@ -67,8 +67,8 @@ def main():
     print()
     print("各文件明细（A/B 同一批对，数字应当成对相同）：")
     for k, (h, m, u) in per_file.items():
-        if "A-有锚点" in k:
-            print(f"  {h:3d}/{h + m:<3d}  {k.replace('__A-有锚点.json', '')}")
+        if "规则加范例" in k:
+            print(f"  {h:3d}/{h + m:<3d}  {k.replace('__规则加范例.json', '')}")
 
 
 if __name__ == "__main__":

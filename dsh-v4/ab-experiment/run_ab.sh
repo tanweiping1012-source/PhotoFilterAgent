@@ -24,7 +24,7 @@ ask() {   # $1=考题文件名  $2=结果文件  $3=limit（空=全部）
 }
 
 echo "═══ ① 冒烟：确认单次 32 幅图（28 锚点 + 4 考题）能被接受 ═══"
-smoke=$(ask "primary__三湖__A-有锚点.json" "$OUT/smoke.json" 1)
+smoke=$(ask "primary__三湖__规则加范例.json" "$OUT/smoke.json" 1)
 if printf '%s' "$smoke" | grep -qE 'RATE_LIMIT|429|AccountOverdue|403'; then
   echo "  ❌ 配额或账户不可用，一次调用都没花："
   printf '%s\n' "$smoke" | grep -oE '(RATE_LIMIT|AUTH)[^"]*' | head -1
@@ -45,8 +45,9 @@ for r in d['rows'][:1]: print('   ', r['reason'][:400])
 if [ "${1:-}" = "冒烟" ]; then echo; echo "只跑冒烟，停在这里。"; exit 0; fi
 
 echo
-echo "═══ ② 全量：81 对 × 2 方向 × 2 条件 = 324 次调用 ═══"
-for cond in "A-有锚点" "B-无锚点"; do
+echo "═══ ② 全量：三臂 × 2 方向 ═══"
+# 臂名不用字母 —— 见 make_pairs.py 里那段注释。
+for cond in "无提示" "仅规则" "规则加范例"; do
   for f in "$PAIRS"/primary__*__"$cond".json; do
     [ -e "$f" ] || continue
     base=$(basename "$f")
@@ -58,5 +59,15 @@ done
 echo
 echo "═══ ③ 判分（判据在跑之前就定死了）═══"
 python3 "$(dirname "$0")/../ab_verdict.py" \
-  --with "$OUT"/primary__*__A-有锚点.result.json \
-  --without "$OUT"/primary__*__B-无锚点.result.json
+  --with "$OUT"/primary__*__规则加范例.result.json \
+  --without "$OUT"/primary__*__无提示.result.json
+echo
+echo "── 仅规则 vs 无提示（rubric 能不能传递）──"
+python3 "$(dirname "$0")/../ab_verdict.py" \
+  --with "$OUT"/primary__*__仅规则.result.json \
+  --without "$OUT"/primary__*__无提示.result.json
+echo
+echo "── 规则加范例 vs 仅规则（范例的增量）──"
+python3 "$(dirname "$0")/../ab_verdict.py" \
+  --with "$OUT"/primary__*__规则加范例.result.json \
+  --without "$OUT"/primary__*__仅规则.result.json

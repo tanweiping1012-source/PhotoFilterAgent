@@ -15,7 +15,7 @@ from math import comb
 
 
 def scene_of(path: str) -> str:
-    """结果文件名里带数据集名：primary__<数据集>__A-有锚点.result.json"""
+    """结果文件名里带数据集名：primary__<数据集>__<臂名>.result.json"""
     base = pathlib.Path(path).name
     parts = base.split("__")
     return parts[1] if len(parts) > 2 else "未知"

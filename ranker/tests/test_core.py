@@ -594,3 +594,26 @@ def test_锚点只能由一个函数构造():
     # 取锚点图必须带人脸和标签，而这两个参数只在 buildAnchorBlock 里出现一次
     assert ts.count('anchors.labels,') == 1, \
         'anchors.labels 应当只在 buildAnchorBlock 里传一次'
+
+
+def test_实验臂不能用字母命名():
+    """臂名必须自解释，不能是 A/B/C。
+
+    栽过四次：三次序数歧义（第几张 vs 第几幅、加锚点后编号推移、
+    名字要自己对应到第几幅），加上第四次 —— run_ab.sh 里 A=有锚点、
+    PLAN.md 里 A=什么都不给。跑完喂判分脚本标签整个反过来，
+    **而且结果看起来完全正常**，没有任何报错。
+
+    符号的含义要靠记，就一定会有人记反。名字自带含义就没有这个问题。
+    """
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2] / 'dsh-v4'
+    bad = []
+    for f in list(root.rglob('*.py')) + list(root.rglob('*.sh')) + list(root.rglob('*.md')):
+        if f.name == 'test_core.py':
+            continue
+        txt = f.read_text(encoding='utf-8', errors='ignore')
+        for tag in ('A-有锚点', 'B-无锚点', 'A-无锚点', 'B-有锚点'):
+            if tag in txt:
+                bad.append(f'{f.name}:{tag}')
+    assert not bad, f'实验臂又用字母命名了：{bad}。用「无提示/仅规则/规则加范例」这种自解释的名字。'

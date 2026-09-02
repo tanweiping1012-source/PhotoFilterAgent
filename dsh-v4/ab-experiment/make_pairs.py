@@ -14,6 +14,8 @@
 """
 import argparse, collections, itertools, json, os
 
+RUBRIC = ""
+
 
 def pairs_from_tiers(tiers):
     """层间两两配对，靠前的层是赢家。"""
@@ -29,12 +31,15 @@ def main():
     ap.add_argument("--truth", required=True)
     ap.add_argument("--questions", required=True)
     ap.add_argument("--anchors", required=True)
+    ap.add_argument("--rubric", required=True, help="rubric 提示词版（rubric-prompt.txt）")
     ap.add_argument("--out-dir", required=True)
     a = ap.parse_args()
 
     T = json.load(open(a.truth))
     Q = json.load(open(a.questions))
     A = json.load(open(a.anchors))
+    global RUBRIC
+    RUBRIC = open(a.rubric).read()
     os.makedirs(a.out_dir, exist_ok=True)
 
     primary = collections.defaultdict(list)    # folder -> pairs
@@ -79,10 +84,21 @@ def main():
     for tag, data in (("primary", primary), ("secondary", secondary)):
         for folder, ps in sorted(data.items()):
             slug = os.path.basename(folder)
-            for cond, anc in (("A-有锚点", anchors), ("B-无锚点", None)):
+            # 臂名**不用字母**。
+            #
+            # 这个项目已经在「符号的含义要靠记」上栽过四次：三次序数歧义
+            # （第几张 vs 第几幅、加锚点后编号推移、名字要自己对应），
+            # 加上这一次 —— 脚本里 A=有锚点、文档里 A=什么都不给，
+            # 跑完喂判分脚本标签会整个反过来，而且结果看起来完全正常。
+            # 名字自带含义就没有这个问题。
+            for cond, anc, rub in (("无提示", None, False),
+                                   ("仅规则", None, True),
+                                   ("规则加范例", anchors, True)):
                 spec = {"folder": folder, "pairs": ps}
                 if anc:
                     spec["anchors"] = anc
+                if rub:
+                    spec["rubric"] = RUBRIC
                 path = os.path.join(a.out_dir, f"{tag}__{slug}__{cond}.json")
                 json.dump(spec, open(path, "w"), ensure_ascii=False, indent=2)
                 written.append((path, len(ps)))
