@@ -1,0 +1,37 @@
+{
+  "20260221开拓小屋线+防潮坝__me": {
+    "photos_dir": "20260221开拓小屋线+防潮坝/me",
+    "pick_dir": "20260221开拓小屋线+防潮坝/me/me-pick",
+    "kind": "移动式",
+    "n": 20,
+    "sha256": "668e96b147b40935"
+  },
+  "20260221开拓小屋线+防潮坝": {
+    "photos_dir": "20260221开拓小屋线+防潮坝",
+    "pick_dir": "20260221开拓小屋线+防潮坝/景色pick",
+    "kind": "移动式",
+    "n": 14,
+    "sha256": "09b81bb980504e23"
+  },
+  "eval-people-309-acceptance": {
+    "photos_dir": "eval-people-309-acceptance",
+    "pick_dir": "eval-people-309-acceptance/me-pick",
+    "kind": "复制式",
+    "n": 20,
+    "sha256": "668e96b147b40935"
+  },
+  "me": {
+    "photos_dir": "me",
+    "pick_dir": "me/me-pick",
+    "kind": "移动式",
+    "n": 6,
+    "sha256": "2045181d84b58ffd"
+  },
+  "me自然瀑布线": {
+    "photos_dir": "me自然瀑布线",
+    "pick_dir": "me自然瀑布线/me-pick",
+    "kind": "移动式",
+    "n": 36,
+    "sha256": "959d0cccc5c8ed32"
+  }
+}
