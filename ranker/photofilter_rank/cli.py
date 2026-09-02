@@ -234,8 +234,12 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "pairs":
         # 阶段 2 的考题。组级验收（13 组）功效不足 —— 连 12/13 都只有 p=0.057，
         # 所以改成对级：同组内「金标 vs 非金标」每一对算一道题，样本量 13 → 99。
-        import numpy as np
-
+        #
+        # ⚠️ 这里**不能**再写 import numpy as np。函数里任何一处局部 import
+        # 会让 np 在整个 main() 里都变成局部名，模块顶层那个 import 就被遮住 ——
+        # 走 eval / curve 分支（不经过这里）时，第 340 行的 np 直接 UnboundLocalError。
+        # 实测：photofilter-rank eval 整个命令是崩的，而 agent 的
+        # evaluate_against_answer 正是调它。
         from .dedupe import group_by_similarity, suggest_threshold
         from .eligibility import EligibilityUnavailable, engine_facts
         from .embed import embed_photos
