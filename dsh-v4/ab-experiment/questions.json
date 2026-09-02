@@ -1,0 +1,363 @@
+{
+  "_说明": "AB 实验的考题快照。仓库里不放照片，只记录「哪一组、按什么顺序展示」，这样别人拿到同一批原图能复现同一套题。绝对路径已去掉。",
+  "questions": {
+    "1": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7662.JPG",
+        "DSCF7659.JPG",
+        "DSCF7658.JPG",
+        "DSCF7661.JPG",
+        "DSCF7660.JPG",
+        "DSCF7663.JPG"
+      ]
+    },
+    "2": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF8295.JPG",
+        "DSCF8289.JPG",
+        "DSCF8296.JPG",
+        "DSCF8291.JPG"
+      ]
+    },
+    "3": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7823.JPG",
+        "DSCF7819.JPG",
+        "DSCF7829.JPG",
+        "DSCF7820.JPG"
+      ]
+    },
+    "4": {
+      "set": "eval-me-133",
+      "shown": [
+        "DSCF5527.JPG",
+        "DSCF5526.JPG",
+        "DSCF5525.JPG",
+        "DSCF5521.JPG"
+      ]
+    },
+    "5": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7654.JPG",
+        "DSCF7655.JPG",
+        "DSCF7656.JPG"
+      ]
+    },
+    "6": {
+      "set": "me",
+      "shown": [
+        "DSCF5261.JPG",
+        "DSCF5262.JPG",
+        "DSCF5263.JPG"
+      ]
+    },
+    "7": {
+      "set": "eval-me-133",
+      "shown": [
+        "DSCF5210.JPG",
+        "DSCF5207.JPG",
+        "DSCF5208.JPG",
+        "DSCF5209.JPG"
+      ]
+    },
+    "8": {
+      "set": "三湖",
+      "shown": [
+        "DSCF5403.JPG",
+        "DSCF5404.JPG",
+        "DSCF5405.JPG",
+        "DSCF5402.JPG",
+        "DSCF5406.JPG"
+      ]
+    },
+    "9": {
+      "set": "三湖",
+      "shown": [
+        "DSCF5521.JPG",
+        "DSCF5526.JPG",
+        "DSCF5525.JPG",
+        "DSCF5527.JPG"
+      ]
+    },
+    "10": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7966.JPG",
+        "DSCF7964.JPG",
+        "DSCF7965.JPG",
+        "DSCF7967.JPG",
+        "DSCF7962.JPG",
+        "DSCF7963.JPG"
+      ]
+    },
+    "11": {
+      "set": "me",
+      "shown": [
+        "DSCF5394.JPG",
+        "DSCF5395.JPG",
+        "DSCF5386.JPG",
+        "DSCF5379.JPG"
+      ]
+    },
+    "12": {
+      "set": "三湖",
+      "shown": [
+        "DSCF5259.JPG",
+        "DSCF5258.JPG",
+        "DSCF5257.JPG"
+      ]
+    },
+    "13": {
+      "set": "me",
+      "shown": [
+        "DSCF5259.JPG",
+        "DSCF5258.JPG",
+        "DSCF5257.JPG"
+      ]
+    },
+    "14": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7996.JPG",
+        "DSCF7995.JPG",
+        "DSCF7997.JPG",
+        "DSCF7999.JPG",
+        "DSCF7998.JPG",
+        "DSCF7993.JPG"
+      ]
+    },
+    "15": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7960.JPG",
+        "DSCF7959.JPG",
+        "DSCF7958.JPG"
+      ]
+    },
+    "16": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF8232.JPG",
+        "DSCF8230.JPG",
+        "DSCF8233.JPG",
+        "DSCF8231.JPG"
+      ]
+    },
+    "17": {
+      "set": "三湖",
+      "shown": [
+        "DSCF5207.JPG",
+        "DSCF5209.JPG",
+        "DSCF5208.JPG",
+        "DSCF5210.JPG"
+      ]
+    },
+    "18": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7952.JPG",
+        "DSCF7951.JPG",
+        "DSCF7954.JPG",
+        "DSCF7957.JPG",
+        "DSCF7956.JPG"
+      ]
+    },
+    "19": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7869.JPG",
+        "DSCF7867.JPG",
+        "DSCF7864.JPG"
+      ]
+    },
+    "20": {
+      "set": "三湖",
+      "shown": [
+        "DSCF5176.JPG",
+        "DSCF5179.JPG",
+        "DSCF5177.JPG"
+      ]
+    },
+    "21": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF8619.JPG",
+        "DSCF8612.JPG",
+        "DSCF8613.JPG",
+        "DSCF8614.JPG",
+        "DSCF8615.JPG"
+      ]
+    },
+    "22": {
+      "set": "三湖",
+      "shown": [
+        "DSCF5560.JPG",
+        "DSCF5558.JPG",
+        "DSCF5559.JPG"
+      ]
+    },
+    "23": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF8717.JPG",
+        "DSCF8719.JPG",
+        "DSCF8718.JPG"
+      ]
+    },
+    "24": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF8301.JPG",
+        "DSCF8306.JPG",
+        "DSCF8307.JPG",
+        "DSCF8305.JPG",
+        "DSCF8304.JPG"
+      ]
+    },
+    "25": {
+      "set": "eval-me-133",
+      "shown": [
+        "DSCF5262.JPG",
+        "DSCF5263.JPG",
+        "DSCF5261.JPG"
+      ]
+    },
+    "26": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7669.JPG",
+        "DSCF7666.JPG",
+        "DSCF7665.JPG"
+      ]
+    },
+    "27": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7645.JPG",
+        "DSCF7638.JPG",
+        "DSCF7637.JPG",
+        "DSCF7639.JPG"
+      ]
+    },
+    "28": {
+      "set": "三湖",
+      "shown": [
+        "DSCF5386.JPG",
+        "DSCF5379.JPG",
+        "DSCF5394.JPG",
+        "DSCF5395.JPG"
+      ]
+    },
+    "29": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7989.JPG",
+        "DSCF7991.JPG",
+        "DSCF7992.JPG"
+      ]
+    },
+    "30": {
+      "set": "me",
+      "shown": [
+        "DSCF5176.JPG",
+        "DSCF5177.JPG",
+        "DSCF5179.JPG"
+      ]
+    },
+    "31": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7824.JPG",
+        "DSCF7825.JPG",
+        "DSCF7821.JPG",
+        "DSCF7822.JPG"
+      ]
+    },
+    "32": {
+      "set": "me",
+      "shown": [
+        "DSCF5213.JPG",
+        "DSCF5211.JPG",
+        "DSCF5212.JPG"
+      ]
+    },
+    "33": {
+      "set": "eval-me-133",
+      "shown": [
+        "DSCF5176.JPG",
+        "DSCF5177.JPG",
+        "DSCF5179.JPG"
+      ]
+    },
+    "34": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF8403.JPG",
+        "DSCF8404.JPG",
+        "DSCF8405.JPG"
+      ]
+    },
+    "35": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7649.JPG",
+        "DSCF7653.JPG",
+        "DSCF7650.JPG",
+        "DSCF7652.JPG",
+        "DSCF7651.JPG"
+      ]
+    },
+    "36": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7670.JPG",
+        "DSCF7667.JPG",
+        "DSCF7668.JPG"
+      ]
+    },
+    "37": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7866.JPG",
+        "DSCF7865.JPG",
+        "DSCF7868.JPG"
+      ]
+    },
+    "38": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF7641.JPG",
+        "DSCF7642.JPG",
+        "DSCF7640.JPG",
+        "DSCF7644.JPG",
+        "DSCF7643.JPG"
+      ]
+    },
+    "39": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF8297.JPG",
+        "DSCF8298.JPG",
+        "DSCF8300.JPG",
+        "DSCF8299.JPG",
+        "DSCF8293.JPG",
+        "DSCF8292.JPG"
+      ]
+    },
+    "40": {
+      "set": "me自然瀑布线",
+      "shown": [
+        "DSCF8250.JPG",
+        "DSCF8247.JPG",
+        "DSCF8251.JPG",
+        "DSCF8245.JPG",
+        "DSCF8248.JPG",
+        "DSCF8246.JPG"
+      ]
+    }
+  }
+}
