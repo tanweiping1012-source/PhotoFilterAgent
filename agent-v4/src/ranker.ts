@@ -154,9 +154,23 @@ export class Ranker {
   async preview(
     folder: string, names: string[], exclude: string[], size = 512,
     signal?: AbortSignal, withFace = false,
+    /**
+     * 把名字烧进图里：{文件名: "例1甲"}。
+     *
+     * 「这是第几张」用提示词绕了三次都没绕干净（序数指照片还是指图、
+     * 加锚点后编号基准被推移、名字仍要模型自己对应到第几幅）。
+     * 烧进图里之后模型不用数 —— 图上写着就是谁。
+     */
+    labelMap?: Record<string, string>,
   ): Promise<{ previews: Record<string, string>; faces: Record<string, string>; missing: string[] }> {
     const args = ['preview', folder, '--names', ...names, '--size', String(size), ...this.gate()]
     if (withFace) args.push('--with-face')
+    let labelFile: string | undefined
+    if (labelMap && Object.keys(labelMap).length) {
+      labelFile = join(mkdtempSync(join(tmpdir(), 'pfv4-lbl-')), 'labels.json')
+      writeFileSync(labelFile, JSON.stringify(labelMap))
+      args.push('--label-map', labelFile)
+    }
     if (exclude.length) args.push('--exclude', ...exclude)
     const v = (await this.runJson<{
       previews: Record<string, string>; faces?: Record<string, string>; missing: string[]

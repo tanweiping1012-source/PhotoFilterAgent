@@ -17,5 +17,21 @@
     "DSCF9007.JPG",
     "DSCF9011.JPG",
     "DSCF9008.JPG"
-  ]
+  ],
+  "labels": {
+    "DSCF9120.JPG": "例1甲",
+    "DSCF9126.JPG": "例1乙",
+    "DSCF9118.JPG": "例1丙",
+    "DSCF9119.JPG": "例1丁",
+    "DSCF9117.JPG": "例1戊",
+    "DSCF9123.JPG": "例1己",
+    "DSCF8882.JPG": "例2甲",
+    "DSCF8883.JPG": "例2乙",
+    "DSCF9013.JPG": "例3甲",
+    "DSCF9012.JPG": "例3乙",
+    "DSCF9014.JPG": "例3丙",
+    "DSCF9007.JPG": "例3丁",
+    "DSCF9011.JPG": "例3戊",
+    "DSCF9008.JPG": "例3己"
+  }
 }

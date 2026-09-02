@@ -69,6 +69,11 @@ def main(argv: list[str] | None = None) -> int:
                              "环境人像的脸只剩约 30 像素，91%% 的照片不足 48 像素 —— "
                              "模型看不见表情，只能猜")
     p_prev.add_argument("--face-size", type=int, default=448, help="人脸裁切的边长（默认 448）")
+    p_prev.add_argument("--label-map", type=Path, default=None,
+                        help="给图烧标签用的 JSON：{文件名: \"例1甲\"}。"
+                             "整幅图会烧「例1甲 · 整幅」，人脸图烧「例1甲 · 人脸」。"
+                             "「这是第几张」这个问题用提示词绕了三次都没绕干净 —— "
+                             "烧进图里模型就不用数数了")
     p_prev.add_argument("--subject-size", type=int, default=768,
                         help="人物区域裁切的长边（默认 768，此时人脸约 100~134 像素）")
     p_prev.add_argument("--verify", action="store_true",
@@ -146,6 +151,9 @@ def main(argv: list[str] | None = None) -> int:
         faces: dict[str, str] = {}
         missing: list[str] = []
         boxes: dict[str, list[float]] = {}
+        labels: dict[str, str] = {}
+        if getattr(a, "label_map", None) and a.label_map.exists():
+            labels = {k: str(v) for k, v in json.loads(a.label_map.read_text()).items()}
         if getattr(a, "with_face", False):
             from .eligibility import EligibilityUnavailable, engine_facts
             from .scan import fingerprint
@@ -166,6 +174,9 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             im = Image.open(thumb).convert("RGB")
             im.thumbnail((a.size, a.size), Image.LANCZOS)
+            if labels.get(name):
+                from .label_image import burn_label
+                im = burn_label(im, f"{labels[name]} · 整幅")
             buf = BytesIO()
             im.save(buf, "JPEG", quality=82)      # 与 v3 的 low 档一致
             out[name] = base64.b64encode(buf.getvalue()).decode()
@@ -186,6 +197,9 @@ def main(argv: list[str] | None = None) -> int:
                 crop = full.crop((int(max(0, cx - half)), int(max(0, cy - half)),
                                   int(min(W, cx + half)), int(min(H, cy + half))))
                 crop = crop.resize((a.face_size, a.face_size), Image.LANCZOS)
+                if labels.get(name):
+                    from .label_image import burn_label
+                    crop = burn_label(crop, f"{labels[name]} · 人脸")
                 fb = BytesIO()
                 crop.save(fb, "JPEG", quality=86)
                 faces[name] = base64.b64encode(fb.getvalue()).decode()

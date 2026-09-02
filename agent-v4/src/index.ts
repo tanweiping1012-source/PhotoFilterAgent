@@ -115,12 +115,16 @@ interface RunState {
 }
 
 /** 读锚点配置。文件不存在或格式不对就返回 null —— 锚点是增强，不是必需。 */
-function readAnchors(file: string): { folder: string; text: string; photos: string[] } | null {
+function readAnchors(file: string):
+  { folder: string; text: string; photos: string[]; labels: Record<string, string> } | null {
   if (!file || !existsSync(file)) return null
   try {
     const d = JSON.parse(readFileSync(file, 'utf8'))
     if (!d.text || !Array.isArray(d.photos) || !d.photos.length) return null
-    return { folder: String(d.folder ?? ''), text: String(d.text), photos: d.photos.map(String) }
+    return {
+      folder: String(d.folder ?? ''), text: String(d.text), photos: d.photos.map(String),
+      labels: (d.labels ?? {}) as Record<string, string>,
+    }
   } catch { return null }
 }
 
@@ -265,6 +269,9 @@ export function apply(ctx: Context, config: Config): void {
         if (config.stage2Vlm && plan.length) {
           try {
             const names = [...new Set(plan.flat())]
+            // 考题两张的标签在每一局里才确定（谁是甲谁是乙由 comparePairs 决定），
+            // 所以这里先不烧；甲/乙 只有两个值，提示词里用「倒数第 N 幅」定位已经够。
+            // 锚点不同 —— 14 张照片混在一起，必须烧。
             const { previews, faces, missing } = await ranker.preview(
               state.folder, names, config.excludedRelativePaths, 512, exec.signal, true,
             )
@@ -281,8 +288,11 @@ export function apply(ctx: Context, config: Config): void {
               //
               // 这是同一个 bug 的另一半：考题图早就改成「整幅 + 人脸特写」了，
               // 锚点这一路没跟上。
+              // 锚点图必须烧标签 —— 14 张照片 28 幅图混在一起，
+              // 光靠文字说「例1甲是第一张」模型仍要数数。
               const ap = await ranker.preview(
                 anchors.folder, anchors.photos, config.excludedRelativePaths, 512, exec.signal, true,
+                anchors.labels,
               )
               anchorBlock = {
                 text: anchors.text,

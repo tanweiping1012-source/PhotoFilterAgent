@@ -102,3 +102,39 @@ def test_任意一张残留元数据都算错(tmp_path):
     im.save(b, "JPEG", exif=ex)
     res = check_sent_pair({"人脸": b.getvalue()}, src)
     assert any(i.name == "元数据·人脸" and i.severity == "error" for i in res.issues)
+
+
+# ── 图上烧的中文标签 ─────────────────────────────────────────
+
+def test_中文标签必须真的画出来():
+    """PIL 默认字体不含中文，会把「例1甲」画成三个方块 ——
+    烧一串方块进去比不烧更糟：模型会看到无意义图案，还可能当成照片的一部分。"""
+    import numpy as np
+    from PIL import Image
+    from photofilter_rank.label_image import burn_label
+    plain = Image.new("RGB", (400, 300), (120, 150, 180))
+    out = burn_label(plain, "例1甲 · 整幅")
+    a = np.array(out)[:44, :170]
+    assert a.std() > 30, f"标签区几乎没有像素变化（{a.std():.0f}），字可能没画出来"
+
+
+def test_没有中文字体时抛错而不是静默降级():
+    import photofilter_rank.label_image as L
+    from PIL import Image
+    old, L._FONT_CANDIDATES, L._font_cache = L._FONT_CANDIDATES, ["/nonexistent.ttc"], {}
+    try:
+        try:
+            L.burn_label(Image.new("RGB", (100, 100)), "甲")
+        except RuntimeError as e:
+            assert "中文字体" in str(e)
+        else:
+            raise AssertionError("字体缺失时应当抛错，不能退回默认字体画方块")
+    finally:
+        L._FONT_CANDIDATES, L._font_cache = old, {}
+
+
+def test_空标签不动图():
+    from PIL import Image
+    from photofilter_rank.label_image import burn_label
+    im = Image.new("RGB", (50, 50), (10, 20, 30))
+    assert burn_label(im, "") is im
