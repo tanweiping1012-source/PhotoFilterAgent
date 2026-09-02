@@ -109,18 +109,35 @@ def main() -> int:
         rs = rows.get(("primary", arm), [])
         if not rs:
             continue
-        reasons = [r.get("reason") or "" for r in rs]
+        # 看**双向原话**，不是 reason —— 不一致的对上 reason 是模板句，
+        # 按历史双向一致率 45%，只看 reason 会漏掉一半以上的材料。
+        reasons = [x for r in rs for x in (r.get("reason_ab"), r.get("reason_ba")) if x]
         named = sum(1 for x in reasons if NAME_RE.search(x))
         ordinal = sum(1 for x in reasons if ORDINAL_RE.search(x))
         note = ""
         if arm == "规则加范例":
             note = "← 只有这一臂发了带名字的锚点图"
-        print(f"     {arm:<10} 用名字 {named:>3}/{len(rs)} · 用序数 {ordinal:>3}/{len(rs)}  {note}")
+        empty = sum(1 for r in rs if not (r.get("reason_ab") or r.get("reason_ba")))
+        print(f"     {arm:<10} 原话 {len(reasons):>3} 条（{len(rs)} 对 × 2 方向）"
+              f" · 用名字 {named:>3} · 用序数 {ordinal:>3}"
+              f"{f' · 无原话 {empty} 对' if empty else ''}  {note}")
     # 序数在任何一臂都是坏信号（考题两张用甲/乙，不该数第几幅）
     ord_total = sum(1 for arm in ARMS for r in rows.get(("primary", arm), [])
-                    if ORDINAL_RE.search(r.get("reason") or ""))
+                    for x in (r.get("reason_ab"), r.get("reason_ba"))
+                    if x and ORDINAL_RE.search(x))
     all_ok &= check(f"用序数指代的理由共 {ord_total} 条", ord_total == 0,
                     "序数指代没消灭干净，理由字段的可信度打折" if ord_total else "")
+
+    # ④b 原话有没有落全（不一致的对最容易丢）
+    print("\n④b 推理原话：双向原文有没有都落盘")
+    for tag in TAGS:
+        for arm in ARMS:
+            rs = rows.get((tag, arm), [])
+            if not rs:
+                continue
+            miss = sum(1 for r in rs if not r.get("reason_ab") or not r.get("reason_ba"))
+            all_ok &= check(f"{tag:<8}/ {arm:<10} 缺原话 {miss}/{len(rs)} 对", miss == 0,
+                            "不一致的对上 reason 是模板句，原话只在 reason_ab/reason_ba" if miss else "")
 
     # ⑤ 模型自一致（不看答案，衡量判断稳不稳）
     print("\n⑤ 自一致：同一对正反两次答案一样吗（不看标准答案）")
@@ -136,7 +153,8 @@ def main() -> int:
     # ⑥ 答案有没有漏进理由里
     print("\n⑥ 泄漏：理由里有没有出现不该出现的东西")
     leak = [r for arm in ARMS for tag in TAGS for r in rows.get((tag, arm), [])
-            if re.search(r"answer|正确答案|标准答案|local_correct", r.get("reason") or "")]
+            for x in (r.get("reason"), r.get("reason_ab"), r.get("reason_ba"))
+            if x and re.search(r"answer|正确答案|标准答案|local_correct", x)]
     all_ok &= check(f"理由里提到答案字段的 {len(leak)} 条", not leak)
 
     print("\n" + "═" * 66)

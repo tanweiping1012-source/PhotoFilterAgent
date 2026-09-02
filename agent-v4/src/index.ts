@@ -840,7 +840,11 @@ export function apply(ctx: Context, config: Config): void {
         const rows = use.map((p, i) => {
           const v = verdicts[i]!
           return { ...p, winner: v.winner, consistent: v.consistent, ab: v.ab, ba: v.ba,
-                   reason: v.reason, model_correct: v.winner === p.answer }
+                   reason: v.reason,
+                   // 双向原话都落盘 —— 不一致的对上 reason 是模板句，
+                   // 模型真正说了什么只在这两个字段里。
+                   reason_ab: v.reasonAb, reason_ba: v.reasonBa,
+                   model_correct: v.winner === p.answer }
         })
         const n = rows.length
         const pct = (x: number) => `${((x / Math.max(n, 1)) * 100).toFixed(1)}%`

@@ -91,6 +91,9 @@ export interface PairVerdict {
   consistent: boolean
   ab: 'first' | 'second' | 'tie'
   ba: 'first' | 'second' | 'tie'
+  /** 两个方向各自的模型原话。不一致时 reason 是模板句，原文只在这里。 */
+  reasonAb?: string
+  reasonBa?: string
   reason: string
 }
 
@@ -233,6 +236,18 @@ export async function comparePairs(
       winner: consistent ? (abPick as 'a' | 'b') : 'tie',
       consistent,
       ab: ab.w, ba: ba.w,
+      // 两个方向的**原话**都留下。
+      //
+      // 原来只有一个 reason 字段，不一致时被「两个方向不一致（…），判平局」
+      // 这句自动生成的话覆盖掉 —— 模型说过什么就没了。
+      // 按项目历史双向一致率只有 45%，那等于一半以上的调用**没有留下推理过程**，
+      // 而「模型到底怎么想的」正是这一轮要交付的东西之一：
+      // 指代用不用烧入的名字、有没有引用范例、答案有没有漏进理由，
+      // 这几项在不一致的对上就全都查不了。
+      reasonAb: ab.reason,
+      reasonBa: ba.reason,
+      // 保留 reason 供既有的展示逻辑用；不一致时它是模板句，
+      // 要看原文一律去 reasonAb / reasonBa。
       reason: consistent ? (ab.reason || ba.reason) : `两个方向不一致（AB=${ab.w} / BA=${ba.w}），判平局`,
     })
     onProgress?.(out.length, pairs.length)

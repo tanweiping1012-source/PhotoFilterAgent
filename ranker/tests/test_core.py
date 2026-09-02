@@ -783,3 +783,20 @@ def test_两道图片上限必须对齐():
         f'harness 侧上限 {harness_cap} 小于插件侧 {plugin_cap} —— 插件放行的负载会在 harness 被拦'
     assert harness_cap >= 32, \
         f'「规则加范例」臂一次要发 32 幅，上限 {harness_cap} 不够'
+
+
+def test_双向原话必须都落盘():
+    """不一致的对上，reason 会被「两个方向不一致…判平局」这句模板覆盖。
+
+    按项目历史双向一致率只有 45%，等于一半以上的调用**没有留下推理过程** ——
+    而「模型到底怎么想的」正是要交付的东西之一：指代用不用烧入的名字、
+    有没有引用范例、答案有没有漏进理由，这几项在不一致的对上就全查不了。
+    """
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    cmp_ts = (root / 'agent-v4' / 'src' / 'compare.ts').read_text(encoding='utf-8')
+    idx_ts = (root / 'agent-v4' / 'src' / 'index.ts').read_text(encoding='utf-8')
+    assert 'reasonAb: ab.reason' in cmp_ts and 'reasonBa: ba.reason' in cmp_ts, \
+        'comparePairs 没有保留两个方向的原话'
+    assert 'reason_ab: v.reasonAb' in idx_ts and 'reason_ba: v.reasonBa' in idx_ts, \
+        '结果行没有落盘双向原话'
