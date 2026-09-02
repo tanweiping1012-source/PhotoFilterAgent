@@ -44,8 +44,9 @@ def main() -> int:
             rows = json.loads(pathlib.Path(f).read_text())["rows"]
         except Exception:
             continue
+        route = json.loads(pathlib.Path(f).read_text()).get("route")
         for r in rows:
-            old[(tag, arm, r["a"], r["b"])] = r
+            old[(tag, arm, r["a"], r["b"])] = (r, route)
     print(f"旧结果里可用的行：{len(old)}")
 
     os.makedirs(a.dst, exist_ok=True)
@@ -60,11 +61,24 @@ def main() -> int:
             continue
         spec = json.loads(pathlib.Path(pf).read_text())
         rows = []
+        routes = set()
         for p in spec["pairs"]:
-            r = old.get((tag, arm, p["a"], p["b"]))
-            if r is None:
+            hit = old.get((tag, arm, p["a"], p["b"]))
+            if hit is None:
                 break
+            r, route = hit
+            # 真值必须一致。
+            #
+            # 考题如果重生成过并且改了 answer（比如换了分层编码），
+            # 旧结果里的 model_correct 是按**旧真值**算的，搬过来就是
+            # 静默地把错的正确性判定带进新一轮。这次实测 0 条不一致，
+            # 但没有这条断言，下次改真值时不会有人发现。
+            assert r.get("answer") == p.get("answer"), (
+                f"真值不一致，拒绝搬运：{p['a']} vs {p['b']} "
+                f"旧={r.get('answer')} 新={p.get('answer')}")
             rows.append(r)
+            if route:
+                routes.add(route)
         if len(rows) != len(spec["pairs"]):
             partial += 1
             print(f"  重跑  {base:<44} 只找到 {len(rows)}/{len(spec['pairs'])} 行")
@@ -73,8 +87,15 @@ def main() -> int:
         moved += 1
         print(f"  搬运  {base:<44} {len(rows)} 行")
         if a.write:
-            pathlib.Path(out).write_text(
-                json.dumps({"route": "salvaged", "rows": rows}, ensure_ascii=False))
+            # 保留原始 route（模型出处），另加一个标记说明这份是搬来的。
+            # 覆写成 "salvaged" 会丢掉 minimax-cn/MiniMax-M3 这个出处 ——
+            # 而交付里要 trace「实际跑的是什么模型」，那正是这个字段。
+            pathlib.Path(out).write_text(json.dumps({
+                "route": "/".join(sorted(routes)) if routes else "unknown",
+                "salvaged": True,
+                "salvaged_from": os.path.basename(a.src.rstrip("/")),
+                "rows": rows,
+            }, ensure_ascii=False))
 
     saved = sum(len(json.loads(pathlib.Path(f).read_text())["rows"])
                 for f in glob.glob(os.path.join(a.dst, "*.result.json"))) * 2 if a.write else 0
