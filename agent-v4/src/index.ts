@@ -84,6 +84,9 @@ export interface Config {
    * 出现在真实用户的工具面上。
    */
   evalPairsFile: string
+  /** 考题文件所在目录。给了之后 run_pair_eval 可以按**文件名**换一份考题，
+   *  不用改 profile 重启 DSH。只接受纯文件名，不接受路径 —— 不能变成任意读文件。 */
+  evalPairsDir: string
 }
 
 export const Config: z<Config> = z.object({
@@ -101,6 +104,7 @@ export const Config: z<Config> = z.object({
   stage2Vlm: z.boolean().default(true),
   maxInlineIdList: z.number().step(1).min(0).default(60),
   evalPairsFile: z.string().default(''),
+  evalPairsDir: z.string().default(''),
 })
 
 /** 一次会话内的运行状态。只存在内存里，工具之间靠它传递上下文。 */
@@ -137,6 +141,32 @@ export function apply(ctx: Context, config: Config): void {
 
   /** 目录必须落在授权根目录内。这是结构约束，不靠 agent 自觉。 */
   const loadAnchors = () => readAnchors(config.anchorsFile)
+
+  /**
+   * 锚点 → 提示词块。**生产路径和评测路径必须走这一个函数。**
+   *
+   * 它存在的唯一理由是防止两边再次分叉。已经踩过三次，全都是评测那一路
+   * 悄悄落后于生产那一路 —— 而评测正是用来证明生产有没有变好的，
+   * 评测用了残废的锚点，测出来的「锚点没用」就是假的：
+   *   ① 少传 withFace  → 锚点上人脸只有 24 像素，文字说「闭眼」模型看不到证据
+   *   ② 少传 labels    → 14 张照片没烧名字，模型只能自己数第几幅
+   *   ③ 用考题的 folder 去取锚点图 —— 锚点根本在另一个目录，取不到
+   */
+  async function buildAnchorBlock(
+    anchors: { folder: string; text: string; photos: string[]; labels: Record<string, string> } | null,
+    signal: AbortSignal | undefined,
+  ): Promise<AnchorBlock | null> {
+    if (!anchors || !anchors.photos.length) return null
+    const ap = await ranker.preview(
+      anchors.folder, anchors.photos, config.excludedRelativePaths, 512, signal, true,
+      anchors.labels,
+    )
+    return {
+      text: anchors.text,
+      jpegs: anchors.photos.flatMap((x) =>
+        [ap.previews[x], ap.faces[x]].filter(Boolean) as string[]),
+    }
+  }
 
   function assertAllowed(folder: string, roots: string[], what: string): string {
     const abs = resolvePath(folder)
@@ -276,30 +306,7 @@ export function apply(ctx: Context, config: Config): void {
               state.folder, names, config.excludedRelativePaths, 512, exec.signal, true,
             )
             if (missing.length) throw new Error(`${missing.length} 张缺少预览`)
-            const anchors = loadAnchors()
-            let anchorBlock: AnchorBlock | null = null
-            if (anchors) {
-              // 锚点也必须带高清人脸 —— 和考题一样的待遇。
-              //
-              // 踩过的坑：这里原本只取 512px 整幅图（第六个参数没传 true）。
-              // 实测那上面人脸只有 **24 像素**，而锚点的文字在说
-              // 「4、5、6 闭眼」「1、3 眼神不自然」—— 模型根本验证不了，
-              // 只能把那段话当口号背下来，看不到它对应的画面证据。
-              //
-              // 这是同一个 bug 的另一半：考题图早就改成「整幅 + 人脸特写」了，
-              // 锚点这一路没跟上。
-              // 锚点图必须烧标签 —— 14 张照片 28 幅图混在一起，
-              // 光靠文字说「例1甲是第一张」模型仍要数数。
-              const ap = await ranker.preview(
-                anchors.folder, anchors.photos, config.excludedRelativePaths, 512, exec.signal, true,
-                anchors.labels,
-              )
-              anchorBlock = {
-                text: anchors.text,
-                jpegs: anchors.photos.flatMap((x) =>
-                  [ap.previews[x], ap.faces[x]].filter(Boolean) as string[]),
-              }
-            }
+            const anchorBlock = await buildAnchorBlock(loadAnchors(), exec.signal)
             const services: HarnessVisionServices = {
               llm: ctx.get('llm') as unknown as HarnessVisionServices['llm'],
               attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
@@ -744,6 +751,7 @@ export function apply(ctx: Context, config: Config): void {
       parameters: {
         limit: { type: 'number', description: '最多跑几对（留空=全部）' },
         out: { type: 'string', description: '结果写到哪个文件' },
+        pairs: { type: 'string', description: '换一份考题：evalPairsDir 里的文件名（不是路径）' },
       },
       output: {
         schema: {
@@ -753,11 +761,24 @@ export function apply(ctx: Context, config: Config): void {
         render: (_a, v) => [{ type: 'text', text: v.summary }],
       },
       async execute(args, exec) {
-        const spec = JSON.parse(readFileSync(config.evalPairsFile, 'utf8')) as {
+        // 换考题只能按**文件名**在 evalPairsDir 里找。
+        // 不接受 / 和 ..：这是评测工具，不是通用的读文件工具。
+        let pairsFile = config.evalPairsFile
+        if (args.pairs) {
+          if (!config.evalPairsDir) throw new Error('没有配置 evalPairsDir，不能换考题。')
+          if (args.pairs.includes('/') || args.pairs.includes('..')) {
+            throw new Error(`考题只能给文件名，不能给路径：${args.pairs}`)
+          }
+          pairsFile = join(config.evalPairsDir, args.pairs)
+          if (!existsSync(pairsFile)) throw new Error(`考题文件不存在：${pairsFile}`)
+        }
+        const spec = JSON.parse(readFileSync(pairsFile, 'utf8')) as {
           folder?: string
           pairs: Array<{ a: string; b: string; answer: string; kind: string; local_correct: boolean; group: number }>
-          /** 锚点：文本 + 范例照片文件名。由 Python 侧切分好，这里只负责取图。 */
-          anchors?: { text: string; photos: string[] }
+          /** 锚点：文本 + 范例照片文件名。由 Python 侧切分好，这里只负责取图。
+           *  folder 可以和考题不同（锚点通常来自另一个数据集，也必须如此 ——
+           *  锚点和考题同源就是泄题）。 */
+          anchors?: { folder?: string; text: string; photos: string[]; labels?: Record<string, string> }
         }
         // 考题文件里的 folder **也必须过 allowedRoots**。
         //
@@ -790,13 +811,14 @@ export function apply(ctx: Context, config: Config): void {
           if (leaked.length) {
             throw new Error(`锚点和考题重叠 ${leaked.length} 张，这是泄题：${leaked.slice(0, 3).join(' ')}`)
           }
-          const ap = await ranker.preview(
-            folder, spec.anchors.photos, config.excludedRelativePaths, 512, exec.signal,
-          )
-          anchorBlock = {
+          // 和生产路径共用同一个 builder —— 不要在这里就地取图，
+          // 那正是历史上三次分叉的写法。
+          anchorBlock = await buildAnchorBlock({
+            folder: spec.anchors.folder || folder,
             text: spec.anchors.text,
-            jpegs: spec.anchors.photos.map((n) => ap.previews[n]).filter(Boolean),
-          }
+            photos: spec.anchors.photos,
+            labels: spec.anchors.labels ?? {},
+          }, exec.signal)
         }
 
         const { verdicts, route } = await comparePairs(
@@ -819,13 +841,14 @@ export function apply(ctx: Context, config: Config): void {
         const hit = (rs: typeof rows) =>
           rs.length ? `${rs.filter((r) => r.model_correct).length}/${rs.length}` : '—'
 
-        const outPath = args.out || `${config.evalPairsFile}.result.json`
+        const outPath = args.out || `${pairsFile}.result.json`
         writeFileSync(outPath, JSON.stringify({ route, rows }, null, 2))
 
         return {
           calls_spent: n * 2,
           summary:
             `阶段 2 成对评测完成 · 模型 ${route} · ${n} 对 / ${n * 2} 次调用\n` +
+            `考题 ${pairsFile}${anchorBlock ? ' · 带锚点' : ' · 不带锚点'}\n` +
             `T0 机制 · AB/BA 双向一致率  ${pct(rows.filter((r) => r.consistent).length)}\n` +
             `T1 体检 · 睁眼 vs 闭眼      ${hit(eyes)}\n` +
             `T2 增量 · 金标 vs 非金标    ${hit(gold)}（本地分 ${gold.filter((r) => r.local_correct).length}/${gold.length}）\n` +

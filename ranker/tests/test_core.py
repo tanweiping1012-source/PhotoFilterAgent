@@ -568,3 +568,29 @@ def test_缩略图缓存键只有一处计算():
     import pathlib
     cli = (pathlib.Path(__file__).parent.parent / 'photofilter_rank' / 'cli.py').read_text()
     assert 'hexdigest()[:24]' not in cli, "cli.py 里又出现了自己算缓存键 —— 必须调 scan.thumb_key"
+
+
+def test_锚点只能由一个函数构造():
+    """生产路径和评测路径必须共用 buildAnchorBlock。
+
+    历史上分叉过三次，每次都是评测那一路悄悄落后于生产那一路：
+    少传 withFace（锚点人脸 24 像素）、少传 labels（没烧名字模型只能数数）、
+    拿考题的 folder 去取锚点图（锚点在另一个目录，取不到）。
+
+    评测是用来证明生产有没有变好的。评测用残废的锚点，
+    测出来的「锚点没用」就是假的 —— 这是最贵的一类 bug：
+    它不报错，只是让结论反过来。
+    """
+    from pathlib import Path
+    src = Path(__file__).resolve().parents[2] / 'agent-v4' / 'src' / 'index.ts'
+    ts = src.read_text(encoding='utf-8')
+
+    assert 'async function buildAnchorBlock(' in ts, \
+        'buildAnchorBlock 不见了 —— 锚点构造又散回各个调用点了'
+    assert ts.count('buildAnchorBlock(') >= 3, \
+        '至少要有 1 处定义 + 2 处调用（生产 rank_photos、评测 run_pair_eval）'
+    assert 'anchorBlock = {' not in ts, \
+        '有人在 buildAnchorBlock 之外就地拼 AnchorBlock —— 分叉从这里开始'
+    # 取锚点图必须带人脸和标签，而这两个参数只在 buildAnchorBlock 里出现一次
+    assert ts.count('anchors.labels,') == 1, \
+        'anchors.labels 应当只在 buildAnchorBlock 里传一次'

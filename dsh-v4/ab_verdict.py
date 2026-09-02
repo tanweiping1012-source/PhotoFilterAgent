@@ -14,10 +14,21 @@ import pathlib
 from math import comb
 
 
-def load(p: str) -> dict[tuple[str, str], bool]:
-    """{(照片a, 照片b): 模型答对了吗}"""
-    d = json.loads(pathlib.Path(p).read_text())
-    return {(r["a"], r["b"]): bool(r["model_correct"]) for r in d["rows"]}
+def load(paths: list[str]) -> dict[tuple[str, str], bool]:
+    """{(照片a, 照片b): 模型答对了吗}
+
+    收多个文件：考题按文件夹拆成了几份跑（run_pair_eval 一次只吃一个目录），
+    判分时要合回一批。**这是 I/O 上的改动，判据一个字没动** ——
+    合并前后 McNemar 的算法、阈值、三种结论的措辞都保持原样。
+    """
+    out: dict[tuple[str, str], bool] = {}
+    for p in paths:
+        d = json.loads(pathlib.Path(p).read_text())
+        for r in d["rows"]:
+            k = (r["a"], r["b"])
+            assert k not in out, f"同一对出现在两个结果文件里：{k}"
+            out[k] = bool(r["model_correct"])
+    return out
 
 
 def mcnemar(b: int, c: int) -> float:
@@ -35,8 +46,8 @@ def mcnemar(b: int, c: int) -> float:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--with", dest="w", required=True, help="有锚点的结果")
-    ap.add_argument("--without", dest="wo", required=True, help="无锚点的结果")
+    ap.add_argument("--with", dest="w", required=True, nargs="+", help="有锚点的结果（可多份）")
+    ap.add_argument("--without", dest="wo", required=True, nargs="+", help="无锚点的结果（可多份）")
     a = ap.parse_args()
 
     W, WO = load(a.w), load(a.wo)
