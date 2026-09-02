@@ -272,12 +272,22 @@ export function apply(ctx: Context, config: Config): void {
             const anchors = loadAnchors()
             let anchorBlock: AnchorBlock | null = null
             if (anchors) {
+              // 锚点也必须带高清人脸 —— 和考题一样的待遇。
+              //
+              // 踩过的坑：这里原本只取 512px 整幅图（第六个参数没传 true）。
+              // 实测那上面人脸只有 **24 像素**，而锚点的文字在说
+              // 「4、5、6 闭眼」「1、3 眼神不自然」—— 模型根本验证不了，
+              // 只能把那段话当口号背下来，看不到它对应的画面证据。
+              //
+              // 这是同一个 bug 的另一半：考题图早就改成「整幅 + 人脸特写」了，
+              // 锚点这一路没跟上。
               const ap = await ranker.preview(
-                anchors.folder, anchors.photos, config.excludedRelativePaths, 512, exec.signal,
+                anchors.folder, anchors.photos, config.excludedRelativePaths, 512, exec.signal, true,
               )
               anchorBlock = {
                 text: anchors.text,
-                jpegs: anchors.photos.map((x) => ap.previews[x]).filter(Boolean),
+                jpegs: anchors.photos.flatMap((x) =>
+                  [ap.previews[x], ap.faces[x]].filter(Boolean) as string[]),
               }
             }
             const services: HarnessVisionServices = {
