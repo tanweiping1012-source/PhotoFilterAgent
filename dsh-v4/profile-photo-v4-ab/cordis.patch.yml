@@ -42,6 +42,21 @@
 # v4 的排序链路本身一张照片都不外发，但通用工具会绕过这个结构：
 # read_image 把**原图**（全分辨率、带 EXIF 与 GPS）直接读进对话，
 # glob/grep 泄露真实文件名。v3 实测模型确实尝试过这两条路。
+# 图片张数有**两道**上限，它们不是同一个：
+#   ① agent-v4/src/harness-vision.ts  MAX_JPEGS_PER_CALL = 40   （插件侧，我们的）
+#   ② attachment-local                maxImagesPerMessage = 20  （harness 侧，默认值）
+#
+# 冒烟实测：「规则加范例」臂一次要发 32 幅（14 张锚点 × 2 + 考题 2 张 × 2），
+# 32 > 20，被 ② 拦下 —— 报「匿名 JPEG 超出 Harness attachment 限制」。
+# 坑表里「MAX_JPEGS_PER_CALL = 2 挡住 18 图 → 改 40」那一条只改了 ①，
+# 当时 18 幅刚好在 20 以内所以没暴露；32 幅才撞上。
+#
+# 抬 ② 而不是削锚点：削成只发人脸特写能过 20，但那就改了 PLAN 里
+# 「每张范例占两幅：整幅 + 人脸特写，和考题一样的排法」—— 等于偷偷换掉了被测的处理。
+- id: attachment-local
+  config:
+    maxImagesPerMessage: 40
+
 - id: tool-bash
   disabled: true
 - id: tool-fs

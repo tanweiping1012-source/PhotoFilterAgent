@@ -750,3 +750,36 @@ def test_不一致对为零时不打出荒唐的最小可检测差距(tmp_path):
     assert r.returncode == 0
     assert '98%' not in r.stdout, '不一致对为 0 时打出了荒唐的最小可检测差距'
     assert '样本量不足以给出可解释的最小可检测差距' in r.stdout
+
+
+def test_两道图片上限必须对齐():
+    """图片张数有两道闸，它们不是同一个：
+
+      ① agent-v4/src/harness-vision.ts  MAX_JPEGS_PER_CALL       （插件侧，我们的）
+      ② attachment-local 的 maxImagesPerMessage                  （harness 侧，默认 20）
+
+    只抬 ① 会在 ② 上撞死：「规则加范例」臂一次发 32 幅（14 锚点 × 2 + 考题 2 × 2），
+    32 > 20 被拦下。坑表里「MAX_JPEGS_PER_CALL = 2 挡住 18 图 → 改 40」那条只改了 ①，
+    当时 18 幅在 20 以内所以没暴露。
+
+    更贵的是它的失败形态：run_ab.sh 的循环顺序是 无提示 → 仅规则 → 规则加范例，
+    前两臂各 4 幅会正常跑完（324 次调用花掉），然后主结果那一臂全军覆没。
+    """
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    vision = (root / 'agent-v4' / 'src' / 'harness-vision.ts').read_text(encoding='utf-8')
+    patch = (root / 'dsh-v4' / 'profile-photo-v4-ab' / 'cordis.patch.yml').read_text(encoding='utf-8')
+
+    import re
+    m = re.search(r'MAX_JPEGS_PER_CALL\s*=\s*(\d+)', vision)
+    assert m, '找不到 MAX_JPEGS_PER_CALL'
+    plugin_cap = int(m.group(1))
+
+    m2 = re.search(r'maxImagesPerMessage:\s*(\d+)', patch)
+    assert m2, 'AB profile 没有显式设 maxImagesPerMessage —— harness 侧会用默认的 20，挡住 32 幅'
+    harness_cap = int(m2.group(1))
+
+    assert harness_cap >= plugin_cap, \
+        f'harness 侧上限 {harness_cap} 小于插件侧 {plugin_cap} —— 插件放行的负载会在 harness 被拦'
+    assert harness_cap >= 32, \
+        f'「规则加范例」臂一次要发 32 幅，上限 {harness_cap} 不够'
