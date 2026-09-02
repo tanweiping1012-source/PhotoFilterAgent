@@ -28,6 +28,43 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
+# 给范例照片起名用。**不用序数** —— 序数会和「第几幅图」混。
+#
+# 踩过两次：用「第 N 张」时模型分不清指的是第 N 张照片还是第 N 幅图
+# （每张照片占两幅：整幅 + 人脸特写）。加锚点后更乱 —— 一次 32 幅图，
+# 绝对编号的基准整个被推移。改成起名之后，模型不需要数数，只需要认名字。
+LABELS = "甲乙丙丁戊己庚辛壬癸"
+
+
+def translate_reason(reason: str, n_photos: int, group_idx: int) -> str:
+    """把原话里的序号翻译成照片名字。
+
+    ━━ 为什么必须翻译 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    用户的原话是「2 及格；4、5、6 闭眼；1、3 眼神不自然」—— 里面的数字
+    指的是那一组里的第几张照片。而模型收到的是每张照片两幅图
+    （整幅 + 人脸特写），一次调用还有 32 幅。让它自己把「4」映射到
+    「第 7 幅图」是在要求它做数数，而数数正是它已经错过两次的地方。
+
+    翻译之后原话变成「例1乙 及格；例1丁、例1戊、例1己 闭眼；…」，
+    模型只需要认名字。
+
+    代价：用户的原话被改写了。可以接受 —— 这里的目的是让模型看懂，
+    不是存档；原话在标注文件里完整保留。
+
+    只翻译 1..n_photos 范围内的孤立数字。「35 次」「0.22」这类不动。
+    """
+    import re
+
+    def sub(m: "re.Match[str]") -> str:
+        v = int(m.group(0))
+        if 1 <= v <= n_photos:
+            return f"例{group_idx}{LABELS[v - 1]}"
+        return m.group(0)
+
+    # 前后不能是数字或小数点 —— 避免把 0.22、35 里的数字切开
+    return re.sub(r"(?<![\d.])\d+(?![\d.])", sub, reason)
+
 
 @dataclass(frozen=True)
 class AnchorCase:
@@ -53,16 +90,27 @@ class AnchorCase:
         return (self.chosen[0], lost[0]) if lost else None
 
     def describe(self, idx: int) -> str:
+        """一条范例的文字。**每张照片都有名字，不用任何序数。**
+
+        踩过两次的坑：用「第 N 张」时，模型分不清指的是第 N 张**照片**
+        还是第 N 幅**图**（每张照片占两幅：整幅 + 人脸特写）。
+        加了锚点之后更乱 —— 一次调用 32 幅图，绝对编号的基准整个被推移。
+
+        改成给每张起名：范例 1 的六张叫「例1甲」到「例1己」，
+        考题那两张叫「甲」「乙」。模型不需要数数，只需要认名字。
+        """
+        names = [f"例{idx}{LABELS[i]}" for i in range(len(self.photos))]
         if not self.chosen:
-            verdict = "整组都不要"
-        elif len(self.chosen) == 1:
-            verdict = f"第 {self.photos.index(self.chosen[0]) + 1} 张最好"
+            verdict = "这一组他全都不要"
         else:
-            nums = "、".join(str(self.photos.index(c) + 1) for c in self.chosen)
-            verdict = f"第 {nums} 张都可以"
-        return (f"【范例 {idx}】这一组 {len(self.photos)} 张\n"
-                f"  这个人的判断：{verdict}\n"
-                f"  他的理由：「{self.reason}」")
+            picked = "、".join(names[self.photos.index(c)] for c in self.chosen)
+            verdict = f"他留下了 {picked}" + ("（其余都不要）" if len(self.chosen) < len(self.photos) else "")
+        listing = "、".join(names)
+        # 原话里的序号也翻译成名字 —— 不能让模型自己做映射。
+        translated = translate_reason(self.reason, len(self.photos), idx)
+        return (f"【范例 {idx}】这一组 {len(self.photos)} 张，依次叫 {listing}\n"
+                f"  他的判断：{verdict}\n"
+                f"  他的理由：「{translated}」")
 
 
 @dataclass(frozen=True)
@@ -154,11 +202,14 @@ def build_anchor_block(anchors: list[AnchorCase]) -> str:
         return ""
     body = "\n\n".join(a.describe(i + 1) for i, a in enumerate(anchors))
     return (
-        "下面是这个人自己挑照片的几个例子，每组照片附在前面。\n"
-        "请先看懂他在意什么，再按同样的标准回答后面的问题。\n\n"
-        "**范例照片的排列方式和考题一样**：每张照片占两幅图 —— 先整幅画面、"
-        "紧接着是同一张的人脸特写。所以「第 N 张」指的是第 N 张**照片**，"
-        "对应第 2N-1 和第 2N 幅图。判表情看人脸特写，判构图看整幅。\n\n"
+        "下面是这个人自己挑照片的几个例子。\n"
+        "请先看懂他在意什么，再按同样的标准回答最后的问题。\n\n"
+        "**范例图排在最前面。** 每张范例照片占两幅图：先整幅画面、"
+        "紧接着是同一张的人脸特写 —— 和最后要判的那两张一样的排法。\n"
+        "每张范例照片都有名字（例1甲、例1乙…），下面提到哪张就用哪个名字。\n"
+        "判表情看人脸特写，判构图看整幅。\n\n"
+        "**范例只是让你了解他的标准。最后要判的是「甲」和「乙」这两张，"
+        "它们在最后四幅图里，跟范例无关。**\n\n"
         + body
         + "\n\n注意：他允许「整组都不要」，也允许「几张都可以」——"
         "不要硬凑一个赢家。\n"
