@@ -682,3 +682,71 @@ def test_判分在多场景下跑得完(tmp_path):
     # 题量检查只能出现在合并那一层，不能每个场景各打一次
     assert p.stdout.count('不是预期的') <= 2, \
         '题量检查漏进了 table()，会给每个分层各打一次 —— 那是误导'
+
+
+def _run_verdict(tmp_path, tie_w, acc_w, tie_o, acc_o, n=60, seed=1):
+    import json
+    import random
+    import subprocess
+    from pathlib import Path
+    rng = random.Random(seed)
+    paths = {}
+    for cond, (tr, ac) in (('规则加范例', (tie_w, acc_w)), ('无提示', (tie_o, acc_o))):
+        rows = []
+        for i in range(n):
+            t = rng.random() < tr
+            rows.append({'a': f'x{i}.JPG', 'b': f'y{i}.JPG', 'group': i // 4,
+                         'winner': 'tie' if t else 'a',
+                         'model_correct': (not t) and rng.random() < ac})
+        p = tmp_path / f'primary__P__{cond}.result.json'
+        p.write_text(json.dumps({'rows': rows}), encoding='utf-8')
+        paths[cond] = str(p)
+    script = Path(__file__).resolve().parents[2] / 'dsh-v4' / 'ab_verdict.py'
+    r = subprocess.run(['python3', str(script), '--with', paths['规则加范例'],
+                        '--without', paths['无提示']], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-500:]
+    return r.stdout
+
+
+def test_平局解读必须按数据判而不是写死(tmp_path):
+    """这一行一度是无条件 print，不看数据永远说「只是更敢下判断」。
+
+    比崩溃更糟：数字是对的、解读是写死的，而且以「结论」的语气写在交付里，
+    读的人会直接采信。它还恰好把这一段本来要区分的甲乙两种情形又合回去了。
+    """
+    for sub in 'abc':
+        (tmp_path / sub).mkdir(exist_ok=True)
+
+    甲 = _run_verdict(tmp_path / 'a', 0.20, 0.71, 0.55, 0.71)
+    assert '情形甲' in 甲 and '判断质量没变' in 甲
+
+    乙 = _run_verdict(tmp_path / 'b', 0.55, 0.98, 0.55, 0.71)
+    assert '情形乙' in 乙 and '判断质量真的提高了' in 乙
+    assert '判断质量没变' not in 乙, '数据是情形乙，却打出了情形甲的断言'
+
+    两者都动 = _run_verdict(tmp_path / 'c', 0.37, 0.90, 0.22, 0.62, seed=5)
+    assert '甲乙都不适用' in 两者都动
+    assert '判断质量没变' not in 两者都动
+
+
+def test_不一致对为零时不打出荒唐的最小可检测差距(tmp_path):
+    """disc=0 时原公式给 98%，在交付里看起来像坏了。
+
+    而「两臂答案高度重合」本身就是个值得报的发现，不是缺陷。
+    """
+    import json
+    import subprocess
+    from pathlib import Path
+    rows = [{'a': f'x{i}.JPG', 'b': f'y{i}.JPG', 'group': i // 4,
+             'winner': 'a', 'model_correct': i % 3 != 0} for i in range(30)]
+    ps = []
+    for cond in ('规则加范例', '无提示'):
+        p = tmp_path / f'primary__P__{cond}.result.json'
+        p.write_text(json.dumps({'rows': rows}), encoding='utf-8')
+        ps.append(str(p))
+    script = Path(__file__).resolve().parents[2] / 'dsh-v4' / 'ab_verdict.py'
+    r = subprocess.run(['python3', str(script), '--with', ps[0], '--without', ps[1]],
+                       capture_output=True, text=True)
+    assert r.returncode == 0
+    assert '98%' not in r.stdout, '不一致对为 0 时打出了荒唐的最小可检测差距'
+    assert '样本量不足以给出可解释的最小可检测差距' in r.stdout

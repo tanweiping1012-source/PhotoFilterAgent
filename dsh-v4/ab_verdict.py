@@ -127,14 +127,44 @@ def tie_report(paths_w, paths_wo, keys) -> None:
     print("\n" + "-" * 62)
     print("  平局拆解（主指标仍然是「平局=答错」，下面是拆开看）")
     print(f"  {'':<12}{'平局率':>10}{'非平局准确率':>14}{'下判断的对数':>14}")
+    stat = {}
     for lab, T, V in (("有锚点/规则", tw, W_GLOBAL), ("对照", two, WO_GLOBAL)):
         if not T:
             continue
         ties = sum(1 for k in keys if T.get(k))
         committed = [k for k in keys if not T.get(k)]
         acc = sum(1 for k in committed if V[k]) / max(len(committed), 1)
+        stat[lab] = (ties / max(len(keys), 1), acc)
         print(f"  {lab:<12}{ties / max(len(keys),1):>10.1%}{acc:>14.1%}{len(committed):>14}")
-    print("  平局率大降但非平局准确率不变 = 只是更敢下判断，判断质量没变。")
+
+    # 解读必须**按数据判**，不能写死。
+    #
+    # 这一行一度是无条件 print「平局率大降但非平局准确率不变 = 只是更敢下判断」——
+    # 它在循环外面，不看数据，永远这么说。实测喂一组平局率**涨了**、
+    # 非平局准确率**大变**的数据，它照样原样打出来。
+    #
+    # 这比崩溃更糟：数字是对的，解读是写死的，而且以「结论」的语气写在交付里，
+    # 读的人会直接采信。这个项目「七次指标涨了但交付更差」正是这个形状。
+    # 而且它恰好把这一段本来要区分的甲乙两种情形又合回去了。
+    if len(stat) == 2:
+        (tie_w, acc_w) = stat["有锚点/规则"]
+        (tie_o, acc_o) = stat["对照"]
+        d_tie, d_acc = tie_w - tie_o, acc_w - acc_o
+        FLAT = 0.05          # 五个百分点以内算「基本没变」
+        print()
+        if d_tie < -FLAT and abs(d_acc) <= FLAT:
+            print(f"  → 情形甲：平局率降了 {-d_tie:.1%}，非平局准确率基本没变（{d_acc:+.1%}）。")
+            print("    **只是更敢下判断，判断质量没变。** 那也许提示词加一句"
+                  "「必须选一张」就够了，不用发那 28 幅图。")
+        elif abs(d_tie) <= FLAT and d_acc > FLAT:
+            print(f"  → 情形乙：平局率基本没变（{d_tie:+.1%}），非平局准确率升了 {d_acc:.1%}。")
+            print("    **判断质量真的提高了。** 这才是值得保留的能力。")
+        elif abs(d_tie) <= FLAT and abs(d_acc) <= FLAT:
+            print(f"  → 两个都基本没变（平局 {d_tie:+.1%}、非平局准确率 {d_acc:+.1%}）。")
+        else:
+            print(f"  → 平局率 {d_tie:+.1%}、非平局准确率 {d_acc:+.1%} —— **两个都动了，"
+                  "甲乙都不适用。**")
+            print("    不要套现成的解释，看上面三个数自己判。")
 
 
 W_GLOBAL: dict = {}
@@ -227,8 +257,16 @@ def main() -> int:
     else:
         print("  结论：**测不出差异**。")
         print(f"  注意：这不等于「锚点没用」—— {n} 道题的样本量下，")
-        print(f"  只有差距大到约 {2 * (0.5 + 0.98 / (2 * max(disc, 1) ** 0.5)) - 1:.0%} 才测得出来。")
-        print("  差距如果比这小，这个实验看不见它。")
+        # 不一致对太少时这个公式会给出荒唐的数字（disc=0 时是 98%），
+        # 在交付里看起来像坏了。而「不一致对极少」本身就是个值得报的发现。
+        if disc < 5:
+            print(f"  只有 {disc} 道题两边答案不同 —— 配对检验只从这些题拿信息，")
+            print("  样本量不足以给出可解释的最小可检测差距。")
+            print("  ⚠️ 两臂答案高度重合本身就是结果：说明这个处理几乎没改变模型的判断。")
+        else:
+            mde = 2 * (0.5 + 0.98 / (2 * disc ** 0.5)) - 1
+            print(f"  只有差距大到约 {mde:.0%} 才测得出来。")
+            print("  差距如果比这小，这个实验看不见它。")
     return 0
 
 
