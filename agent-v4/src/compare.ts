@@ -86,7 +86,7 @@ export interface PairVerdict {
   a: string
   b: string
   /** 归一化回 a/b 语义后的赢家；两个方向不一致时为 'tie'。 */
-  winner: 'a' | 'b' | 'tie'
+  winner: 'a' | 'b' | 'tie' | 'neither' | 'inconsistent'
   /** AB 和 BA 两个方向是否给出了一致的答案。 */
   consistent: boolean
   ab: 'first' | 'second' | 'tie' | 'neither'
@@ -203,7 +203,7 @@ export async function comparePairs(
     const ja = previews[a]
     const jb = previews[b]
     if (!ja || !jb) {
-      out.push({ a, b, winner: 'tie', consistent: false, ab: 'tie', ba: 'tie', reason: '缺少预览图，跳过' })
+      out.push({ a, b, winner: 'inconsistent', consistent: false, ab: 'tie', ba: 'tie', reason: '缺少预览图，跳过' })
       continue
     }
     const fa = faces[a]
@@ -253,10 +253,26 @@ export async function comparePairs(
     // 「都不要」是位置无关的判断，所以两个方向都答 neither 才算一致 ——
     // 和 tie 不同：tie 也位置无关，但它表示「分不出」，
     // 而 neither 表示「都不够格」。两次都说都不够格，是真的一致。
+    //
+    // ⚠️ tie 这里**故意**排除在 consistent 之外：两次都答 tie 不代表判断稳定，
+    // 只代表两次都放弃。但下面 winner 的赋值必须把它和「翻覆」分开 —— 见注释。
     const consistent = abPick === baPick && abPick !== 'tie'
+    // 两次都**主动**答平局。它和「翻覆」是完全不同的事，不能记成同一个值。
+    const bothTie = abPick === 'tie' && baPick === 'tie'
     out.push({
       a, b,
-      winner: consistent ? (abPick as 'a' | 'b' | 'neither') : 'tie',
+      // 翻覆必须有自己的值，不能记成 'tie'。
+      //
+      // 踩过的坑（2026-09-03 实测）：原来翻覆一律记成 'tie'，
+      // 而同层档的真值就是 'tie' —— 于是**越不自洽，那一档分数越高**。
+      // 实测「答对率 ≡ 1 − 双向一致率」三组逐个恒等；
+      // 判对的 37/36/43 对里，真正两次都主动答平局的只有 1/1/2 对。
+      // 那一档没有测到任何关于平局识别的东西，还反过来奖励了不稳定。
+      //
+      // 拆开之后：'tie' 只表示「两次都主动说分不出」，
+      // 'inconsistent' 表示翻覆，它在**任何**真值下都判错。
+      winner: consistent ? (abPick as 'a' | 'b' | 'neither')
+        : (bothTie ? 'tie' : 'inconsistent'),
       consistent,
       ab: ab.w, ba: ba.w,
       // 两个方向的**原话**都留下。
