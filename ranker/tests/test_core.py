@@ -909,3 +909,29 @@ def test_导出必须有两个文件夹():
     # 冠军必须按组算，不是按全局分数取前 N
     assert 'best.set(g, n)' in idx or 'best.get(g)' in idx, \
         '组冠军必须按 family 分组算出来'
+
+
+def test_四个答案的定义必须在SYSTEM里():
+    """答案空间是**任务定义**，不是处理 —— 三组必须一视同仁。
+
+    踩过：SYSTEM 是为三选一写的，只说「分不出高下就选 TIE」，
+    NEITHER 一个字没提；而 NEITHER 的说明只在 rubric 里。
+    后果是对照组拿到四选一的枚举、却从来没被告知第四个选项是什么意思 ——
+    那测的不是「会不会用这个能力」，是「能不能猜出一个没人解释过的枚举值」。
+    答案空间的差异会被混进处理的差异。
+    """
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    sys_txt = re.search(r'const SYSTEM = `(.*?)`\n',
+                        (root / 'agent-v4' / 'src' / 'compare.ts').read_text(encoding='utf-8'),
+                        re.S).group(1)
+    for tok in ('JIA', 'YI', 'TIE', 'NEITHER'):
+        assert tok in sys_txt, f'SYSTEM 里没有定义 {tok} —— 对照组会不知道它是什么'
+    # TIE 和 NEITHER 必须被明确区分，不能只列出来
+    assert '都够格' in sys_txt and '都不够格' in sys_txt, \
+        'SYSTEM 没有把 TIE（都够格但分不出）和 NEITHER（都不够格）区分开'
+
+    # rubric 只讲判据，不重复答案空间的定义
+    rub = (root / 'dsh-v4' / 'rubric' / 'rubric-v2-prompt.txt').read_text(encoding='utf-8')
+    assert '一票否决' in rub, 'rubric 应当讲判据'
