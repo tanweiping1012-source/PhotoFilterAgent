@@ -39,21 +39,48 @@ def test_两张组答neither则整组淘汰():
     assert out.rejected is True, "两张都不够格，这一组不该交出任何照片"
 
 
-def test_中途neither之后下一个挑战者接任():
-    """擂主被判掉之后，**没上过场**的挑战者要能接任。
+def test_单独一局neither不足以淘汰整组():
+    """一局 neither 带不走整组。
 
-    不能因为前两张都不行就连带否掉一个还没被判过的人 ——
-    那等于用别人的表现给他定罪。
+    实测同一个调用重复问有 62.8% 会改口。让单次回答决定一整组，
+    等于把整组的命运交给噪声最大的那个环节。
     """
     out = run_tournament(["x", "y", "z"], SC, ScriptedJudge({("x", "y"): "neither"}))
     assert out.rejected is False
-    assert out.ranked[0] == "z", f"z 应当接任擂主，实际 {out.ranked[0]}"
+    assert out.ranked[0] == "x", "neither 当作平局，擂主守擂"
 
 
-def test_最后一局neither导致整组淘汰():
+def test_先赢后neither不该被一局勾销():
+    """x 赢了两局、最后一局 neither —— 前面的胜负是真实信息。
+
+    旧实现里这一局会把整组带走，而它恰恰是最可能由噪声造成的那种局面。
+    """
+    out = run_tournament(["x", "y", "z", "w"], SC, ScriptedJudge({
+        ("x", "y"): "a", ("x", "z"): "a", ("x", "w"): "neither"}))
+    assert out.rejected is False
+    assert out.ranked[0] == "x"
+
+
+def test_全部局都是neither才淘汰():
     out = run_tournament(["x", "y", "z"], SC,
-                         ScriptedJudge({("x", "y"): "a", ("x", "z"): "neither"}))
+                         ScriptedJudge({("x", "y"): "neither", ("x", "z"): "neither"}))
     assert out.rejected is True
+
+
+def test_每张照片都至少被比较过一次():
+    """整组淘汰是对**看过的照片**下的判断。
+
+    旧实现有「擂台被清空后下一个未经比较就接任」这条路径，
+    于是可能出现一张从没被看过的照片替整组背书或背锅。
+    """
+    for script in ({("x", "y"): "neither"},
+                   {("x", "y"): "neither", ("x", "z"): "neither"},
+                   {("x", "y"): "a", ("x", "z"): "neither"}):
+        for members in (["x", "y"], ["x", "y", "z"], ["x", "y", "z", "w"]):
+            out = run_tournament(members, SC, ScriptedJudge(script))
+            seen = {n for a, b, _ in out.matches for n in (a, b)}
+            assert seen == set(members), \
+                f"{members} / {script}：{set(members) - seen} 没有参加过任何一局"
 
 
 def test_本地分裁判永远产不出neither():

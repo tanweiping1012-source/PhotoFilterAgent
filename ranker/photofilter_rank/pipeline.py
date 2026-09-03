@@ -181,36 +181,42 @@ def run_tournament(
     平局时擂主不下台 —— 平局很常见（AB/BA 双向不一致就判平局），
     不该因为一次没分出高下就换人。这让结果对比较噪声更稳。
 
-    答 neither（两张都不够格）时擂主下台、挑战者也不上台；若打完台上没人，
-    整组淘汰（rejected=True）。这是唯一能让一个组交不出照片的路径。
+    neither（两张都不够格）在赛制里等同平局，擂主守擂。只有**每一局都是
+    neither** 时整组淘汰（rejected=True）—— 不让任何单独一次回答决定一整组。
 
     只打 n-1 局而不是全循环 n(n-1)/2：全循环在 309 张上是 1114 次调用，
     擂台赛 362 次。也不能只比前 3 名 —— 实测金标常排在组内第 5、6、8、14 位。
     """
     ranked_by_score = sorted(members, key=lambda n: -score.get(n, 0.5))
     arena = ranked_by_score[:cap]
-    champ: str | None = arena[0]
+    champ = arena[0]
     matches: list[tuple[str, str, Verdict]] = []
     for challenger in arena[1:]:
-        if champ is None:
-            # 上一局把擂主判掉了（neither）。挑战者自己还没被判过，
-            # 直接上台 —— 和开局时 arena[0] 未经比较就当擂主是同一个道理，
-            # 不能因为前面两张都不行就连带否掉一个没上过场的人。
-            champ = challenger
-            continue
         v = judge.compare(champ, challenger)
         matches.append((champ, challenger, v))
         if v == "b":
             champ = challenger
-        elif v == "neither":
-            # 「两张都不够格」：擂主下台，挑战者也不上台。
-            champ = None
-    if champ is None:
-        # 打完台上没人 —— 整组淘汰。
-        #
+        # neither 在赛制里当作「没分出高下」，擂主守擂 —— 和 tie 同样处理。
+        # 它对**这一组去留**的影响不在这里，而在下面的全体一致判定。
+    # 整组淘汰：**这一组的每一局都是 neither**。
+    #
+    # 为什么要求全体一致，而不是「有一局 neither 就淘汰」：
+    #
+    #   · 单局 neither 一次就能带走整组，而实测同一个调用重复问有 62.8% 改口 ——
+    #     那等于把整组的命运交给噪声最大的那个环节。
+    #   · 实际会出现「x 赢了两局、最后一局 neither」这种局面。前面的胜负是
+    #     真实信息，不该被最后一次回答一笔勾销。
+    #
+    # 全体一致意味着 (n-1) 局 × 2 个方向 = 2(n-1) 次回答全是 neither
+    # （compare.ts 里两个方向都答 neither 才会记成 neither，单向的记 inconsistent）。
+    # 在 62.8% 的噪声地板下这是个很强的过滤器。
+    #
+    # 另一个好处：赛制本身完全不变，每张照片仍然至少被比较过一次 ——
+    # 不存在「没上过场就被决定去留」的照片。
+    rejected = bool(matches) and all(v == "neither" for _, _, v in matches)
+    if rejected:
         # 这是标注者最看重的一档：75 组判断里有 26 组（35%）是「整组都不要」。
-        # 擂台赛原本**结构上**产不出这个结果（永远返回一个冠军），
-        # 所以以前这 26 组只能被迫交出一张。
+        # 擂台赛原本**结构上**产不出这个结果（永远返回一个冠军）。
         return GroupOutcome(key="", members=ranked_by_score,
                             ranked=list(ranked_by_score), matches=matches, rejected=True)
     # 冠军置顶，其余保持本地分顺序 —— 这样 family_cap=2 时
