@@ -2,3 +2,18 @@ engine/.build/
 bench/out/
 node_modules/
 .DS_Store
+
+# 照片一律不进版本库 —— 仓库是公开的。
+# 2026-09-03 出过一次：ask-AB.jpg / ask-BA.jpg 两张给标注者看的对比图
+# 带着可辨认的人脸被提交并推上了公开仓库。图本身留在本地，只是不再跟踪。
+*.jpg
+*.jpeg
+*.JPG
+*.JPEG
+*.png
+*.heic
+*.HEIC
+*.tif
+*.tiff
+*.dng
+*.raf
