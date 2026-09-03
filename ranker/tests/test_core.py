@@ -935,3 +935,24 @@ def test_四个答案的定义必须在SYSTEM里():
     # rubric 只讲判据，不重复答案空间的定义
     rub = (root / 'dsh-v4' / 'rubric' / 'rubric-v2-prompt.txt').read_text(encoding='utf-8')
     assert '一票否决' in rub, 'rubric 应当讲判据'
+
+
+def test_SYSTEM里不能含判据():
+    """对照组必须是**真正的空白对照**。
+
+    SYSTEM 原本带着整套判据（「眼神 27/35 压倒性重要」等），
+    而那套判据跟 rubric 归纳自同一批 35 次标注 —— 逐条比，
+    rubric 的条目 SYSTEM 已有六成。后果是「仅规则 vs 无提示」
+    这个差值读不出「规则能不能写下来传递」：对照组本来就有规则。
+    """
+    import re
+    from pathlib import Path
+    sys_txt = re.search(
+        r'const SYSTEM = `(.*?)`\n',
+        (Path(__file__).resolve().parents[2] / 'agent-v4' / 'src' / 'compare.ts'
+         ).read_text(encoding='utf-8'), re.S).group(1)
+    for bad in ('27/35', '8/35', '5/35', '按重要性排列', '一票否决'):
+        assert bad not in sys_txt, f'SYSTEM 里又出现判据「{bad}」—— 对照组就不空白了'
+    # 但任务定义必须还在
+    for must in ('JIA', 'YI', 'TIE', 'NEITHER', '倒数第 4 幅'):
+        assert must in sys_txt, f'SYSTEM 丢了任务定义的一部分：{must}'
