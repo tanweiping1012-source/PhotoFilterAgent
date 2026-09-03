@@ -121,7 +121,7 @@ interface RunState {
   last?: RankResult
   labels: string[]
   style: string
-  exportTicket?: { code: string; dest: string; names: string[] }
+  exportTicket?: { code: string; dest: string; names: string[]; runnerUps?: string[] }
 }
 
 /** 读锚点配置。文件不存在或格式不对就返回 null —— 锚点是增强，不是必需。 */
@@ -708,13 +708,40 @@ export function apply(ctx: Context, config: Config): void {
       })
       if (!ok) throw new Error(`${dest} 不在授权的导出目录内。授权范围：${config.allowedExportRoots.join(' , ')}`)
 
+      // 第二个文件夹：**每组的最好一张，但没进精选的那些**。
+      //
+      // 阶段2 为每一个连拍组选出一个冠军（56 组就有 56 张），
+      // 阶段3 再用「同组最多 2 张 + 每时间段最多 2 张」压到 20 张。
+      // 实测在 me自然瀑布线 上：56 个冠军里 37 张被砍掉，
+      // 而用户的金标有 6 张就在这 37 张里 —— 交付命中能从 2 张变成 8 张。
+      //
+      // 被砍的多数不是因为差，是因为「这个时间段已经满了」。
+      // 只交付 20 张等于把阶段2 的结构（每个时刻的最好一张）压平后扔掉。
+      const runnerUps = (() => {
+        const fam = res.notes.families as Record<string, number> | undefined
+        const sc = res.scores as Record<string, number>
+        if (!fam) return []
+        const best = new Map<number, string>()
+        for (const [n, g] of Object.entries(fam)) {
+          const cur = best.get(g)
+          if (cur === undefined || (sc[n] ?? 0) > (sc[cur] ?? 0)) best.set(g, n)
+        }
+        const sel = new Set(res.selected)
+        return [...best.values()].filter((n) => !sel.has(n))
+          .sort((a, b) => (sc[b] ?? 0) - (sc[a] ?? 0))
+      })()
+
       if (!args.confirmation_code) {
         const code = randomBytes(3).toString('hex').toUpperCase()
-        state.exportTicket = { code, dest, names: [...res.selected] }
+        state.exportTicket = { code, dest, names: [...res.selected], runnerUps: [...runnerUps] }
         return {
           copied: 0,
           summary:
             `名单已冻结：${res.selected.length} 张（${res.selected.map((n) => ids.id(n)).join(' ')}）\n` +
+            (runnerUps.length
+              ? `另外 **${runnerUps.length} 张**会放进 \`其余每组最好的\` 子目录 —— ` +
+                `它们是各自连拍组里最好的一张，只是被「同组/同时间段最多 2 张」的配额挤出了精选。\n`
+              : '') +
             `目标目录：${dest}\n\n` +
             `确认码 **${code}** ← 这是本工具刚生成的，原样转达给用户，不要改写。\n` +
             `请用户在一条新消息里回复「确认导出 ${code}」，然后你才带 confirmation_code 再调一次。\n` +
@@ -730,17 +757,31 @@ export function apply(ctx: Context, config: Config): void {
       if (dest !== t.dest) throw new Error('目标目录与冻结时不一致，拒绝执行。')
 
       mkdirSync(dest, { recursive: true })
-      let copied = 0
-      for (const relName of t.names) {
-        const src = join(state.folder!, relName)
-        if (!existsSync(src)) continue
-        copyFileSync(src, join(dest, basename(relName)))
-        copied++
+      const copyInto = (dir: string, names: string[]) => {
+        if (!names.length) return 0
+        mkdirSync(dir, { recursive: true })
+        let n = 0
+        for (const relName of names) {
+          const src = join(state.folder!, relName)
+          if (!existsSync(src)) continue
+          copyFileSync(src, join(dir, basename(relName)))
+          n++
+        }
+        return n
       }
+      const copied = copyInto(dest, t.names)
+      const extra = copyInto(join(dest, '其余每组最好的'), t.runnerUps ?? [])
       state.exportTicket = undefined
       return {
-        copied,
-        summary: `已复制 ${copied} 张到 ${dest}。原图未被移动、删除、改名或修改。`,
+        copied: copied + extra,
+        summary:
+          `已复制到 ${dest}：\n` +
+          `  精选              ${copied} 张\n` +
+          (extra
+            ? `  其余每组最好的/    ${extra} 张 —— 各自连拍组里最好的一张，` +
+              `被同组或同时间段的配额挤出了精选\n`
+            : '') +
+          `原图未被移动、删除、改名或修改。`,
       }
     },
   }))

@@ -891,3 +891,21 @@ def test_都不要必须和分不出分开():
     assert '"answer": "neither"' in mk or "'answer': 'neither'" in mk, \
         'make_pairs 没有把「都不要」的真值拆出来'
     assert 'if rejected' in mk, '整组淘汰的组要走单独的分支'
+
+
+def test_导出必须有两个文件夹():
+    """阶段2 为每个连拍组选出一个冠军，阶段3 再压到 20 张。
+    只交付那 20 张，等于把阶段2 的结构压平后扔掉。
+
+    实测 me自然瀑布线：56 个组冠军里 37 张被砍掉，
+    而用户的金标有 6 张就在这 37 张里 —— 交付命中能从 2 张变成 8 张。
+    被砍的多数不是因为差，是因为「这个时间段已经满了」。
+    """
+    from pathlib import Path
+    idx = (Path(__file__).resolve().parents[2] / 'agent-v4' / 'src' / 'index.ts'
+           ).read_text(encoding='utf-8')
+    assert 'runnerUps' in idx, '导出没有第二个文件夹'
+    assert '其余每组最好的' in idx, '第二个文件夹要有能看懂的名字'
+    # 冠军必须按组算，不是按全局分数取前 N
+    assert 'best.set(g, n)' in idx or 'best.get(g)' in idx, \
+        '组冠军必须按 family 分组算出来'
