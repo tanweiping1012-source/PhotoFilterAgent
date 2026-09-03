@@ -199,18 +199,30 @@ def rank_folder(cfg: RankConfig, verbose: bool = True, judge: Judge | None = Non
     # 换成 VLM 裁判时，组内顺序才会真正改变。
     stage2_matches = 0
     within_rank: dict[str, int] = {}
+    rejected_fams: set[int] = set()
+    rejected_names: set[str] = set()
     if cfg.stage2:
         j: Judge = judge or LocalJudge({names[i]: float(final[i]) for i in range(len(names))})
-        within_rank, _outcomes, stage2_matches = stage2_reorder(
+        within_rank, outcomes, stage2_matches = stage2_reorder(
             names, list(families), {names[i]: float(final[i]) for i in range(len(names))},
             j, cfg.stage2_cap,
         )
         # 组内名次是**第一排序键**，全局分数退为第二键。
         # 这样「组内冠军」才真的比「组内第二但全局分高」优先。
         order = sorted(order, key=lambda i: (within_rank.get(names[i], 0), -float(final[i])))
+        # 整组淘汰：裁判说「这两张都不够格」把台上的人全判掉了。
+        #
+        # 只有能表达 neither 的裁判才会产出它（本地分裁判永远产不出，
+        # 所以默认路径的行为一个字节都不变）。
+        rejected_fams = {int(o.key) for o in outcomes if o.rejected}
+        if rejected_fams:
+            rejected_names = {names[i] for i in range(len(names))
+                              if families[i] in rejected_fams}
 
     # 闭眼照留在候选池里（不影响分数与统计），只是不进最终名单。
-    eligible = [i for i in order if names[i] not in blocked]
+    # 整组淘汰的照片同理 —— 留在池子里可查，但不交付。
+    eligible = [i for i in order
+                if names[i] not in blocked and names[i] not in rejected_names]
 
     k = min(cfg.target, len(eligible))
     if cfg.time_segments > 0:
@@ -236,6 +248,11 @@ def rank_folder(cfg: RankConfig, verbose: bool = True, judge: Judge | None = Non
         "warnings": warnings,
         "blocked_closed_eyes": sorted(blocked),
         "n_blocked": len(blocked),
+        # 整组淘汰必须**报出来**，不能只是少几张。
+        # 用户要知道「这一组我一张都没给你，是模型判的，不是漏了」。
+        "rejected_families": sorted(rejected_fams),
+        "n_rejected_families": len(rejected_fams),
+        "rejected_photos": sorted(rejected_names),
         "label_concentration": round(concentration, 3) if concentration is not None else None,
         "n_families": len(set(families)),
         "stage2_matches": stage2_matches,

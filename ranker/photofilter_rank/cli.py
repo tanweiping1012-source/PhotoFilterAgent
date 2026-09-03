@@ -336,11 +336,12 @@ def main(argv: list[str] | None = None) -> int:
 
             import json as _json
 
-            from .pipeline import LocalJudge, ReplayJudge
+            from .pipeline import LocalJudge, ReplayJudge, load_verdicts
 
             raw = _json.loads(a.verdicts.read_text())
 
-            vd = {(r["a"], r["b"]): r["winner"] for r in raw.get("verdicts", [])}
+            # 校验与归一化在 pipeline.load_verdicts 里，那里有测试覆盖。
+            vd = load_verdicts(raw)
 
             judge = ReplayJudge(vd, LocalJudge({}))
 

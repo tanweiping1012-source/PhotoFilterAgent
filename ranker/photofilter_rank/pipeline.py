@@ -33,7 +33,15 @@ from typing import Callable, Literal, Protocol
 
 import numpy as np
 
-Verdict = Literal["a", "b", "tie"]
+# 四个取值，对应模型的四个答案：
+#   a / b     某一张更值得留
+#   tie       两张都够格，分不出高下
+#   neither   两张**都不够格** —— 这是「整组淘汰」的入口
+#
+# neither 是 2026-09-04 加的。在此之前 TS 侧 compare.ts 已经能产出它，
+# 而这里的类型只有三个值、run_tournament 也只认 "b"，
+# 于是 neither 传下来的实际效果是「擂主继续守擂」—— 和它的字面意思正好相反。
+Verdict = Literal["a", "b", "tie", "neither"]
 
 
 class Judge(Protocol):
@@ -111,9 +119,46 @@ class ReplayJudge:
         if (b, a) in self.verdicts:
             self.calls += 1
             v = self.verdicts[(b, a)]
-            return "a" if v == "b" else ("b" if v == "a" else "tie")
+            # neither 与 tie 都是位置无关的判断，翻转时原样保留。
+            # 踩过：原来 else 一律给 "tie"，于是反向命中的 neither 被吞成平局，
+            # 同一组正着查和反着查会得到不同结论。
+            if v == "a":
+                return "b"
+            if v == "b":
+                return "a"
+            return v
         self.missing += 1
         return self.fallback.compare(a, b)
+
+
+#: TS 侧 compare.ts 的 winner 取值。'inconsistent' 是它独有的，Python 不认。
+_TS_ONLY = {"inconsistent"}
+_VALID: set[str] = {"a", "b", "tie", "neither"}
+
+
+def load_verdicts(raw: dict) -> dict[tuple[str, str], Verdict]:
+    """把 TS 侧回传的裁决表校验并归一化成 Verdict。
+
+    以前这一步是在 cli.py 里一行字典推导，原样塞进去、不校验：
+    TS 侧 winner 有五个取值（a/b/tie/neither/inconsistent），而 Verdict 只声明三个，
+    中间没有映射；run_tournament 又只认 "b" —— 于是任何没见过的字符串都
+    **静默变成「擂主守擂」**。加一个新取值就会无声改变选片结果，没有测试会红。
+
+    inconsistent（双向翻覆）显式映射成 tie：翻覆的含义是「这一局没分出高下」，
+    不是「都不够格」。以前这个行为是巧合，现在是明写的。
+    """
+    out: dict[tuple[str, str], Verdict] = {}
+    for r in raw.get("verdicts", []):
+        w = r["winner"]
+        if w in _TS_ONLY:
+            w = "tie"
+        if w not in _VALID:
+            raise ValueError(
+                f"verdicts 里出现无法识别的 winner：{w!r}（{r['a']} vs {r['b']}）。"
+                f"允许：{sorted(_VALID)} 加 {sorted(_TS_ONLY)}。"
+            )
+        out[(r["a"], r["b"])] = w  # type: ignore[assignment]
+    return out
 
 
 @dataclass
@@ -124,6 +169,8 @@ class GroupOutcome:
     members: list[str]                   # 按本地分降序
     ranked: list[str]                    # 赛制产出的顺序：冠军在前
     matches: list[tuple[str, str, Verdict]] = field(default_factory=list)
+    #: 整组淘汰 —— 打完之后台上没人。此时 ranked 只是本地分顺序，没有冠军。
+    rejected: bool = False
 
 
 def run_tournament(
@@ -134,18 +181,38 @@ def run_tournament(
     平局时擂主不下台 —— 平局很常见（AB/BA 双向不一致就判平局），
     不该因为一次没分出高下就换人。这让结果对比较噪声更稳。
 
+    答 neither（两张都不够格）时擂主下台、挑战者也不上台；若打完台上没人，
+    整组淘汰（rejected=True）。这是唯一能让一个组交不出照片的路径。
+
     只打 n-1 局而不是全循环 n(n-1)/2：全循环在 309 张上是 1114 次调用，
     擂台赛 362 次。也不能只比前 3 名 —— 实测金标常排在组内第 5、6、8、14 位。
     """
     ranked_by_score = sorted(members, key=lambda n: -score.get(n, 0.5))
     arena = ranked_by_score[:cap]
-    champ = arena[0]
+    champ: str | None = arena[0]
     matches: list[tuple[str, str, Verdict]] = []
     for challenger in arena[1:]:
+        if champ is None:
+            # 上一局把擂主判掉了（neither）。挑战者自己还没被判过，
+            # 直接上台 —— 和开局时 arena[0] 未经比较就当擂主是同一个道理，
+            # 不能因为前面两张都不行就连带否掉一个没上过场的人。
+            champ = challenger
+            continue
         v = judge.compare(champ, challenger)
         matches.append((champ, challenger, v))
         if v == "b":
             champ = challenger
+        elif v == "neither":
+            # 「两张都不够格」：擂主下台，挑战者也不上台。
+            champ = None
+    if champ is None:
+        # 打完台上没人 —— 整组淘汰。
+        #
+        # 这是标注者最看重的一档：75 组判断里有 26 组（35%）是「整组都不要」。
+        # 擂台赛原本**结构上**产不出这个结果（永远返回一个冠军），
+        # 所以以前这 26 组只能被迫交出一张。
+        return GroupOutcome(key="", members=ranked_by_score,
+                            ranked=list(ranked_by_score), matches=matches, rejected=True)
     # 冠军置顶，其余保持本地分顺序 —— 这样 family_cap=2 时
     # 第二个名额仍然是「除冠军外分最高的那张」，语义不变。
     ranked = [champ] + [n for n in ranked_by_score if n != champ]
@@ -163,6 +230,10 @@ def stage2_reorder(
 
     返回 (组内名次表, 各组结果, 总对局数)。组内名次 0 = 冠军。
     单张组直接给 0，不打。
+
+    整组被淘汰的组（outcome.rejected）**仍然返回组内名次** —— 名次表要保持完整，
+    否则调用方按名字取值会拿到默认 0。是否把它们排除出名单由 rank.py 决定，
+    依据是 outcome.rejected，不是名次。
     """
     by_fam: dict[int, list[str]] = {}
     for i, f in enumerate(families):
