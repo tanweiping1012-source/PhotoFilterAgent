@@ -50,6 +50,24 @@
         # 生产 profile（photo-v4）不设这一项，所以真实用户看不到评测工具。
         evalPairsFile: @@SCRATCH@@/pairs-people.json
 
+# 图片张数有**两道**上限，它们不是同一个：
+#   ① agent-v4/src/harness-vision.ts  MAX_JPEGS_PER_CALL = 40   （插件侧，我们的）
+#   ② attachment-local                maxImagesPerMessage = 20  （harness 侧，默认值）
+#
+# 只抬 ① 会在 ② 上撞死，而且**失败形态是静默回落**：
+# 2026-09-04 冒烟实测，生产阶段 2 一次要发 24 幅（10 张锚点 × 2 + 考题 2 张 × 2），
+# 24 > 20 被 ② 拦下，报「匿名 JPEG 超出 Harness attachment 限制」，
+# 然后整条 VLM 复核**悄悄退回本地分排序** —— 跑完一切正常，只是一次模型都没调。
+#
+# 这个坑以前只在 photo-v4-ab 上修过。加锚点之后所有带 stage2Vlm 的 profile
+# 都会撞上，而没人真跑过生产链路，所以一直没暴露。
+#
+# 抬 ② 而不是削锚点：削成只发人脸特写能过 20，但那就改掉了
+# 「每张范例占两幅：整幅 + 人脸特写，和考题一样的排法」—— 等于偷偷换掉被测的处理。
+- id: attachment-local
+  config:
+    maxImagesPerMessage: 40
+
 # 关掉全部通用文件系统与 shell 能力。
 #
 # v4 的排序链路本身一张照片都不外发，但通用工具会绕过这个结构：

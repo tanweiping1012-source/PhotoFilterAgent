@@ -758,31 +758,50 @@ def test_两道图片上限必须对齐():
       ① agent-v4/src/harness-vision.ts  MAX_JPEGS_PER_CALL       （插件侧，我们的）
       ② attachment-local 的 maxImagesPerMessage                  （harness 侧，默认 20）
 
-    只抬 ① 会在 ② 上撞死：「规则加范例」臂一次发 32 幅（14 锚点 × 2 + 考题 2 × 2），
-    32 > 20 被拦下。坑表里「MAX_JPEGS_PER_CALL = 2 挡住 18 图 → 改 40」那条只改了 ①，
-    当时 18 幅在 20 以内所以没暴露。
+    只抬 ① 会在 ② 上撞死，而且**失败形态是静默回落**：VLM 复核整段被跳过，
+    悄悄退回本地分排序 —— 跑完一切正常，只是一次模型都没调。
 
-    更贵的是它的失败形态：run_ab.sh 的循环顺序是 无提示 → 仅规则 → 规则加范例，
-    前两臂各 4 幅会正常跑完（324 次调用花掉），然后主结果那一臂全军覆没。
+    这条测试原来只检查 photo-v4-ab 一个 profile。2026-09-04 冒烟实测发现
+    **其余四个带 stage2Vlm 的 profile 全都没设 ②**：生产阶段 2 一次要发 24 幅
+    （10 张锚点 × 2 + 考题 2 张 × 2），24 > 20 被拦，于是生产链路的 VLM
+    从加锚点起就一次都没跑起来过，而没人真跑过生产链路所以一直没暴露。
+
+    所以现在**逐个 profile 检查**，而不是只看那一个修过的。
     """
+    import json
+    import re
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
     vision = (root / 'agent-v4' / 'src' / 'harness-vision.ts').read_text(encoding='utf-8')
-    patch = (root / 'profiles' / 'photo-v4-ab' / 'cordis.patch.yml').read_text(encoding='utf-8')
-
-    import re
     m = re.search(r'MAX_JPEGS_PER_CALL\s*=\s*(\d+)', vision)
     assert m, '找不到 MAX_JPEGS_PER_CALL'
     plugin_cap = int(m.group(1))
 
-    m2 = re.search(r'maxImagesPerMessage:\s*(\d+)', patch)
-    assert m2, 'AB profile 没有显式设 maxImagesPerMessage —— harness 侧会用默认的 20，挡住 32 幅'
-    harness_cap = int(m2.group(1))
+    # 一次调用实际要发多少幅：锚点每张 2 幅（整幅 + 人脸），考题 2 张同样每张 2 幅。
+    anchors = json.loads(
+        (root / 'dsh-v4' / 'anchors-default.json').read_text(encoding='utf-8'))
+    need = len(anchors['photos']) * 2 + 4
 
-    assert harness_cap >= plugin_cap, \
-        f'harness 侧上限 {harness_cap} 小于插件侧 {plugin_cap} —— 插件放行的负载会在 harness 被拦'
-    assert harness_cap >= 32, \
-        f'「规则加范例」臂一次要发 32 幅，上限 {harness_cap} 不够'
+    checked = []
+    for d in sorted((root / 'profiles').glob('photo-v4*')):
+        patch = (d / 'cordis.patch.yml').read_text(encoding='utf-8')
+        # 会发图的 profile 都要这道闸：stage2Vlm 走生产比较，
+        # evalPairsFile 走 run_pair_eval / run_instrument_check，两条都发图。
+        if not any(k in patch for k in ('stage2Vlm: true', 'anchorsFile', 'evalPairsFile')):
+            continue
+        checked.append(d.name)
+        m2 = re.search(r'maxImagesPerMessage:\s*(\d+)', patch)
+        assert m2, (
+            f'{d.name} 没有显式设 maxImagesPerMessage —— harness 侧会用默认的 20，'
+            f'而这一档一次要发 {need} 幅。失败形态是**静默回落到本地分**，不是报错。'
+        )
+        harness_cap = int(m2.group(1))
+        assert harness_cap >= need, \
+            f'{d.name}: harness 上限 {harness_cap} < 实际要发的 {need} 幅'
+        assert harness_cap >= plugin_cap, \
+            f'{d.name}: harness 上限 {harness_cap} 小于插件侧 {plugin_cap} —— 插件放行的负载会在 harness 被拦'
+
+    assert len(checked) == 5, f'五个 v4 profile 都会发图，实际只检查到 {checked}'
 
 
 def test_双向原话必须都落盘():
