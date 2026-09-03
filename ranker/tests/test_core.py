@@ -923,7 +923,7 @@ def test_四个答案的定义必须在SYSTEM里():
     import re
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
-    sys_txt = re.search(r'const SYSTEM = `(.*?)`\n',
+    sys_txt = re.search(r'const SYSTEM_TMPL = `(.*?)`\n',
                         (root / 'agent-v4' / 'src' / 'compare.ts').read_text(encoding='utf-8'),
                         re.S).group(1)
     for tok in ('JIA', 'YI', 'TIE', 'NEITHER'):
@@ -948,7 +948,7 @@ def test_SYSTEM里不能含判据():
     import re
     from pathlib import Path
     sys_txt = re.search(
-        r'const SYSTEM = `(.*?)`\n',
+        r'const SYSTEM_TMPL = `(.*?)`\n',
         (Path(__file__).resolve().parents[2] / 'agent-v4' / 'src' / 'compare.ts'
          ).read_text(encoding='utf-8'), re.S).group(1)
     for bad in ('27/35', '8/35', '5/35', '按重要性排列', '一票否决'):

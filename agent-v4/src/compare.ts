@@ -28,7 +28,7 @@
 import type { HarnessVisionExecution, HarnessVisionServices } from './harness-vision.ts'
 import { HarnessVisionTransport, resolveHarnessModelRoute } from './harness-vision.ts'
 
-const SYSTEM = `你在帮一个人从自己的旅行照片里挑出值得留下的几张。
+const SYSTEM_TMPL = `你在帮一个人从自己的旅行照片里挑出值得留下的几张。
 现在给你同一场景、几乎同时拍的两张照片，请判断哪一张更值得留下。
 
 要比较的是**两张照片**，这里叫**照片甲**和**照片乙**。
@@ -52,7 +52,7 @@ const SYSTEM = `你在帮一个人从自己的旅行照片里挑出值得留下�
 在缩小后的整幅画面上人脸只有**几十个像素**，表情和眼神根本看不出来。
 判断表情请以人脸特写为准，判断构图和姿态请以全景为准。
 
-这两张在曝光、构图上通常几乎没有差别，差别主要在表情、眼神、姿态这些地方。
+<<CODES>>这两张在曝光、构图上通常几乎没有差别，差别主要在表情、眼神、姿态这些地方。
 
 曝光、亮度这类整体技术指标本机已经算过了，不用你重复判断。
 **但清晰度是例外** —— 如果有一张明显失焦、人脸糊掉，那是真实的淘汰理由。
@@ -70,6 +70,23 @@ TIE 和 NEITHER 最容易混：
 
 **不要硬凑一个赢家。** 一组连拍整组都不值得留是常见情况，
 遇到就答 NEITHER，那是一个正常答案，不是弃权。`
+
+/**
+ * 烧码那一段。**只在真的烧了码时才放进提示词** ——
+ * 没烧码却叫模型「把黑边里的码抄回来」，它只能编一个，
+ * 那不是内容寻址，是给自己造幻觉。
+ *
+ * 措辞与 instrument.ts 逐字相同：99.4% 的读码率是在这个措辞下测出来的，
+ * 改字等于换了被测对象。
+ */
+const CODES_BLOCK = `**每幅图的上方黑边里写着一个 4 位编码。** 同一张照片的整幅和人脸写的是
+同一个码；甲和乙的码不同。回答时要把码原样抄回来 —— 这是为了让答案能对上
+具体哪一张照片，不依赖「甲/乙」这两个字。
+
+`
+
+const makeSystem = (withCodes: boolean) =>
+  SYSTEM_TMPL.replace('<<CODES>>', withCodes ? CODES_BLOCK : '')
 
 /** 一次比较的结果。ids 用调用方给的顺序语义（FIRST/SECOND）。 */
 /** 锚点块：提示词文本 + 按顺序附上的图片。 */
@@ -93,16 +110,41 @@ export interface PairVerdict {
   reasonAb?: string
   reasonBa?: string
   reason: string
+  /** 烧在两张照片上的码（没烧码时缺省）。 */
+  codeA?: string
+  codeB?: string
+  /** 四个码位（两方向 × 甲乙）是否都抄对了。 */
+  codeReadOk?: boolean
+  /** 模型的槽位答案与它给的码互相矛盾（说甲却给乙的码）。 */
+  contradiction?: boolean
 }
 
-const makeTool = (allowNeither: boolean) => ({
+const makeTool = (allowNeither: boolean, withCodes: boolean) => ({
   name: 'submit_comparison',
   description: '提交这两张照片的比较结论',
   parameters: {
     type: 'object',
     additionalProperties: false,
-    required: ['winner', 'reason'],
+    required: withCodes
+      ? ['code_jia', 'code_yi', 'winner', 'winner_code', 'reason']
+      : ['winner', 'reason'],
     properties: {
+      // ── 内容寻址的答案通道 ───────────────────────────────────
+      //
+      // 只有 winner（JIA/YI）时，答案本身就是**槽位标签** ——
+      // 一个不看图、只按位置作答的模型也能把它填满，我们分辨不出来。
+      // 让它把码抄回来，答案就指向具体那张照片，与位置无关。
+      //
+      // winner 和 winner_code 同时要，是**故意冗余**：两者矛盾
+      // （说 JIA 却给了乙的码）本身就是一条信息，见 resolvePick。
+      ...(withCodes ? {
+        code_jia: { type: 'string', description: '照片甲上方黑边里的 4 位编码，原样抄' },
+        code_yi: { type: 'string', description: '照片乙上方黑边里的 4 位编码，原样抄' },
+        winner_code: {
+          type: 'string',
+          description: '你选中那张照片的 4 位编码，原样抄；答 TIE 或 NEITHER 时填空字符串',
+        },
+      } : {}),
       winner: {
         type: 'string',
         // 枚举也不能用序数 —— FIRST/SECOND 同样有「第几幅图」的歧义。
@@ -130,14 +172,50 @@ const makeTool = (allowNeither: boolean) => ({
   },
 }) as const
 
-function readVerdict(raw: Record<string, unknown>): { w: 'first' | 'second' | 'tie' | 'neither'; reason: string } {
+export interface RawVerdict {
+  /** 模型按**槽位**给的答案。烧码时它只作为矛盾检测的一边，不作准。 */
+  w: 'first' | 'second' | 'tie' | 'neither'
+  reason: string
+  /** 模型抄回来的三个码（大写去空白）。没烧码时都是空串。 */
+  readJia: string
+  readYi: string
+  winnerCode: string
+}
+
+function readVerdict(raw: Record<string, unknown>): RawVerdict {
   const w = String(raw.winner ?? '').toUpperCase()
+  const up = (x: unknown) => String(x ?? '').trim().toUpperCase()
   return {
     // 内部仍用 first/second 表示「这次调用里排前/排后的那张照片」，
     // 只是问模型时不再用序数措辞。
     w: w === 'JIA' ? 'first' : w === 'YI' ? 'second' : w === 'NEITHER' ? 'neither' : 'tie',
     reason: typeof raw.reason === 'string' ? raw.reason.slice(0, 60) : '',
+    readJia: up(raw.code_jia), readYi: up(raw.code_yi), winnerCode: up(raw.winner_code),
   }
+}
+
+/**
+ * 把一次调用的原始答案解析成「排在前的那张 / 排在后的那张 / 平局 / 都不要」。
+ *
+ * **烧了码就以码为准。** 这是这套机制的全部意义：
+ * winner（JIA/YI）是槽位标签，一个只按位置作答的模型也能填满它；
+ * 而 winner_code 指向具体那张照片，位置换了码不换。
+ *
+ * 两者矛盾（说 JIA 却给了乙的码）时取码，并把矛盾记下来 —— 它是一条真实信息，
+ * 不是噪声。码对不上任何一张（幻觉码）时这一次调用作废，
+ * 不能猜：猜就等于把「没读到图」洗成一个正常答案。
+ */
+export function resolvePick(
+  r: RawVerdict, firstCode: string | undefined, secondCode: string | undefined,
+): { pick: 'first' | 'second' | 'tie' | 'neither' | 'bad-code'; contradiction: boolean } {
+  // 没烧码：退回槽位语义，与烧码之前逐字节一致。
+  if (!firstCode || !secondCode) return { pick: r.w, contradiction: false }
+  // 平局与都不要是位置无关的判断，本来就没有 winner_code。
+  if (r.w === 'tie' || r.w === 'neither') return { pick: r.w, contradiction: false }
+  const byCode = r.winnerCode === firstCode ? 'first' as const
+    : r.winnerCode === secondCode ? 'second' as const : null
+  if (byCode === null) return { pick: 'bad-code', contradiction: false }
+  return { pick: byCode, contradiction: byCode !== r.w }
 }
 
 /**
@@ -187,10 +265,19 @@ export async function comparePairs(
    * 与之前几轮不可直接比。要开就单独跑一轮、单独预登记判据。
    */
   allowNeither: boolean,
+  /**
+   * 照片名 → 烧在图上的 4 位码。**给了才启用内容寻址的答案通道。**
+   *
+   * 不给（undefined 或空）时行为与以前逐字节相同 —— 提示词不提码、
+   * 工具不要码、按槽位解析。评测路径（run_pair_eval）保持不给，
+   * 这样它与历史轮次仍然可比；生产阶段 2 给。
+   */
+  codes: Record<string, string> | undefined,
   services: HarnessVisionServices,
   exec: HarnessVisionExecution,
   onProgress?: (done: number, total: number) => void,
 ): Promise<{ verdicts: PairVerdict[]; route: string }> {
+  const withCodes = !!codes && Object.keys(codes).length > 0
   const route = resolveHarnessModelRoute(exec)
   const transport = new HarnessVisionTransport(services, route, exec.agent?.session?.id)
   // 预检不通过就整轮停下 —— 不允许静默回落到别的模型。
@@ -216,7 +303,7 @@ export async function comparePairs(
       await transport.invokeStructured({
         // 锚点拼在系统提示词末尾，范例图排在待比较的图之前 ——
         // 模型先看懂这个人在意什么，再回答问题。
-        system: [SYSTEM, rubric || null, anchors ? anchors.text : null]
+        system: [makeSystem(withCodes), rubric || null, anchors ? anchors.text : null]
           .filter(Boolean).join('\n\n'),
         // 绝不能用「第一张/第二张」这种序数。
         //
@@ -231,7 +318,7 @@ export async function comparePairs(
           ...(anchors?.jpegs ?? []),
           ...bundle(firstFull, firstFace), ...bundle(secondFull, secondFace),
         ],
-        tool: makeTool(allowNeither),
+        tool: makeTool(allowNeither, withCodes),
         // 400 太小。MiniMax-M3 这类会先推理再输出的模型，思考 token 也算在输出里，
         // 18 张图 + 6 条判据的题目上经常没写到工具调用就用光了 ——
         // 表现是「结构化视觉输出达到 maxTokens，结果未接受」，整轮中断。
@@ -243,11 +330,32 @@ export async function comparePairs(
     )
     const ab = await ask(ja, fa, jb, fb)
     const ba = await ask(jb, fb, ja, fa)
+    const ca = codes?.[a]
+    const cb = codes?.[b]
+    // AB 这次排前的是 a；BA 这次排前的是 b。码要按**这次调用的排法**去对。
+    const abR = resolvePick(ab, ca, cb)
+    const baR = resolvePick(ba, cb, ca)
+    // 幻觉码：模型给的码两张都不是。这一次调用没有可信答案。
+    if (abR.pick === 'bad-code' || baR.pick === 'bad-code') {
+      out.push({
+        a, b, winner: 'inconsistent', consistent: false,
+        ab: ab.w, ba: ba.w, reasonAb: ab.reason, reasonBa: ba.reason,
+        codeA: ca, codeB: cb, codeReadOk: false, contradiction: false,
+        reason: `模型给的编码对不上任何一张（AB=${ab.winnerCode || '空'} / `
+          + `BA=${ba.winnerCode || '空'}，实际 ${ca}/${cb}），本对作废`,
+      })
+      onProgress?.(out.length, pairs.length)
+      continue
+    }
     // BA 的 first 指的是 b，所以要翻回 a/b 语义再比。
-    const abPick = ab.w === 'first' ? 'a' : ab.w === 'second' ? 'b'
-      : ab.w === 'neither' ? 'neither' : 'tie'
-    const baPick = ba.w === 'first' ? 'b' : ba.w === 'second' ? 'a'
-      : ba.w === 'neither' ? 'neither' : 'tie'
+    const abPick = abR.pick === 'first' ? 'a' : abR.pick === 'second' ? 'b'
+      : abR.pick === 'neither' ? 'neither' : 'tie'
+    const baPick = baR.pick === 'first' ? 'b' : baR.pick === 'second' ? 'a'
+      : baR.pick === 'neither' ? 'neither' : 'tie'
+    // 四个码位是否都抄对了。抄错不作废（答案仍由 winner_code 定），
+    // 但它是「这次看清了没有」的直接证据，必须留档。
+    const codeReadOk = !withCodes
+      || (ab.readJia === ca && ab.readYi === cb && ba.readJia === cb && ba.readYi === ca)
     // 「都不要」是位置无关的判断，所以两个方向都答 neither 才算一致 ——
     // 和 tie 不同：tie 也位置无关，但它表示「分不出」，
     // 而 neither 表示「都不够格」。两次都说都不够格，是真的一致。
@@ -283,6 +391,9 @@ export async function comparePairs(
       // 这几项在不一致的对上就全都查不了。
       reasonAb: ab.reason,
       reasonBa: ba.reason,
+      codeA: ca, codeB: cb, codeReadOk,
+      // 任一方向出现「说甲却给乙的码」都记为矛盾。
+      contradiction: abR.contradiction || baR.contradiction,
       // 保留 reason 供既有的展示逻辑用；不一致时它是模板句，
       // 要看原文一律去 reasonAb / reasonBa。
       reason: consistent ? (ab.reason || ba.reason) : `两个方向不一致（AB=${ab.w} / BA=${ba.w}），判平局`,

@@ -26,6 +26,13 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { IdentityMap } from './identity.ts'
 import { comparePairs, type AnchorBlock } from './compare.ts'
+import { assignCodes } from './codes.ts'
+
+/**
+ * 生产阶段 2 烧码用的种子。**固定值**：同一批照片每次跑拿到同一批码，
+ * 断点续跑、复现问题时码不会变。码本身不参与判断，只用来指认照片。
+ */
+const STAGE2_CODE_SEED = 20260904
 import {
   appendRow, askPair, makeCode, mulberry32, newTransport, probeGrounding,
   type CallRow, type Slots,
@@ -313,11 +320,19 @@ export function apply(ctx: Context, config: Config): void {
         if (config.stage2Vlm && plan.length) {
           try {
             const names = [...new Set(plan.flat())]
-            // 考题两张的标签在每一局里才确定（谁是甲谁是乙由 comparePairs 决定），
-            // 所以这里先不烧；甲/乙 只有两个值，提示词里用「倒数第 N 幅」定位已经够。
-            // 锚点不同 —— 14 张照片混在一起，必须烧。
+            // 每张照片烧一个 4 位码，**码跟着照片走、跨局稳定**。
+            //
+            // 以前这里不烧，理由是「甲/乙只有两个值，用倒数第 N 幅定位已经够」。
+            // 2026-09-03 的仪器标定推翻了这个判断：JIA/YI 这两个符号**本身就是
+            // 槽位标签**，一个不看图、只按位置作答的模型也能把答案填满，
+            // 而我们从答案里分辨不出来。烧码之后答案指向具体那张照片，
+            // 位置换了码不换 —— 「是不是我们自己算错了位置」从结构上不再可能。
+            //
+            // 加边不覆盖画面（burn_code）：压住人脸就分不清「判断」和「被挡住」。
+            const codes = assignCodes(names, STAGE2_CODE_SEED)
             const { previews, faces, missing } = await ranker.preview(
               state.folder, names, config.excludedRelativePaths, 512, exec.signal, true,
+              undefined, codes,
             )
             if (missing.length) throw new Error(`${missing.length} 张缺少预览`)
             const anchorBlock = await buildAnchorBlock(loadAnchors(), exec.signal)
@@ -326,7 +341,7 @@ export function apply(ctx: Context, config: Config): void {
               attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
             }
             const { verdicts, route } = await comparePairs(
-              plan, previews, faces, anchorBlock, loadRubric(), config.allowNeither, services,
+              plan, previews, faces, anchorBlock, loadRubric(), config.allowNeither, codes, services,
               exec as unknown as HarnessVisionExecution,
             )
             const vf = join(config.workdir, `verdicts-${res.fingerprint}.json`)
@@ -882,7 +897,10 @@ export function apply(ctx: Context, config: Config): void {
 
         const { verdicts, route } = await comparePairs(
           use.map((p) => [p.a, p.b] as const), previews, faces, anchorBlock,
-          spec.rubric ?? loadRubric(), spec.allow_neither ?? config.allowNeither, services,
+          spec.rubric ?? loadRubric(), spec.allow_neither ?? config.allowNeither,
+          // 评测路径**故意不烧码**：烧了就换了被测对象，与 R2/R3 不可直接比。
+          // 要测烧码条件下的表现，走 run_instrument_check。
+          undefined, services,
           exec as unknown as HarnessVisionExecution,
         )
 

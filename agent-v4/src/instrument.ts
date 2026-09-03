@@ -50,24 +50,9 @@ import type { HarnessVisionExecution, HarnessVisionServices } from './harness-vi
 import { HarnessVisionTransport, resolveHarnessModelRoute } from './harness-vision.ts'
 
 /** 去掉易混字（0/O、1/I/L、2/Z、5/S、8/B）。码读错 = 测试失效，不值得省这几个字符。 */
-const ALPHABET = 'ACDEFGHJKMNPQRTUVWXY34679'
-
-export function makeCode(rnd: () => number): string {
-  let s = ''
-  for (let i = 0; i < 4; i++) s += ALPHABET[Math.floor(rnd() * ALPHABET.length)]
-  return s
-}
-
-/** 确定性随机源：同一个 seed 出同一批码，跑挂了续跑不会换码。 */
-export function mulberry32(seed: number): () => number {
-  let a = seed >>> 0
-  return () => {
-    a = (a + 0x6D2B79F5) >>> 0
-    let t = Math.imul(a ^ (a >>> 15), 1 | a)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
+// 码与随机源搬进 codes.ts —— 生产的比较路径也要用同一套，
+// 两处各写一份迟早会分叉。这里原样再导出，外部引用不受影响。
+export { makeCode, mulberry32 } from './codes.ts'
 
 const SYSTEM = `你在帮一个人从自己的旅行照片里挑出值得留下的几张。
 现在给你同一场景、几乎同时拍的两张照片，请判断哪一张更值得留下。
