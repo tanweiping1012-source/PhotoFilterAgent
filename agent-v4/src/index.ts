@@ -74,8 +74,9 @@ export interface Config {
    * 锚点范例文件。非空则**默认启用** —— 组内比较时把「这个人怎么挑的」
    * 连图带原话放进提示词。
    *
-   * 实测：光是把提示词里的序数歧义去掉（第一张/第二张 → 照片甲/乙），
-   * AB/BA 一致率就从 23% 翻到 45%。锚点是同一个方向的改进 ——
+   * 实测（**评测路径**，47 对 / 每次 18 幅图，非生产路径）：光是把提示词里的
+   * 序数歧义去掉（第一张/第二张 → 照片甲/乙），AB/BA 一致率就从 23% 翻到 45%。
+   * 锚点是同一个方向的改进 ——
    * 与其让模型猜判据，不如直接示范。
    */
   anchorsFile: string
@@ -86,7 +87,10 @@ export interface Config {
   /**
    * 阶段 2 的组内比较是否默认用视觉模型。
    *
-   * ⚠️ 这一档**没有通过自己的验收线**：实测 AB/BA 一致率 45%，通过线是 60%。
+   * ⚠️ 这一档**没有通过自己的验收线**，而且要注意 45% 那个数字的出处：
+   * 它来自 47 对的 run_pair_eval 评测路径（每次 18 幅图），**不是这条生产路径**。
+   * 生产路径每次发 24 幅，超出 harness 附件上限 20，2026-09-04 修掉之前
+   * 一直静默回落到本地分 —— 一次都没真正调用过，所以生产档没有历史实测值。
    * 默认开启是产品决定，不是数据支持的结论。agent 必须在报告里如实说明。
    */
   stage2Vlm: boolean
@@ -356,10 +360,17 @@ export function apply(ctx: Context, config: Config): void {
             refineNote =
               `\n\n**阶段 2 · 视觉模型复核**（${route}）：打了 ${plan.length} 局擂台，` +
               `花了 ${plan.length * 2} 次调用，改判 ${flips} 组。\n` +
-              `⚠️ 这一档**没有通过自己的验收线**：实测 AB/BA 双向一致率 ` +
-              `${((cons / Math.max(verdicts.length, 1)) * 100).toFixed(0)}%（本次）、` +
-              `45%（47 对的完整评测），而通过线是 60%。` +
-              `也就是说它的判断有相当一部分是噪声，改判不一定是改对。`
+              `⚠️ 这一档**没有通过自己的验收线**：本次双向一致率 ` +
+              `${((cons / Math.max(verdicts.length, 1)) * 100).toFixed(0)}%，通过线 60%。\n` +
+              // 45% 这个历史数字来自**另一条路径**，必须标明出处再给用户看。
+              // 它出自 47 对的 run_pair_eval 评测（每次 18 幅图，在附件上限 20 以内）；
+              // 而生产路径每次 24 幅，2026-09-04 修掉上限之前**从未成功调用过**，
+              // 一直静默回落到本地分。所以它描述的不是这条路径。
+              `参照：另一条评测路径上 47 对的一致率是 45%（每次 18 幅图）；` +
+              `生产路径每次 24 幅，2026-09-04 之前因超出附件上限从未真正跑起来，` +
+              `所以生产档此前没有可靠的一致率实测。\n` +
+              `另外实测：同一对重复问一遍，62.8% 会改口 —— ` +
+              `所以改判不一定是改对，其中相当一部分是噪声。`
           } catch (e) {
             refineNote = `\n\n**阶段 2 · 视觉模型复核未执行**：${e instanceof Error ? e.message : String(e)}。` +
               `已回落到本地分排序（0 次调用、结果确定）。`
@@ -672,13 +683,27 @@ export function apply(ctx: Context, config: Config): void {
           const inId = ids.id(v.a)
           const outId = ids.id(v.b)
           if (v.winner === 'b') swaps.push(`${outId} 换掉 ${inId}`)
-          const mark = v.winner === 'a' ? '维持原判' : v.winner === 'b' ? '⇄ 建议换' : '平局'
+          // 五个取值必须各显各的。
+          //
+          // 原来是三分支：a → 维持原判，b → 建议换，**其余全部 → 平局**。
+          // 于是「两张都不要」(neither) 和「两次答案翻覆」(inconsistent)
+          // 都被显示成平局，而下面的计数又把它们算进「维持原判」——
+          // 一对被模型判为都不够格的照片，报给用户的是「维持原判」。
+          const mark = v.winner === 'a' ? '维持原判'
+            : v.winner === 'b' ? '⇄ 建议换'
+            : v.winner === 'neither' ? '两张都不够格'
+            : v.winner === 'tie' ? '平局（两次都说分不出）'
+            : '两次答案不一致'
           return `  ${inId}（已入选） vs ${outId}（未入选）  →  ${mark}\n      ${v.reason}`
         }).join('\n')
 
         const flips = verdicts.filter((v) => v.winner === 'b').length
+        const keeps = verdicts.filter((v) => v.winner === 'a').length
         const ties = verdicts.filter((v) => v.winner === 'tie').length
-        const inconsistent = verdicts.filter((v) => !v.consistent && v.reason.includes('不一致')).length
+        const neithers = verdicts.filter((v) => v.winner === 'neither').length
+        // 直接看取值，不再靠 reason 里有没有「不一致」这几个字 ——
+        // 那个字符串匹配在 winner 有了独立取值之后就是多余且易碎的。
+        const inconsistent = verdicts.filter((v) => v.winner === 'inconsistent').length
         return {
           pairs_compared: verdicts.length,
           calls_spent: verdicts.length * 2,
@@ -686,8 +711,18 @@ export function apply(ctx: Context, config: Config): void {
             `组内成对比较完成：${verdicts.length} 对，**花了 ${verdicts.length * 2} 次付费调用**` +
             `（每对正反各问一次）。模型路由 ${route}。\n\n` +
             lines + `\n\n` +
-            `结果：维持原判 ${verdicts.length - flips - ties} 对 · 建议换 ${flips} 对 · 平局 ${ties} 对` +
-            `（其中 ${inconsistent} 对是正反答案不一致被判平局 —— 位置偏好是真实存在的，单向结果不可信）。\n` +
+            `结果：维持原判 ${keeps} 对 · 建议换 ${flips} 对 · 平局 ${ties} 对` +
+            `· 两张都不够格 ${neithers} 对 · 正反不一致 ${inconsistent} 对。\n` +
+            // 这里原来断言过：位置偏好真实存在、单向结果不可信。
+            // 2026-09-03 的仪器标定**推翻了它**：同一批照片排在前 72%、排在后 72%，
+            // 被选中比例完全一样，位置没有可测量的影响。
+            // 真正的原因是模型对同一问题答不稳 —— 输入逐字节相同、temperature=0
+            // 的重复调用有 62.8% 改口。措辞必须跟着证据走。
+            (inconsistent
+              ? `⚠️ 正反不一致的那 ${inconsistent} 对不是位置偏好造成的（标定实测：` +
+                `同一批照片排在前后被选中的比例都是 72%）。原因是模型对同一问题答不稳 ——` +
+                `输入完全相同重复问一遍，62.8% 会改口。\n`
+              : '') +
             (swaps.length
               ? `\n建议的调整：${swaps.join('，')}。要不要我按这个改名单？`
               : `\n没有建议调整 —— 本地排序在这些边界上的判断，模型也同意。`),
