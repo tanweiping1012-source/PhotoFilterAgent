@@ -162,6 +162,17 @@ export class Ranker {
      * 烧进图里之后模型不用数 —— 图上写着就是谁。
      */
     labelMap?: Record<string, string>,
+    /**
+     * 仪器标定专用：{文件名: 编码}。**加边**写在图上方，不覆盖画面。
+     *
+     * 和 labelMap 是两回事，不要合并：labelMap 盖在画面上（锚点用，锚点不参与判断），
+     * codeMap 必须加边（考题用，压住画面就分不清「位置驱动」和「被挡住了」）。
+     */
+    codeMap?: Record<string, string>,
+    /** 仪器标定专用：JPEG 质量下调 N 档，出一份肉眼无差、字节不同的副本（δ 条件）。 */
+    qualityDelta = 0,
+    /** 仪器标定专用：高斯模糊半径，造一个明显更差的副本做正对照。 */
+    degrade = 0,
   ): Promise<{ previews: Record<string, string>; faces: Record<string, string>; missing: string[] }> {
     const args = ['preview', folder, '--names', ...names, '--size', String(size), ...this.gate()]
     if (withFace) args.push('--with-face')
@@ -171,6 +182,13 @@ export class Ranker {
       writeFileSync(labelFile, JSON.stringify(labelMap))
       args.push('--label-map', labelFile)
     }
+    if (codeMap && Object.keys(codeMap).length) {
+      const f = join(mkdtempSync(join(tmpdir(), 'pfv4-code-')), 'codes.json')
+      writeFileSync(f, JSON.stringify(codeMap))
+      args.push('--code-map', f)
+    }
+    if (qualityDelta > 0) args.push('--quality-delta', String(qualityDelta))
+    if (degrade > 0) args.push('--degrade', String(degrade))
     if (exclude.length) args.push('--exclude', ...exclude)
     const v = (await this.runJson<{
       previews: Record<string, string>; faces?: Record<string, string>; missing: string[]

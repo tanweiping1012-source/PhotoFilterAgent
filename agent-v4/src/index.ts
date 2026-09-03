@@ -26,6 +26,10 @@ import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { IdentityMap } from './identity.ts'
 import { comparePairs, type AnchorBlock } from './compare.ts'
+import {
+  appendRow, askPair, makeCode, mulberry32, newTransport, probeGrounding,
+  type CallRow, type Slots,
+} from './instrument.ts'
 import type { HarnessVisionExecution, HarnessVisionServices } from './harness-vision.ts'
 import { Ranker, RankerError, type RankResult } from './ranker.ts'
 
@@ -915,6 +919,207 @@ export function apply(ctx: Context, config: Config): void {
             `  └ 本地分判错的           ${hit(wrong)}  ← 救回来的\n` +
             `  └ 本地分判对的           ${hit(right)}  ← 别毁掉的\n` +
             `明细写入 ${outPath}`,
+        }
+      },
+    }))
+
+    // ── 仪器标定 ────────────────────────────────────────────────
+    //
+    // 和 run_pair_eval 是两件事：那个测 rubric 好不好，这个测**仪器准不准**。
+    // 观测量、判据、答案通道全都不同，所以不复用它的代码路径 ——
+    // 复用会逼着 run_pair_eval 长出一堆 if，而它是历史结论的产出口，不能动。
+    ctx.tools.register(defineTool({
+      name: 'run_instrument_check',
+      description:
+        '【标定专用】测这台仪器准不准，不是测 rubric。分阶段跑：'
+        + 'probe（grounding 探针，1 次）· matrix（条件矩阵 AB/AB2/AB3/BA，每对 4 次）'
+        + '· aa（同一张照片放两槽位，测编造率）· sanity（正对照：原图 vs 模糊副本）。'
+        + '结果逐次追加到 <out_dir>/calls.jsonl。',
+      parameters: {
+        phase: { type: 'string', description: 'probe / matrix / aa / sanity' },
+        out_dir: { type: 'string', description: '结果目录，calls.jsonl 写在里面' },
+        pairs: { type: 'string', description: '考题文件名（evalPairsDir 里）' },
+        limit: { type: 'number', description: '最多跑几对' },
+      },
+      output: {
+        schema: {
+          type: 'object', additionalProperties: false,
+          properties: { summary: { type: 'string' }, calls_spent: { type: 'number' } },
+        },
+        render: (_a, v) => [{ type: 'text', text: v.summary }],
+      },
+      async execute(args, exec) {
+        const phase = String(args.phase ?? '')
+        if (!['probe', 'matrix', 'aa', 'sanity'].includes(phase)) {
+          throw new Error(`phase 只能是 probe/matrix/aa/sanity，收到：${phase}`)
+        }
+        const outDir = String(args.out_dir ?? '')
+        if (!outDir) throw new Error('必须给 out_dir')
+        mkdirSync(outDir, { recursive: true })
+        const jsonl = join(outDir, 'calls.jsonl')
+
+        let pairsFile = config.evalPairsFile
+        if (args.pairs) {
+          if (!config.evalPairsDir) throw new Error('没有配置 evalPairsDir')
+          if (String(args.pairs).includes('/') || String(args.pairs).includes('..')) {
+            throw new Error(`考题只能给文件名：${args.pairs}`)
+          }
+          pairsFile = join(config.evalPairsDir, String(args.pairs))
+        }
+        if (!existsSync(pairsFile)) throw new Error(`考题文件不存在：${pairsFile}`)
+        const spec = JSON.parse(readFileSync(pairsFile, 'utf8')) as {
+          folder?: string
+          pairs: Array<{ a: string; b: string }>
+        }
+        const folder = assertAllowed(spec.folder ?? state.folder ?? '', config.allowedRoots, '照片')
+        const all = spec.pairs
+        const use = args.limit ? all.slice(0, Number(args.limit)) : all
+
+        const services: HarnessVisionServices = {
+          llm: ctx.get('llm') as unknown as HarnessVisionServices['llm'],
+          attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
+        }
+        const { transport, route } = newTransport(
+          services, exec as unknown as HarnessVisionExecution)
+        await transport.preflight(exec.signal)
+
+        // 码由 seed 定死：跑挂了续跑不会换码，续跑的结果和前面的可以直接合并。
+        const rnd = mulberry32(20260903)
+        const codeOf = new Map<string, string>()
+        const code = (key: string) => {
+          if (!codeOf.has(key)) codeOf.set(key, makeCode(rnd))
+          return codeOf.get(key)!
+        }
+
+        // 探针必须有**精确**的真值，否则探针"失败"会长得很像模型的问题。
+        //
+        // 整幅是按最长边缩的，高度取决于原图长宽比，这一侧算不出来。
+        // 人脸裁切不一样：它固定是 face_size × face_size 的正方形，
+        // 加边之后高度是确定的，顶条占比可以精确算出来。所以探针用人脸图。
+        // burn_code 的算法必须和 Python 侧一致，改一边就得改另一边。
+        const FACE = 448
+        const barFractionFace = (): number => {
+          const size = Math.max(18, Math.floor(FACE / 12))
+          const pad = Math.max(6, Math.floor(size / 3))
+          const bar = size + 2 * pad
+          return bar / (FACE + bar)
+        }
+
+        // 续跑：已经跑完的对直接跳过。
+        //
+        // 312 次里中断过一次就够受了 —— 上一轮 936 次那回中断之后，
+        // 已经花掉的调用差点全丢。判断标准是「这一对在这个阶段的行数够了」，
+        // 不是「出现过」：断在第 3 个条件上的对必须重跑，不能算数。
+        const need = phase === 'matrix' ? 4 : 1
+        const seen = new Map<string, number>()
+        if (existsSync(jsonl)) {
+          for (const line of readFileSync(jsonl, 'utf8').split('\n')) {
+            if (!line.trim()) continue
+            try {
+              const r = JSON.parse(line) as CallRow
+              if (r.phase !== phase || !r.pair) continue
+              seen.set(r.pair, (seen.get(r.pair) ?? 0) + 1)
+            } catch { /* 半行 = 写到一半，当没跑过 */ }
+          }
+        }
+        const doneAlready = (key: string) => (seen.get(key) ?? 0) >= need
+
+        let calls = 0
+        let skipped = 0
+        const rows: CallRow[] = []
+        const push = (r: CallRow) => { rows.push(r); appendRow(jsonl, r); calls++ }
+
+        const prev = async (
+          names: string[], codes: Record<string, string>, qd = 0, dg = 0,
+        ) => ranker.preview(
+          folder, names, config.excludedRelativePaths, 512, exec.signal, true,
+          undefined, codes, qd, dg)
+
+        if (phase === 'probe') {
+          const first = use[0]
+          if (!first) throw new Error('考题里没有对')
+          const c = code(`probe:${first.a}`)
+          const p = await prev([first.a], { [first.a]: c })
+          const face = p.faces[first.a]
+          if (!face) throw new Error('拿不到人脸裁切 —— 探针必须用它，真值才精确')
+          const r = await probeGrounding(transport, face, c, barFractionFace(), exec.signal)
+          push({ phase: 'probe', pair: first.a, ...r })
+        } else if (phase === 'matrix') {
+          for (const pr of use) {
+            const ca = code(pr.a), cb = code(pr.b)
+            if (doneAlready(`${pr.a}|${pr.b}`)) { skipped++; continue }
+            const base = await prev([pr.a, pr.b], { [pr.a]: ca, [pr.b]: cb })
+            const soft = await prev([pr.a, pr.b], { [pr.a]: ca, [pr.b]: cb }, 8)
+            const S = (x: string, cx: string, y: string, cy: string,
+                       src: typeof base): Slots => ({
+              jia: { photo: x, full: src.previews[x], face: src.faces[x], code: cx },
+              yi: { photo: y, full: src.previews[y], face: src.faces[y], code: cy },
+            })
+            const plan: Array<[string, Slots]> = [
+              ['AB', S(pr.a, ca, pr.b, cb, base)],
+              ['AB2', S(pr.a, ca, pr.b, cb, base)],   // 逐字节相同 → ε
+              ['AB3', S(pr.a, ca, pr.b, cb, soft)],   // 重编码     → δ
+              ['BA', S(pr.b, cb, pr.a, ca, base)],
+            ]
+            for (const [cond, slots] of plan) {
+              const r = await askPair(transport, slots, exec.signal)
+              push({ phase: 'matrix', condition: cond, pair: `${pr.a}|${pr.b}`,
+                     a: pr.a, b: pr.b, ...r })
+            }
+          }
+        } else if (phase === 'aa') {
+          for (const pr of use) {
+            // 同一张照片的两个副本，**烧不同的码** —— 这样它们不再是相同图像，
+            // 模型没法用「这俩一样」脱身，而质量差异严格为零。
+            // 此时任何非 TIE/NEITHER 的回答都是编造。
+            const c1 = code(`aa1:${pr.a}`), c2 = code(`aa2:${pr.a}`)
+            if (doneAlready(pr.a)) { skipped++; continue }
+            const p1 = await prev([pr.a], { [pr.a]: c1 })
+            const p2 = await prev([pr.a], { [pr.a]: c2 })
+            const slots: Slots = {
+              jia: { photo: pr.a, full: p1.previews[pr.a], face: p1.faces[pr.a], code: c1 },
+              yi: { photo: pr.a, full: p2.previews[pr.a], face: p2.faces[pr.a], code: c2 },
+            }
+            const r = await askPair(transport, slots, exec.signal)
+            push({ phase: 'aa', condition: 'AA', pair: pr.a, a: pr.a, b: pr.a, ...r })
+          }
+        } else {
+          for (const pr of use) {
+            // 正对照：同一张照片 vs 它自己的重度模糊副本。真值无争议。
+            // 用注入缺陷而不是"人眼觉得明显"的题，是因为后者仍然要靠标注，
+            // 而标注本身就是待检验的东西之一。
+            const cs = code(`sane:${pr.a}`), cb2 = code(`blur:${pr.a}`)
+            if (doneAlready(pr.a)) { skipped++; continue }
+            const sharp = await prev([pr.a], { [pr.a]: cs })
+            const blur = await prev([pr.a], { [pr.a]: cb2 }, 0, 6)
+            // 清晰的那张随机放前放后，免得正对照本身被位置偏好污染。
+            const sharpFirst = rnd() < 0.5
+            const S1 = { photo: pr.a, full: sharp.previews[pr.a], face: sharp.faces[pr.a], code: cs }
+            const S2 = { photo: pr.a, full: blur.previews[pr.a], face: blur.faces[pr.a], code: cb2 }
+            const slots: Slots = sharpFirst ? { jia: S1, yi: S2 } : { jia: S2, yi: S1 }
+            const r = await askPair(transport, slots, exec.signal)
+            push({ phase: 'sanity', condition: sharpFirst ? 'sharp=甲' : 'sharp=乙',
+                   pair: pr.a, a: pr.a, b: pr.a, ...r,
+                   correct: r.winner_code === cs })
+          }
+        }
+
+        const ok = rows.filter((r) =>
+          r.read_jia === r.code_jia && (r.phase === 'probe' || r.read_yi === r.code_yi)).length
+        return {
+          calls_spent: calls,
+          summary:
+            `仪器标定 · ${phase} · 模型 ${route} · ${calls} 次调用\n`
+            + `码读对 ${ok}/${rows.length}${skipped ? ` · 跳过已跑完的 ${skipped} 对` : ''}\n`
+            + (phase === 'probe'
+              ? `grounding：${rows[0]?.bbox_on_face ? '支持（框落在黑边上）' : '不支持 / 框不准'}`
+                + ` · ${rows[0]?.reason}\n框 ${JSON.stringify(rows[0]?.bbox)}`
+              : phase === 'sanity'
+                ? `正对照答对 ${rows.filter((r) => r.correct).length}/${rows.length}`
+                : phase === 'aa'
+                  ? `AA 编造（答了某一张而不是平局）${rows.filter((r) => r.winner_photo).length}/${rows.length}`
+                  : `矛盾（winner 与 winner_code 打架）${rows.filter((r) => r.contradiction).length}/${rows.length}`)
+            + `\n逐次结果追加到 ${jsonl}`,
         }
       },
     }))
