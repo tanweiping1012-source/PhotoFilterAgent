@@ -85,10 +85,10 @@ def stats(rows):
     ba, n_ba = disagree(rows, "AB", "BA")
     s["eps"] = (eps, n_eps)
     s["delta"] = ((d_raw - eps) if (d_raw is not None and eps is not None) else None, n_d)
-    if ba is not None and eps is not None and s["delta"][0] is not None:
-        s["position"] = (ba - s["delta"][0] - eps, n_ba)
-    else:
-        s["position"] = (None, n_ba)
+    # 位置效应 = d(AB,BA) − ε，**不要再减 δ**。
+    # BA 送的是和 AB 逐字节相同的图，只是顺序反过来 —— 那一列里没有重编码成分。
+    # 原来写成 ba − delta − eps，把扰动敏感度重复扣了一次。
+    s["position"] = ((ba - eps) if (ba is not None and eps is not None) else None, n_ba)
     s["ba_raw"] = (ba, n_ba)
 
     graded = [r for r in rows if r.get("phase") in ("matrix", "aa", "sanity")]
@@ -96,8 +96,12 @@ def stats(rows):
         ok = sum(1 for r in graded
                  if r.get("read_jia") == r.get("code_jia") and r.get("read_yi") == r.get("code_yi"))
         s["code_ok"] = (ok / len(graded), len(graded))
+        # ⚠️ 必须排除 NONE：模型答 TIE/NEITHER 时，工具 schema 就要求 winner_code
+        # 填 NONE。不排除的话弃权全被记成幻觉 —— 实测把真值 0 显示成了 40%，
+        # 而判分脚本 instrument_check.py 一直是对的。同一条判据写两遍就会这样。
         hal = sum(1 for r in graded
                   if r.get("winner_code")
+                  and r["winner_code"] not in ("NONE", "")
                   and r["winner_code"] not in (r.get("code_jia"), r.get("code_yi")))
         s["halluc"] = (hal / len(graded), len(graded))
     else:
@@ -220,7 +224,8 @@ tr.pass td.big2{{color:#16a34a}} tr.fail td.big2{{color:#dc2626}}
 <tr><td>其中 δ 扰动敏感</td><td class='n big2'>{_f(s['delta'][0])}</td><td class=n>n={s['delta'][1]}</td>
     <td class=note2>肉眼不可见的重编码就翻转的比例</td></tr>
 <tr><td><b>剩下的 = 位置效应</b></td><td class='n big2'>{_f(s['position'][0])}</td><td class=n>n={s['position'][1]}</td>
-    <td class=note2>扣掉噪声和脆弱度之后，真正归因于位置对调的部分</td></tr>
+    <td class=note2>d(AB,BA) − ε。⚠️ 这个量换口径会变号（全口径下为负），
+        CI 跨 0 —— 位置结论请看边缘统计「正确答案在前/在后的选中率」，那条不依赖口径</td></tr>
 </table>
 
 <h2>最近 5 次调用</h2>
