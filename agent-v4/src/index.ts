@@ -70,6 +70,8 @@ export interface Config {
   anchorsFile: string
   /** 用户判据文本的路径。整份进模型 —— 见 dsh-v4/rubric/routing.md。 */
   rubricFile: string
+  /** 允许模型回答「两张都不值得留下」。换了答案空间，与旧轮不可比，默认关。 */
+  allowNeither: boolean
   /**
    * 阶段 2 的组内比较是否默认用视觉模型。
    *
@@ -104,6 +106,7 @@ export const Config: z<Config> = z.object({
   defaultTarget: z.number().step(1).min(1).default(20),
   anchorsFile: z.string().default(''),
   rubricFile: z.string().default(''),
+  allowNeither: z.boolean().default(false),
   stage2Vlm: z.boolean().default(true),
   maxInlineIdList: z.number().step(1).min(0).default(60),
   evalPairsFile: z.string().default(''),
@@ -319,7 +322,7 @@ export function apply(ctx: Context, config: Config): void {
               attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
             }
             const { verdicts, route } = await comparePairs(
-              plan, previews, faces, anchorBlock, loadRubric(), services,
+              plan, previews, faces, anchorBlock, loadRubric(), config.allowNeither, services,
               exec as unknown as HarnessVisionExecution,
             )
             const vf = join(config.workdir, `verdicts-${res.fingerprint}.json`)
@@ -788,6 +791,8 @@ export function apply(ctx: Context, config: Config): void {
           anchors?: { folder?: string; text: string; photos: string[]; labels?: Record<string, string> }
           /** 判据文本。缺省时回落到 config.rubricFile —— AB 实验靠它区分「无提示 / 仅规则」两臂。 */
           rubric?: string
+          /** 这份考题是否允许「都不要」。缺省回落到 config.allowNeither。 */
+          allow_neither?: boolean
         }
         // 考题文件里的 folder **也必须过 allowedRoots**。
         //
@@ -832,7 +837,7 @@ export function apply(ctx: Context, config: Config): void {
 
         const { verdicts, route } = await comparePairs(
           use.map((p) => [p.a, p.b] as const), previews, faces, anchorBlock,
-          spec.rubric ?? loadRubric(), services,
+          spec.rubric ?? loadRubric(), spec.allow_neither ?? config.allowNeither, services,
           exec as unknown as HarnessVisionExecution,
         )
 

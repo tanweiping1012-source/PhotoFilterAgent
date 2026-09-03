@@ -89,15 +89,15 @@ export interface PairVerdict {
   winner: 'a' | 'b' | 'tie'
   /** AB 和 BA 两个方向是否给出了一致的答案。 */
   consistent: boolean
-  ab: 'first' | 'second' | 'tie'
-  ba: 'first' | 'second' | 'tie'
+  ab: 'first' | 'second' | 'tie' | 'neither'
+  ba: 'first' | 'second' | 'tie' | 'neither'
   /** 两个方向各自的模型原话。不一致时 reason 是模板句，原文只在这里。 */
   reasonAb?: string
   reasonBa?: string
   reason: string
 }
 
-const TOOL = {
+const makeTool = (allowNeither: boolean) => ({
   name: 'submit_comparison',
   description: '提交这两张照片的比较结论',
   parameters: {
@@ -108,8 +108,19 @@ const TOOL = {
       winner: {
         type: 'string',
         // 枚举也不能用序数 —— FIRST/SECOND 同样有「第几幅图」的歧义。
-        enum: ['JIA', 'YI', 'TIE'],
-        description: '哪一张照片更值得留下：JIA=照片甲，YI=照片乙；确实分不出就 TIE',
+        // NEITHER 是**可选**的第四个答案，由 allowNeither 开关控制。
+        //
+        // 为什么需要它：标注者 75 组判断里有 26 组（35%）是「整组都不要」，
+        // 而三选一的答案空间没有这个格子 —— 模型即使想说也只能塞进 TIE，
+        // 于是「两张一样好」和「两张都不行」被压成同一个符号。
+        // 这不是提示词写得不够清楚，是接口里没有那个位置。
+        //
+        // 默认关闭：开了它就换了被测对象，不能和之前几轮直接比。
+        enum: allowNeither ? ['JIA', 'YI', 'TIE', 'NEITHER'] : ['JIA', 'YI', 'TIE'],
+        description: allowNeither
+          ? '哪一张更值得留下：JIA=甲，YI=乙；两张都好但分不出高下用 TIE；'
+            + '**两张都不值得留下用 NEITHER** —— TIE 和 NEITHER 是不同的答案，别混'
+          : '哪一张照片更值得留下：JIA=照片甲，YI=照片乙；确实分不出就 TIE',
       },
       reason: {
         type: 'string',
@@ -119,14 +130,14 @@ const TOOL = {
       },
     },
   },
-} as const
+}) as const
 
-function readVerdict(raw: Record<string, unknown>): { w: 'first' | 'second' | 'tie'; reason: string } {
+function readVerdict(raw: Record<string, unknown>): { w: 'first' | 'second' | 'tie' | 'neither'; reason: string } {
   const w = String(raw.winner ?? '').toUpperCase()
   return {
     // 内部仍用 first/second 表示「这次调用里排前/排后的那张照片」，
     // 只是问模型时不再用序数措辞。
-    w: w === 'JIA' ? 'first' : w === 'YI' ? 'second' : 'tie',
+    w: w === 'JIA' ? 'first' : w === 'YI' ? 'second' : w === 'NEITHER' ? 'neither' : 'tie',
     reason: typeof raw.reason === 'string' ? raw.reason.slice(0, 60) : '',
   }
 }
@@ -171,6 +182,13 @@ export async function comparePairs(
    * 也可以两个都给。别把它塞进 AnchorBlock —— 那样「仅规则」就没法表达了。
    */
   rubric: string | null,
+  /**
+   * 允许模型回答「两张都不值得留下」。
+   *
+   * 默认 false —— 开了它就换了被测对象（答案空间从 3 个变 4 个），
+   * 与之前几轮不可直接比。要开就单独跑一轮、单独预登记判据。
+   */
+  allowNeither: boolean,
   services: HarnessVisionServices,
   exec: HarnessVisionExecution,
   onProgress?: (done: number, total: number) => void,
@@ -215,7 +233,7 @@ export async function comparePairs(
           ...(anchors?.jpegs ?? []),
           ...bundle(firstFull, firstFace), ...bundle(secondFull, secondFace),
         ],
-        tool: TOOL,
+        tool: makeTool(allowNeither),
         // 400 太小。MiniMax-M3 这类会先推理再输出的模型，思考 token 也算在输出里，
         // 18 张图 + 6 条判据的题目上经常没写到工具调用就用光了 ——
         // 表现是「结构化视觉输出达到 maxTokens，结果未接受」，整轮中断。
@@ -228,12 +246,17 @@ export async function comparePairs(
     const ab = await ask(ja, fa, jb, fb)
     const ba = await ask(jb, fb, ja, fa)
     // BA 的 first 指的是 b，所以要翻回 a/b 语义再比。
-    const abPick = ab.w === 'first' ? 'a' : ab.w === 'second' ? 'b' : 'tie'
-    const baPick = ba.w === 'first' ? 'b' : ba.w === 'second' ? 'a' : 'tie'
+    const abPick = ab.w === 'first' ? 'a' : ab.w === 'second' ? 'b'
+      : ab.w === 'neither' ? 'neither' : 'tie'
+    const baPick = ba.w === 'first' ? 'b' : ba.w === 'second' ? 'a'
+      : ba.w === 'neither' ? 'neither' : 'tie'
+    // 「都不要」是位置无关的判断，所以两个方向都答 neither 才算一致 ——
+    // 和 tie 不同：tie 也位置无关，但它表示「分不出」，
+    // 而 neither 表示「都不够格」。两次都说都不够格，是真的一致。
     const consistent = abPick === baPick && abPick !== 'tie'
     out.push({
       a, b,
-      winner: consistent ? (abPick as 'a' | 'b') : 'tie',
+      winner: consistent ? (abPick as 'a' | 'b' | 'neither') : 'tie',
       consistent,
       ab: ab.w, ba: ba.w,
       // 两个方向的**原话**都留下。

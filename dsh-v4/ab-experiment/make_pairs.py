@@ -57,6 +57,13 @@ def main():
     # 它们有真值：**正确答案是平局**。模型在用户判等价的两张上
     # 自信地选一张，就是判错 —— 而这种错在现在的设计里完全看不见。
     equal = collections.defaultdict(list)
+    # 「都不要」档：来自用户标了整组淘汰的组，正确答案是 NEITHER。
+    #
+    # 以前这些对被拆进两处：跨层的进 secondary（不判分）、同层的进 equal（真值记成 tie）。
+    # 后者是错的 —— 把「两张都不行」和「两张一样好」压成了同一个符号，
+    # 而它们在用户的判断里是**两类**：他 75 组里有 26 组（35%）是整组不要。
+    # 只有把真值拆开，模型答 NEITHER 才有对错可言。
+    neither = collections.defaultdict(list)
     stat = collections.Counter()
 
     for q, spec in T["tiers"].items():
@@ -67,23 +74,37 @@ def main():
         # 否则 me-pick 被排除，这些照片会报「缺少缓存预览」。）
         folder = os.path.commonpath([os.path.dirname(x) for x in shown])
         name = lambda i: os.path.basename(shown[i - 1])
-        bucket = secondary if spec.get("all_rejected") else primary
+        rejected = spec.get("all_rejected")
+        bucket = secondary if rejected else primary
         for hi, lo in pairs_from_tiers(spec["t"]):
+            # 整组淘汰的组：跨层对同时进 secondary（保留「哪张没那么废」的旧口径）
+            # 和 neither（正确答案 = 都不要）。两个档问的是不同的问题。
             bucket[folder].append({
                 "a": name(hi), "b": name(lo), "answer": "a",
                 "kind": "ab", "local_correct": False,
                 "group": int(q),
             })
+            if rejected:
+                neither[folder].append({
+                    "a": name(hi), "b": name(lo), "answer": "neither",
+                    "kind": "neither", "local_correct": False,
+                    "group": int(q),
+                })
         for tier in spec["t"]:
             for i, j in itertools.combinations(tier, 2):
-                equal[folder].append({
-                    "a": name(i), "b": name(j), "answer": "tie",
-                    "kind": "equal", "local_correct": False,
-                    "group": int(q),
+                (neither if rejected else equal)[folder].append({
+                    "a": name(i), "b": name(j),
+                    "answer": "neither" if rejected else "tie",
+                    "kind": "neither" if rejected else "equal",
+                    "local_correct": False, "group": int(q),
                 })
         stat["secondary" if spec.get("all_rejected") else "primary"] += \
             len(pairs_from_tiers(spec["t"]))
-        stat["equal"] += sum(len(t) * (len(t) - 1) // 2 for t in spec["t"])
+        same = sum(len(t) * (len(t) - 1) // 2 for t in spec["t"])
+        if rejected:
+            stat["neither"] += same + len(pairs_from_tiers(spec["t"]))
+        else:
+            stat["equal"] += same
 
     # 取图时是按**文件名**在目录里找的（photos = {p.name: p}），
     # 同一个 folder 下重名会被静默覆盖，取到另一张照片还不报错。
@@ -150,7 +171,8 @@ def main():
         return out
 
     written = []
-    for tag, data in (("primary", primary), ("secondary", secondary), ("equal", equal)):
+    for tag, data in (("primary", primary), ("secondary", secondary),
+                      ("equal", equal), ("neither", neither)):
         for (folder, part), ps in sorted(chunk(data).items()):
             slug = os.path.basename(folder) + part
             # 臂名**不用字母**。
@@ -164,6 +186,8 @@ def main():
                                    ("仅规则", None, True),
                                    ("规则加范例", anchors, True)):
                 spec = {"folder": folder, "pairs": ps}
+                if tag == "neither":
+                    spec["allow_neither"] = True
                 if anc:
                     spec["anchors"] = anc
                 if rub:
@@ -175,6 +199,8 @@ def main():
     print(f"主分析配对   {stat['primary']} 对（跨层，正确答案 = 赢家）")
     print(f"次分析配对   {stat['secondary']} 对（整组都淘汰的，仍是跨层，不进主结论）")
     print(f"同层配对     {stat['equal']} 对（用户判两张一样，正确答案 = 平局）")
+    print(f"都不要配对   {stat['neither']} 对（用户标整组淘汰，正确答案 = NEITHER）"
+          f"  ← 需要 allow_neither")
     print(f"对级去重丢弃 {stat['去重丢弃']} 对（副本目录里的同一对，按内容哈希）")
     print(f"调用预算     主分析 {stat['primary']} × 2 方向 × 3 臂 = {stat['primary'] * 6} 次")
     print()

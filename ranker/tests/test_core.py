@@ -867,3 +867,27 @@ def test_锚点文字不能与图片矛盾():
     assert '_说明' in A and '典型度' in A['_说明'], \
         'anchors-default.json 应当标明它是按典型度挑的'
     assert A.get('_selected_from'), '应当记录锚点来自哪几组，便于回溯'
+
+
+def test_都不要必须和分不出分开():
+    """「两张一样好」和「两张都不行」是标注者判断里的**两类**。
+
+    75 组里 26 组（35%）是整组淘汰。三选一的答案空间没有这个格子，
+    模型即使想说也只能塞进 TIE —— 两个完全不同的判断被压成同一个符号。
+    这不是提示词写得不够清楚，是接口里没有那个位置。
+    """
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    cmp_ts = (root / 'agent-v4' / 'src' / 'compare.ts').read_text(encoding='utf-8')
+    mk = (root / 'dsh-v4' / 'ab-experiment' / 'make_pairs.py').read_text(encoding='utf-8')
+
+    assert "'NEITHER'" in cmp_ts, '答案枚举里没有 NEITHER'
+    assert 'allowNeither' in cmp_ts, 'NEITHER 必须是可开关的 —— 开了就换了被测对象'
+    # 默认必须是关的，否则会静默改变 R2/R3 的可比性
+    idx = (root / 'agent-v4' / 'src' / 'index.ts').read_text(encoding='utf-8')
+    assert 'allowNeither: z.boolean().default(false)' in idx, \
+        'allowNeither 必须默认 false —— 默认开会让新旧几轮不可比而没人发现'
+    # 真值要拆开
+    assert '"answer": "neither"' in mk or "'answer': 'neither'" in mk, \
+        'make_pairs 没有把「都不要」的真值拆出来'
+    assert 'if rejected' in mk, '整组淘汰的组要走单独的分支'

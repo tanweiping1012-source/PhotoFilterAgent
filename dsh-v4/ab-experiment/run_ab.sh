@@ -12,6 +12,7 @@
 #   bash run_ab.sh 冒烟              只跑 2 次，验负载和指代
 #   bash run_ab.sh                   全量：936 次
 #   RUN_ID=xxx bash run_ab.sh        指定轮次（续跑/重跑时用）
+#   RUN_NEITHER=1 bash run_ab.sh     额外跑「都不要」档（换答案空间，与旧轮不可比）
 #
 # 退出码：0 全部成功 · 1 冒烟没跑通 · 2 配额/账户不可用 · 3 缺考题 · 4 有档没跑成
 set -uo pipefail
@@ -63,7 +64,21 @@ ask() {   # $1=考题文件名  $2=结果文件  $3=limit（空=全部）
 }
 
 # ─────────────────────────────────────────────────────────────
-echo "═══ ① 冒烟：确认单次 32 幅图（28 锚点 + 4 考题）能被接受 ═══"
+# 幅数从考题文件**数出来**，不写死。
+#
+# 写死过一次：锚点从 14 张换成 10 张之后，这行还印着「32 幅（28 锚点 + 4 考题）」，
+# 而实际是 24 幅。这行字存在的意义就是让人一眼确认负载对不对，
+# 印一个过期的数反而会让人以为锚点没换成功。
+NA=$(PAIRS="$PAIRS" python3 -c '
+import glob, json, os
+fs = glob.glob(os.path.join(os.environ["PAIRS"], "*__规则加范例.json"))
+n = 0
+for f in fs:
+    a = json.load(open(f)).get("anchors") or {}
+    n = max(n, len(a.get("photos") or []))
+print(n)
+' 2>/dev/null || echo 0)
+echo "═══ ① 冒烟：确认单次 $((NA*2+4)) 幅图（${NA} 张锚点 ×2 + 考题 2 张 ×2）能被接受 ═══"
 # 续跑时不重复花这 2 次。936 断几次就多花几个 2 次，而且会覆盖上一轮的 smoke.json。
 if has_result "$OUT/smoke.json"; then
   echo "  ✅ 本轮冒烟已通过，跳过（RUN_ID=$RUN_ID）"
@@ -101,7 +116,7 @@ echo "═══ ② 全量：三臂 × 2 方向 × （primary + equal）══�
 # 踩过：全量循环的 glob 只收了 primary，而第 ③ 段去读 equal 的结果文件，
 # 于是同层档一次都没跑、③ 又因为 `if rows:` 安静跳过 —— 判分照常输出。
 # 用户批了 936 实际只花 486，他以为买到的那 42% 覆盖拿到的是 0，全程不报错。
-for tag in primary equal; do
+for tag in primary equal ${RUN_NEITHER:+neither}; do
   for cond in "无提示" "仅规则" "规则加范例"; do
     n=$(ls "$PAIRS"/${tag}__*__"$cond".json 2>/dev/null | wc -l | tr -d " ")
     if [ "$n" -eq 0 ]; then
@@ -162,6 +177,28 @@ ok = sum(1 for r in rows if r.get("winner") == "tie")
 print(f"  {cond:<10} 答平局 {ok}/{len(rows)} = {ok/len(rows):.1%}   ← 越高越贴近标注者")
 ' || STAGE3_FAIL=1
 done
+
+# ─────────────────────────────────────────────────────────────
+if [ -n "${RUN_NEITHER:-}" ]; then
+echo
+echo "═══ ③b 「都不要」档（正确答案 = NEITHER，需要 allow_neither）═══"
+echo "  问的是：标注者标「整组淘汰」时，模型会不会说「两张都不值得留」。"
+echo "  ⚠️ 这一档换了答案空间（3 选 1 → 4 选 1），**与 R2/R3 不可直接比**。"
+for cond in "无提示" "仅规则" "规则加范例"; do
+  OUT="$OUT" COND="$cond" python3 -c '
+import glob, json, os
+out, cond = os.environ["OUT"], os.environ["COND"]
+rows = [r for f in glob.glob(os.path.join(out, f"neither__*__{cond}.result.json"))
+        for r in json.load(open(f))["rows"]]
+if not rows:
+    raise SystemExit(f"  ❌ {cond}：都不要档没有任何结果")
+ok = sum(1 for r in rows if r.get("winner") == "neither")
+tie = sum(1 for r in rows if r.get("winner") == "tie")
+print(f"  {cond:<10} 答 NEITHER {ok:>3}/{len(rows)} = {ok/len(rows):>5.1%}"
+      f"   （另有 {tie} 条答 TIE —— 以前这两类是混在一起的）")
+' || STAGE3_FAIL=1
+done
+fi
 
 # ─────────────────────────────────────────────────────────────
 echo

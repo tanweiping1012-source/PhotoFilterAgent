@@ -36,6 +36,12 @@
         # 判据文本。「仅规则」和「规则加范例」两臂靠考题文件里的 rubric 字段
         # 覆盖它；这里给的是缺省值（生产路径也用它）。
         rubricFile: /Users/bytedance/deepseek-harness/PhotoFilterAgent/dsh-v4/rubric/rubric-v2-prompt.txt
+        # 「两张都不值得留下」这个答案，**默认关**。
+        #
+        # 开了它答案空间从 3 个变 4 个 —— 换了被测对象，与 R2/R3 不可直接比。
+        # neither 档的考题文件自带 allow_neither: true，只在那一档打开，
+        # 所以 R3 的三臂仍然是三选一，可以跟上一轮比。
+        allowNeither: false
 
 # 关掉全部通用文件系统与 shell 能力。
 #
