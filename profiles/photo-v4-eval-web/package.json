@@ -1,0 +1,10 @@
+{
+  "name": "dsh-profile-photo-v4-eval-web",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]
+    }
+  }
+}

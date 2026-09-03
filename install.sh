@@ -93,6 +93,17 @@ mkdir -p "${DSH_HOME}/profiles/node_modules/@photo-filter-agent"
 ln -sfn "${ROOT}/agent" "${DSH_HOME}/profiles/node_modules/@photo-filter-agent/dsh-photo-filter-agent"
 ok "插件已链接"
 
+# v4 走自己的 $DSH_HOME（默认 ~/.dsh-v4），和 v3 完全隔离 —— 两者的 profile
+# 同名不同内容，混在一个 home 里会互相覆盖。装配逻辑在 dsh-v4/sync-profiles.sh，
+# 那个脚本双向可跑，避免 profile 只存在于本机、仓库里没有的老问题。
+say "装配 v4 profile"
+if [[ -d "${ROOT}/profiles/photo-v4" ]]; then
+  DSH_HOME="${DSH_V4_HOME:-$HOME/.dsh-v4}" "${ROOT}/dsh-v4/sync-profiles.sh" push
+  ok "v4 profile 已装配到 ${DSH_V4_HOME:-$HOME/.dsh-v4}"
+else
+  warn "仓库里没有 v4 profile，跳过"
+fi
+
 # ── 5. 视觉模型凭据 ────────────────────────────────────────────
 say "检查视觉模型凭据"
 CRED="${DSH_HOME}/.credentials.yaml"
