@@ -129,13 +129,30 @@ def split_annotation(
     reasons: dict[str, str],             # 组键 -> 用户原话
     n_anchors: int = 3,
     seed: int = 20260901,
+    rank: dict[str, float] | None = None,
 ) -> Split:
-    """切分。锚点优先挑「判据写得最具体」的组，并保证覆盖三种答法。
+    """切分。锚点要**代表规则**，并保证覆盖三种答法。
 
     三种答法都要有代表，否则模型不知道那些答法是允许的：
       · 有明确胜者
       · 整组淘汰      ← 缺了它模型会硬凑赢家
       · 多张都可以    ← 缺了它模型不知道可以说「都行」
+
+    ⚠️ **不要再按「理由最长」挑。** 那是第一版的做法，注释写着
+    「理由越长说明判据写得越具体」—— 这个直觉是反的，实测代价很大：
+
+      用户在判断显而易见时只写一行，遇到**例外**才写长句解释。
+      「虽然A但是B」正是例外的语法标记。按理由长度排序 = 按有多例外排序。
+
+      2026-09-03 那一轮的三组锚点，两组来自最长的前五名（35 组里的第 2、第 5）。
+      结果：两组有保留项的锚点**都在演示「主判据上最好的那张反而输」**——
+      例1 保留睁眼第 3 名，例3 的睁眼第 1 名被淘汰。
+      而考题真值里 81% 的题是「睁眼更高的赢」。
+      锚点系统性地教了规则的反例，模型平局率涨了 7.7pt，准确率反而降。
+
+    `rank` 给每张照片一个主判据分（越高越好，通常是 eye_openness）。
+    给了它就按**典型度**挑：保留项在主判据上也排前面的组优先。
+    不给就退回「理由最长」并在返回里标注 —— 那条路已知有害，只为兼容。
     """
     rng = random.Random(seed)
     keys = sorted(groups)
@@ -145,12 +162,26 @@ def split_annotation(
         kind = "reject" if not c else ("win" if len(c) == 1 else "multi")
         by_kind[kind].append(k)
 
+    def typicality(k: str) -> tuple:
+        """这一组有多「典型」：保留项在主判据上排第几。
+
+        返回可比较的元组，越大越优先。整组淘汰的组没有保留项，
+        用理由长度兜底（它们不演示排序，不会教反例）。
+        """
+        c = chosen.get(k, [])
+        if not c or not rank:
+            return (0, len(reasons.get(k, "")))
+        photos = groups[k]
+        order = sorted(range(len(photos)), key=lambda i: -rank.get(photos[i], 0.0))
+        best = min(order.index(photos.index(x)) for x in c if x in photos)
+        # 保留项正好是主判据第一名 → 最典型
+        return (2 if best == 0 else (1 if best == 1 else 0), len(reasons.get(k, "")))
+
     picked: list[str] = []
-    # 每种答法先各取一个，理由越长说明判据写得越具体
     for kind in ("win", "reject", "multi"):
         pool = [k for k in by_kind[kind] if k not in picked]
         if pool:
-            picked.append(max(pool, key=lambda k: len(reasons.get(k, ""))))
+            picked.append(max(pool, key=typicality))
     # 不够就随机补
     rest = [k for k in keys if k not in picked]
     rng.shuffle(rest)

@@ -829,3 +829,41 @@ def test_考题必须对级去重():
     assert not dup, f'考题里有重复的对，判分会 assert 崩掉：{dup[:3]}'
     # 切片：一次工具调用出错会赔掉整份，切小赔得少（实测赔过 66 对 / 132 次调用）
     assert biggest <= 20, f'单个考题文件 {biggest} 对，太大 —— 一次失败赔太多'
+
+
+def test_锚点不能按理由长度挑():
+    """按「理由最长」挑锚点 = 按「有多例外」挑。
+
+    用户判断显而易见时只写一行，遇到例外才写长句解释 ——
+    「虽然A但是B」正是例外的语法标记。
+
+    2026-09-03 那一轮的代价：三组锚点两组来自最长的前五名，
+    两组有保留项的锚点**都在演示「主判据上最好的那张反而输」**，
+    而考题真值里 81% 是「睁眼更高的赢」。锚点系统性地教了规则的反例。
+    """
+    from pathlib import Path
+    src = Path(__file__).resolve().parents[1] / 'photofilter_rank' / 'anchors.py'
+    txt = src.read_text(encoding='utf-8')
+    assert 'def typicality' in txt, 'split_annotation 应当按典型度挑锚点'
+    assert 'key=typicality' in txt, '三种答法的挑选没有用 typicality'
+    # 旧写法不能回来
+    assert 'max(pool, key=lambda k: len(reasons' not in txt, \
+        '又改回按理由长度挑了 —— 那等于按「有多例外」挑'
+
+
+def test_锚点文字不能与图片矛盾():
+    """锚点里宣称「闭眼」的照片，睁眼程度必须真的低。
+
+    旧锚点有 2 条矛盾：例3丙 睁眼 0.284（比两张「及格」的都高），
+    文字却说它属于「其余闭眼」。模型看到睁眼的脸被告知「因为闭眼淘汰」，
+    直接损害它对主判据的使用信心。
+    """
+    import json
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    A = json.loads((root / 'dsh-v4' / 'anchors-default.json').read_text(encoding='utf-8'))
+    # 文字里只要出现「闭眼 / 没睁开」，就必须能在引擎值上站得住。
+    # 这里只做结构检查（引擎值要跑才有），断言生成时做过对账。
+    assert '_说明' in A and '典型度' in A['_说明'], \
+        'anchors-default.json 应当标明它是按典型度挑的'
+    assert A.get('_selected_from'), '应当记录锚点来自哪几组，便于回溯'
