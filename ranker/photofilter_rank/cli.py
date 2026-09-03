@@ -82,6 +82,15 @@ def main(argv: list[str] | None = None) -> int:
                              "只有真的打开图才看得见")
     p_prev.add_argument("--min-face-px", type=int, default=96,
                         help="整幅小图上人脸至少要有多少像素才算模型看得见（默认 96）")
+    p_prev.add_argument("--code-map", type=Path, default=None,
+                        help="仪器标定用：{文件名: 编码}。**加边**写在图上方，不覆盖画面 —— "
+                             "编码是要被准确读出来的判别信道，压住画面就分不清"
+                             "「位置驱动」和「被挡住了」")
+    p_prev.add_argument("--degrade", type=float, default=0.0,
+                        help="仪器标定用：高斯模糊半径。造一个**明显更差**的副本做正对照 —— "
+                             "同一张照片、只注入一个真实缺陷，真值无争议")
+    p_prev.add_argument("--quality-delta", type=int, default=0,
+                        help="仪器标定用：JPEG 质量下调 N 档，生成肉眼无差、字节不同的副本（δ 条件）")
     p_prev.add_argument("--json", type=Path, required=True)
 
     p_pairs = sub.add_parser("pairs", help="阶段2：导出组内比较的考题（含正确答案），供成对评测用")
@@ -154,6 +163,11 @@ def main(argv: list[str] | None = None) -> int:
         labels: dict[str, str] = {}
         if getattr(a, "label_map", None) and a.label_map.exists():
             labels = {k: str(v) for k, v in json.loads(a.label_map.read_text()).items()}
+        codes: dict[str, str] = {}
+        if getattr(a, "code_map", None) and a.code_map.exists():
+            codes = {k: str(v) for k, v in json.loads(a.code_map.read_text()).items()}
+        qd = max(0, int(getattr(a, "quality_delta", 0) or 0))
+        dg = max(0.0, float(getattr(a, "degrade", 0.0) or 0.0))
         if getattr(a, "with_face", False):
             from .eligibility import EligibilityUnavailable, engine_facts
             from .scan import fingerprint
@@ -177,8 +191,14 @@ def main(argv: list[str] | None = None) -> int:
             if labels.get(name):
                 from .label_image import burn_label
                 im = burn_label(im, f"{labels[name]} · 整幅")
+            if dg > 0:
+                from PIL import ImageFilter
+                im = im.filter(ImageFilter.GaussianBlur(dg))
+            if codes.get(name):
+                from .label_image import burn_code
+                im = burn_code(im, codes[name])
             buf = BytesIO()
-            im.save(buf, "JPEG", quality=82)      # 与 v3 的 low 档一致
+            im.save(buf, "JPEG", quality=82 - qd)  # 与 v3 的 low 档一致；qd 只在 δ 条件下非 0
             out[name] = base64.b64encode(buf.getvalue()).decode()
             if getattr(a, "with_face", False) and name in boxes:
                 # 人脸从**原图**裁，不从缩略图 —— 缩略图上的脸本来就已经糊了。
@@ -200,8 +220,16 @@ def main(argv: list[str] | None = None) -> int:
                 if labels.get(name):
                     from .label_image import burn_label
                     crop = burn_label(crop, f"{labels[name]} · 人脸")
+                if dg > 0:
+                    from PIL import ImageFilter
+                    # 人脸按尺寸等比放大模糊半径 —— 448px 的脸和 512px 的整幅
+                    # 用同一个绝对半径的话，脸上的糊程度会明显不如整幅。
+                    crop = crop.filter(ImageFilter.GaussianBlur(dg * a.face_size / a.size))
+                if codes.get(name):
+                    from .label_image import burn_code
+                    crop = burn_code(crop, codes[name])
                 fb = BytesIO()
-                crop.save(fb, "JPEG", quality=86)
+                crop.save(fb, "JPEG", quality=86 - qd)
                 faces[name] = base64.b64encode(fb.getvalue()).decode()
 
         report: dict[str, list[str]] = {}

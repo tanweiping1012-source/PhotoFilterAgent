@@ -67,3 +67,36 @@ def burn_label(im: Image.Image, text: str) -> Image.Image:
     d.rectangle([0, 0, w + pad * 2, h + pad * 2], fill=(0, 0, 0, 190))
     d.text((pad, pad - box[1]), text, fill=(255, 255, 255, 255), font=font)
     return out
+
+
+def burn_code(im: Image.Image, text: str) -> Image.Image:
+    """在图**上方加一条边**写编码，不覆盖画面。返回新图，不改原图。
+
+    ━━ 为什么不能复用 burn_label ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    burn_label 是直接盖在左上角的（半透明黑块压在画面上）。给锚点标名字时
+    那样没问题 —— 锚点是拿来看的，不是拿来判的。
+
+    但这一轮要拿编码去测「模型的答案是不是内容寻址的」，判断依据就是
+    画面本身。如果编码块正好压住人脸或构图的一角，那就是**用遮挡物去测判断**，
+    测出来的差异分不清是位置驱动还是被挡住了。所以这里必须加边，不能覆盖。
+
+    ━━ 为什么不用中文 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    CJK 字形笔画多，512px 缩图再压 JPEG 之后容易糊成一团。编码是要被
+    **准确读出来**的，读错就等于测试失效，所以用去掉易混字的大写拉丁字母数字。
+    """
+    if not text:
+        return im
+    src = im.convert("RGB")
+    size = max(18, src.width // 12)
+    font = load_cjk_font(size)          # 这个字体也含拉丁字形
+    pad = max(6, size // 3)
+    bar = size + pad * 2
+    out = Image.new("RGB", (src.width, src.height + bar), (0, 0, 0))
+    out.paste(src, (0, bar))
+    d = ImageDraw.Draw(out)
+    box = d.textbbox((0, 0), text, font=font)
+    d.text(((src.width - (box[2] - box[0])) // 2, pad - box[1]), text,
+           fill=(255, 255, 255), font=font)
+    return out
