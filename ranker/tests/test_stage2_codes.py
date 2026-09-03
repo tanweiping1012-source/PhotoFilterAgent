@@ -91,3 +91,18 @@ def test_矛盾必须落盘():
     """说 JIA 却给乙的码 —— 这是一条真实信息，不是噪声。"""
     assert "contradiction" in COMPARE
     assert "codeReadOk" in COMPARE, "四个码位抄对没有，是「这次看清了没有」的直接证据"
+
+
+def test_抄错的码必须留原文():
+    """只存 codeReadOk 这个布尔值，抄错时就查不下去了。
+
+    2026-09-04 生产实测 68/70 抄对，剩下 2 次因为没存模型实际抄了什么，
+    无法判断是 OCR 糊了、串了行、还是抄成了锚点图上的码 —— 线索当场断掉。
+    """
+    assert "codesRead" in COMPARE, "模型实际抄回来的码没有落盘"
+    # 幻觉码那条分支最需要原文，必须也存。
+    # 用「本对作废」定位那个 push，而不是 'bad-code' —— 后者第一次出现是在
+    # resolvePick 的返回类型里，离那个分支还很远。
+    i = COMPARE.index("本对作废")
+    seg = COMPARE[max(0, i - 800):i + 200]
+    assert "codesRead" in seg, "幻觉码分支没有保留抄回来的原文，而那正是最需要查的一档"

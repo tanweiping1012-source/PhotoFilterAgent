@@ -115,6 +115,15 @@ export interface PairVerdict {
   codeB?: string
   /** 四个码位（两方向 × 甲乙）是否都抄对了。 */
   codeReadOk?: boolean
+  /**
+   * 模型**实际抄回来**的四个码，原样保留。
+   *
+   * 为什么要存：只存 codeReadOk 这个布尔值，抄错时就查不下去了 ——
+   * 分不清是 OCR 糊了、串了行、还是抄成了锚点图上的码。
+   * 2026-09-04 生产实测 68/70 抄对，剩下那 2 次正是因为没存原文而无法归因。
+   * 一次比较的文本量很小，不值得为省这点体积放弃可诊断性。
+   */
+  codesRead?: { abJia: string; abYi: string; baJia: string; baYi: string }
   /** 模型的槽位答案与它给的码互相矛盾（说甲却给乙的码）。 */
   contradiction?: boolean
 }
@@ -341,6 +350,7 @@ export async function comparePairs(
         a, b, winner: 'inconsistent', consistent: false,
         ab: ab.w, ba: ba.w, reasonAb: ab.reason, reasonBa: ba.reason,
         codeA: ca, codeB: cb, codeReadOk: false, contradiction: false,
+        codesRead: { abJia: ab.readJia, abYi: ab.readYi, baJia: ba.readJia, baYi: ba.readYi },
         reason: `模型给的编码对不上任何一张（AB=${ab.winnerCode || '空'} / `
           + `BA=${ba.winnerCode || '空'}，实际 ${ca}/${cb}），本对作废`,
       })
@@ -392,6 +402,9 @@ export async function comparePairs(
       reasonAb: ab.reason,
       reasonBa: ba.reason,
       codeA: ca, codeB: cb, codeReadOk,
+      codesRead: withCodes
+        ? { abJia: ab.readJia, abYi: ab.readYi, baJia: ba.readJia, baYi: ba.readYi }
+        : undefined,
       // 任一方向出现「说甲却给乙的码」都记为矛盾。
       contradiction: abR.contradiction || baR.contradiction,
       // 保留 reason 供既有的展示逻辑用；不一致时它是模板句，
