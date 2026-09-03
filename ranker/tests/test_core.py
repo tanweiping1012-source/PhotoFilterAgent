@@ -768,7 +768,7 @@ def test_两道图片上限必须对齐():
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
     vision = (root / 'agent-v4' / 'src' / 'harness-vision.ts').read_text(encoding='utf-8')
-    patch = (root / 'dsh-v4' / 'profile-photo-v4-ab' / 'cordis.patch.yml').read_text(encoding='utf-8')
+    patch = (root / 'profiles' / 'photo-v4-ab' / 'cordis.patch.yml').read_text(encoding='utf-8')
 
     import re
     m = re.search(r'MAX_JPEGS_PER_CALL\s*=\s*(\d+)', vision)

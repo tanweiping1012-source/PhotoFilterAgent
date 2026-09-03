@@ -10,10 +10,10 @@
     - id: photo-filter-v4
       name: '@photo-filter-agent/dsh-photo-filter-v4'
       config:
-        rankerDir: @@PHOTO_FILTER_HOME@@/ranker
+        rankerDir: @@REPO@@/ranker
         python: @@DSH_HOME@@/ranker-venv/bin/python
         workdir: @@DSH_HOME@@/photo-filter-v4
-        cacheDir: @@HOME@@/.cache/photofilter-rank
+        cacheDir: @@CACHE@@
         allowedRoots: ["@@PHOTOS@@"]
         # 人工答案子目录必须在**枚举之前**排除。排除晚一步，整轮重合率就作废。
         # AB 实验专用：**不排除**人工答案子目录。
@@ -25,8 +25,8 @@
         excludedRelativePaths: []
         # 闭眼资格门用的本地引擎（免费、不联网）。不配的话资格门不生效：
         # 实测 20 张名单里会有 6 张闭眼，而用户自己的精选里闭眼 0 张。
-        engineBinary: @@PHOTO_FILTER_HOME@@/engine/.build/release/photofilter
-        allowedExportRoots: ["@@HOME@@/Downloads"]
+        engineBinary: @@REPO@@/engine/.build/release/photofilter
+        allowedExportRoots: ["@@EXPORT@@"]
         # 首次跑要建 1024px 缓存 + 算 embedding + 两个质量模型，309 张约 5 分钟。
         rankerTimeoutMs: 1800000
         defaultTarget: 20
@@ -35,7 +35,7 @@
         evalPairsDir: @@SCRATCH@@/ab-pairs
         # 判据文本。「仅规则」和「规则加范例」两臂靠考题文件里的 rubric 字段
         # 覆盖它；这里给的是缺省值（生产路径也用它）。
-        rubricFile: @@PHOTO_FILTER_HOME@@/dsh-v4/rubric/rubric-v2-prompt.txt
+        rubricFile: @@REPO@@/dsh-v4/rubric/rubric-v2-prompt.txt
         # 「两张都不值得留下」这个答案，**默认关**。
         #
         # 开了它答案空间从 3 个变 4 个 —— 换了被测对象，与 R2/R3 不可直接比。

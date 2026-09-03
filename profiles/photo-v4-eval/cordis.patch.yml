@@ -10,10 +10,10 @@
     - id: photo-filter-v4
       name: '@photo-filter-agent/dsh-photo-filter-v4'
       config:
-        rankerDir: @@PHOTO_FILTER_HOME@@/ranker
+        rankerDir: @@REPO@@/ranker
         python: @@DSH_HOME@@/ranker-venv/bin/python
         workdir: @@DSH_HOME@@/photo-filter-v4
-        cacheDir: @@HOME@@/.cache/photofilter-rank
+        cacheDir: @@CACHE@@
         allowedRoots: ["@@PHOTOS@@"]
         # 人工答案子目录必须在**枚举之前**排除。排除晚一步，整轮重合率就作废。
         excludedRelativePaths:
@@ -22,8 +22,8 @@
           - "20260221开拓小屋线+防潮坝/景色pick"
         # 闭眼资格门用的本地引擎（免费、不联网）。不配的话资格门不生效：
         # 实测 20 张名单里会有 6 张闭眼，而用户自己的精选里闭眼 0 张。
-        engineBinary: @@PHOTO_FILTER_HOME@@/engine/.build/release/photofilter
-        allowedExportRoots: ["@@HOME@@/Downloads"]
+        engineBinary: @@REPO@@/engine/.build/release/photofilter
+        allowedExportRoots: ["@@EXPORT@@"]
         # 首次跑要建 1024px 缓存 + 算 embedding + 两个质量模型，309 张约 5 分钟。
         rankerTimeoutMs: 1800000
         defaultTarget: 20

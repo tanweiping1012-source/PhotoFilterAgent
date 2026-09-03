@@ -17,49 +17,50 @@ harness 的代码本身是只读共享的，两边都不改它。
 ## 装
 
 ```bash
-export DSH_HOME=~/.dsh-v4
-mkdir -p $DSH_HOME/{profiles,.agent-presets}
-
-# 模型路由与凭据（agent 的对话循环要用；照片排序不用）
-cp ~/.dsh/settings.yaml     $DSH_HOME/
-cp ~/.dsh/.credentials.yaml $DSH_HOME/ && chmod 600 $DSH_HOME/.credentials.yaml
-
-# 本目录的模板
-cp -R dsh-v4/profile-photo-v4          $DSH_HOME/profiles/photo-v4
-cp -R dsh-v4/profile-photo-v4-headless $DSH_HOME/profiles/photo-v4-headless
-cp -R dsh-v4/preset-photo-filter-v4    $DSH_HOME/.agent-presets/photo-filter-v4
-
-# 插件软链
-mkdir -p $DSH_HOME/profiles/node_modules/@photo-filter-agent
-ln -sfn "$PWD/agent-v4" \
-        $DSH_HOME/profiles/node_modules/@photo-filter-agent/dsh-photo-filter-v4
-
-# Python 环境（排序器要用）
-python3 -m venv $DSH_HOME/ranker-venv
-$DSH_HOME/ranker-venv/bin/pip install -r ranker/requirements.txt
+# 一条命令搞定：harness、Swift 引擎、Python 环境、profile、preset、插件软链
+PHOTOS=~/Desktop/你的照片目录 ./install.sh
 ```
 
-模板里的路径是占位符，装的时候替换掉：
+`install.sh` 是幂等的，重复跑只补缺的部分。它内部调用：
 
 ```bash
-cd $DSH_HOME
-grep -rl '@@' profiles/photo-v4* .agent-presets/photo-filter-v4 | while read f; do
-  sed -i '' \
-    -e "s|@@REPO@@|/absolute/path/to/PhotoFilterAgent|g" \
-    -e "s|@@DSH_HOME@@|$DSH_HOME|g" \
-    -e "s|@@CACHE@@|$HOME/.cache/photofilter-rank|g" \
-    -e "s|@@PHOTOS@@|/absolute/path/to/your/photos|g" \
-    -e "s|@@EXPORT@@|$HOME/Downloads|g" "$f"
-done
+DSH_HOME=~/.dsh-v4 PHOTOS=~/Desktop/你的照片目录 ./dsh-v4/sync-config.sh push
 ```
 
-| 占位符 | 换成 |
-|---|---|
-| `@@REPO@@` | 这个仓库的绝对路径 |
-| `@@DSH_HOME@@` | 你的隔离 DSH home |
-| `@@CACHE@@` | 排序器缓存目录（放降采样图和向量，可随时删） |
-| `@@PHOTOS@@` | 允许处理的照片根目录 |
-| `@@EXPORT@@` | 允许导出到的目录；留空则禁止导出 |
+这一步把仓库里的模板装进 `$DSH_HOME`，同时替换占位符。**反向也能跑**：
+
+```bash
+./dsh-v4/sync-config.sh pull      # 改了 $DSH_HOME 里的配置，同步回仓库
+```
+
+> 以前这里写的是 `cp -R` 加一段手写 `sed`。那正是漂移的来源 ——
+> 五个 profile 里只有三个进过仓库，其中 `photo-v4-ab` 那份还带着
+> `/Users/…` 的绝对路径推到了公开仓库，另外两个（eval / eval-web）
+> 仓库里根本没有，等于整轮 AB 实验无法从克隆复现。
+> 现在只有一个脚本、一套占位符，`doctor.sh` 第 3/3b 项会持续核对两边是否一致。
+
+模型路由另外配一份（**不含密钥**，只有环境变量名）：
+
+```bash
+cp dsh-v4/settings.example.yaml ~/.dsh-v4/settings.yaml
+```
+
+密钥不进仓库，二选一：`export MINIMAX_CN_API_KEY=…`，
+或写进 `~/.dsh-v4/.credentials.yaml`（`chmod 600`）。
+
+## 占位符
+
+| 占位符 | 换成 | 装的时候由谁给 |
+|---|---|---|
+| `@@REPO@@` | 这个仓库的绝对路径 | 脚本自动取 |
+| `@@DSH_HOME@@` | 隔离的 DSH home | `DSH_HOME`，默认 `~/.dsh-v4` |
+| `@@CACHE@@` | 排序器缓存目录（放降采样图和向量，可随时删） | `CACHE` |
+| `@@PHOTOS@@` | 允许处理的照片根目录 | `PHOTOS` |
+| `@@EXPORT@@` | 允许导出到的目录；留空则禁止导出 | `EXPORT_ROOT`，默认 `~/Downloads` |
+| `@@SCRATCH@@` | 评测考题与结果的中间目录 | `SCRATCH` |
+
+**这一套词汇是唯一的一套。** `sync-config.sh` 和 `doctor.sh` 用的是同一张表，
+别再发明第二套 —— 漏替一个占位符，`doctor.sh` 就会假报「不一致」。
 
 `allowedRoots` 和 `allowedExportRoots` 是**结构约束** ——
 不在范围内的目录，工具会直接拒绝，不靠 agent 自觉。

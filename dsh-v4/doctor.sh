@@ -13,12 +13,26 @@ set -uo pipefail
 DSH_HOME="${DSH_HOME:-$HOME/.dsh-v4}"
 REPO="${REPO:-$HOME/deepseek-harness/PhotoFilterAgent}"
 CACHE="${CACHE:-$HOME/.cache/photofilter-rank}"
+# 占位符替换用。词汇以 dsh-v4/README.md 的表为准，sync-config.sh 用的是同一套。
+# 以前这里把标注者的私人照片目录写死成默认值 —— 私人路径不该进公开仓库，
+# 而且换一台机器第 3 项就会假报「不一致」。
+PHOTOS_ROOT="${PHOTOS_ROOT:-${PHOTOS:-$HOME/Desktop/照片}}"
+EXPORT_ROOT="${EXPORT_ROOT:-$HOME/Downloads}"
+SCRATCH="${SCRATCH:-/tmp/claude-501}"
 FAIL=0
 ok()   { printf '  ✅ %s\n' "$1"; }
 bad()  { printf '  ❌ %s\n' "$1"; FAIL=1; }
 warn() { printf '  ⚠️  %s\n' "$1"; }
 mtime() { stat -f %m "$1" 2>/dev/null || echo 0; }
 newest() { find "$1" -type f -name "$2" -exec stat -f %m {} \; 2>/dev/null | sort -rn | head -1; }
+# 把一份「已装配」的文件还原成模板形态，用来和仓库里的模板比。
+# 占位符必须**全部**替换 —— 少一个就会误报「不同步」。
+# 踩过：只替换了 REPO/DSH_HOME/CACHE，漏了照片目录和导出目录。
+tpl_of() {
+  LC_ALL=C sed -e "s|$REPO|@@REPO@@|g" -e "s|$DSH_HOME|@@DSH_HOME@@|g" \
+               -e "s|$CACHE|@@CACHE@@|g" -e "s|$PHOTOS_ROOT|@@PHOTOS@@|g" \
+               -e "s|$SCRATCH|@@SCRATCH@@|g" -e "s|$EXPORT_ROOT|@@EXPORT@@|g" "$1"
+}
 
 echo "═══ 1. 插件代码：DSH 加载的是不是仓库那份 ═══"
 LINK="$DSH_HOME/profiles/node_modules/@photo-filter-agent/dsh-photo-filter-v4"
@@ -61,12 +75,28 @@ TPL="$REPO/dsh-v4/preset-photo-filter-v4/agent.cordis.yml"
 if [ -f "$LIVE" ] && [ -f "$TPL" ]; then
   # 占位符必须**全部**替换 —— 少一个就会误报「不同步」。
   # 踩过：只替换了 REPO/DSH_HOME/CACHE，漏了照片目录和导出目录。
-  if diff -q <(sed "s|$REPO|@@REPO@@|g; s|$DSH_HOME|@@DSH_HOME@@|g; s|$CACHE|@@CACHE@@|g; \
-       s|${PHOTOS_ROOT:-/Users/bytedance/Desktop/照片测试}|@@PHOTOS@@|g; \
-       s|${EXPORT_ROOT:-$HOME/Downloads}|@@EXPORT@@|g" "$LIVE") "$TPL" >/dev/null 2>&1
+  if diff -q <(tpl_of "$LIVE") "$TPL" >/dev/null 2>&1
   then ok "两份一致"
   else bad "运行的 preset 与仓库模板不一致 —— 改了一份忘了另一份"; fi
 else bad "preset 或模板缺失"; fi
+
+echo "═══ 3b. Profile：运行的那五份 == 仓库模板吗 ═══"
+# 这一层以前根本没检查 —— 因为五个 profile 里有两个仓库里压根没有，
+# 另外三个是手工 cp 的副本，其中 photo-v4-ab 还带着绝对路径进了公开仓库。
+# profile 决定判据文件、allowNeither、两道图片上限、headless 的 persona，
+# 它漂了，跑出来的就不是仓库里描述的那个 agent。
+PROF_BAD=0
+for prof in photo-v4 photo-v4-ab photo-v4-eval photo-v4-eval-web photo-v4-headless; do
+  for f in package.json cordis.yml cordis.patch.yml pnpm-workspace.yaml; do
+    L="$DSH_HOME/profiles/$prof/$f"; T="$REPO/profiles/$prof/$f"
+    [ -f "$T" ] || continue
+    if [ ! -f "$L" ]; then bad "$prof/$f 没装到 \$DSH_HOME（跑 dsh-v4/sync-config.sh push）"; PROF_BAD=1
+    elif ! diff -q <(tpl_of "$L") "$T" >/dev/null 2>&1; then
+      bad "$prof/$f 与仓库模板不一致"; PROF_BAD=1
+    fi
+  done
+done
+[ "$PROF_BAD" -eq 0 ] && ok "五个 profile 与仓库模板一致"
 
 echo "═══ 4. 运行中的 DSH：启动之后代码有没有再改 ═══"
 # 不要用 $ 锚点 —— 实际命令行可能以 --no-open 结尾。

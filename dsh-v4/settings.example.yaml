@@ -1,0 +1,36 @@
+# $DSH_HOME/settings.yaml 的模板（v4 用 DSH_HOME=~/.dsh-v4）。
+#
+#   cp dsh-v4/settings.example.yaml ~/.dsh-v4/settings.yaml
+#
+# 为什么这份要进仓库：**模型选择决定 agent 的行为**。
+# 代码、profile、persona 全对齐了，换一个循环模型，同样的输入仍会得到不同的输出。
+# 别人克隆下来要复现，得知道我们跑的是哪个模型。
+#
+# 这里**没有密钥**，只有环境变量名（apiKeyEnv）。真正的 key 二选一：
+#   export MINIMAX_CN_API_KEY=你的key
+# 或写进 $DSH_HOME/.credentials.yaml（chmod 600，且不进仓库）：
+#   version: 1
+#   refs:
+#     MINIMAX_CN_API_KEY: 你的key
+
+llm-pi-ai:
+  providers:
+    minimax-cn:
+      apiKeyEnv: MINIMAX_CN_API_KEY
+    # 备用 provider，本轮实验没用它。留着是因为切模型对照时要用。
+    volcengine-ark:
+      displayName: Volcengine Ark
+      apiKeyEnv: VOLCENGINE_ARK_API_KEY
+      api: openai-responses
+      baseURL: https://ark.cn-beijing.volces.com/api/v3
+      models:
+        - id: doubao-seed-2-1-pro-260628
+          name: doubao-seed-2-1-pro
+
+agent-presets:
+  default: cordis
+
+# ⚠️ 仓库里所有成绩数字（AB 三臂、本地分对照、交付 6/20）都是在这个模型上跑的。
+agent-default-model:
+  provider: minimax-cn
+  model: MiniMax-M3

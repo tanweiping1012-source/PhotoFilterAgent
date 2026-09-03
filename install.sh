@@ -70,6 +70,32 @@ else
   ok "已构建"
 fi
 
+# ── 3b. v4 的 Python 排序环境 ──────────────────────────────────
+# v4 的排序跑在 Python 里（CLIP embedding + 两个质量模型），五个 v4 profile
+# 的 python 项都指向 $DSH_V4_HOME/ranker-venv。此前 install.sh 不建这个 venv，
+# 全新克隆装完之后 profile 指着一个不存在的解释器 —— 仓库里有 profile 也跑不起来。
+#
+# photofilter_rank 本身**不装进 venv**：插件用 cwd + PYTHONPATH 指向
+# ${ROOT}/ranker 从源码树导入（见 agent-v4/src/ranker.ts）。这里只装依赖。
+say "准备 v4 的 Python 环境"
+V4_HOME="${DSH_V4_HOME:-$HOME/.dsh-v4}"
+VENV="${V4_HOME}/ranker-venv"
+if "${VENV}/bin/python" -c "import numpy, PIL, torch, pyiqa, clip" >/dev/null 2>&1; then
+  ok "已就绪：${VENV}"
+else
+  command -v python3 >/dev/null || die "缺少 python3（需要 >=3.9）"
+  mkdir -p "${V4_HOME}"
+  [[ -d "${VENV}" ]] || python3 -m venv "${VENV}"
+  echo "  装依赖（含 torch，首次约 2GB，要几分钟）…"
+  "${VENV}/bin/python" -m pip install -q --upgrade pip
+  "${VENV}/bin/python" -m pip install -q -r "${ROOT}/ranker/requirements.txt"
+  if "${VENV}/bin/python" -c "import numpy, PIL, torch, pyiqa, clip" >/dev/null 2>&1; then
+    ok "已就绪：${VENV}"
+  else
+    die "依赖装完仍然导入失败，检查 ${ROOT}/ranker/requirements.txt"
+  fi
+fi
+
 # ── 4. 装配 profile ────────────────────────────────────────────
 # 模板里的占位符在这里换成真实路径。profile 是机器本地配置，
 # 落在 $DSH_HOME 下而不是仓库里。
@@ -96,10 +122,15 @@ ok "插件已链接"
 # v4 走自己的 $DSH_HOME（默认 ~/.dsh-v4），和 v3 完全隔离 —— 两者的 profile
 # 同名不同内容，混在一个 home 里会互相覆盖。装配逻辑在 dsh-v4/sync-profiles.sh，
 # 那个脚本双向可跑，避免 profile 只存在于本机、仓库里没有的老问题。
-say "装配 v4 profile"
+say "装配 v4 profile 与 preset"
 if [[ -d "${ROOT}/profiles/photo-v4" ]]; then
-  DSH_HOME="${DSH_V4_HOME:-$HOME/.dsh-v4}" "${ROOT}/dsh-v4/sync-profiles.sh" push
-  ok "v4 profile 已装配到 ${DSH_V4_HOME:-$HOME/.dsh-v4}"
+  # 一并装 web 版的 persona（$DSH_HOME/.agent-presets/photo-filter-v4）。
+  # 以前只有 README 里一句 cp -R，没有任何脚本装它 —— 全新克隆跑起来是没有人设的。
+  DSH_HOME="${DSH_V4_HOME:-$HOME/.dsh-v4}" \
+  PHOTOS="${PHOTOS:-$HOME/Desktop/照片}" \
+    "${ROOT}/dsh-v4/sync-config.sh" push
+  ok "v4 profile 与 preset 已装配到 ${DSH_V4_HOME:-$HOME/.dsh-v4}"
+  warn "照片目录默认 ${PHOTOS:-$HOME/Desktop/照片}；不对就设 PHOTOS=… 重跑这一步"
 else
   warn "仓库里没有 v4 profile，跳过"
 fi
