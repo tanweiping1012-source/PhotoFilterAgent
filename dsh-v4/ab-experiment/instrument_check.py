@@ -54,15 +54,24 @@ def pair_map(rows):
     return by
 
 
+def answer(r):
+    """一次调用的完整结论，位置无关：具体照片 / 平局 / 都不够格。
+
+    ⚠️ 弃权也是一个答案。「平局 → 甲赢」是一次真实的结果变化，必须计入 ——
+    只统计「两次都明确」的子集会犯两个错：一是低估不确定性（弃权↔明确的
+    变化全被丢掉，实测那是 49 次变化里的 39 次），二是那个子集**按结果筛选**
+    出来，不是随机子集，位置效应在它上面会变号。全流程只用这一个口径。
+    """
+    return r["winner_photo"] if r.get("winner_photo") else r.get("winner")
+
+
 def compare(by, c1, c2):
-    """两个条件之间「选中的物理照片不同」的比例。只算两边都给了明确结论的对。"""
+    """两个条件之间「答案不同」的比例。分母是两个条件都跑到的全部对。"""
     both = [(v[c1], v[c2]) for v in by.values() if c1 in v and c2 in v]
-    dec = [(x, y) for x, y in both
-           if x.get("winner_photo") and y.get("winner_photo")]
-    if not dec:
+    if not both:
         return None, 0, 0
-    diff = sum(1 for x, y in dec if x["winner_photo"] != y["winner_photo"])
-    return diff / len(dec), diff, len(dec)
+    diff = sum(1 for x, y in both if answer(x) != answer(y))
+    return diff / len(both), diff, len(both)
 
 
 def main():
@@ -149,17 +158,18 @@ def main():
           f"  {R['code_read_ok']/R['calls_matrix']:.1%}")
     print(f"   报了不存在的码 {R['halluc_code']}")
     print(f"   甲乙标签与码自相矛盾 {R['contradiction']}")
-    print(f"\n③ 同一对问两遍，选中的是不是同一张照片")
+    print(f"\n③ 同一对问两遍，答案是否相同（弃权也算一种答案）")
     for tag, label, note in (
         ("eps", "AB vs AB2", "什么都没变（逐字节相同）"),
         ("enc", "AB vs AB3", "只换了看不见的 JPEG 编码"),
         ("pos", "AB vs BA ", "只换了位置，字节相同"),
     ):
         d = R[tag]
-        print(f"   {label}  换了另一张 {d['diff']:>3}/{d['n']:<3} = {pct(d['rate'])}"
+        print(f"   {label}  答案不同 {d['diff']:>3}/{d['n']:<3} = {pct(d['rate'])}"
               f"  ±{d['ci']:.1%}   ← {note}")
     if R["eps"]["rate"] is not None and R["pos"]["rate"] is not None:
-        print(f"\n   位置效应 = d(AB,BA) − ε = {pct(R['pos']['rate'] - R['eps']['rate'])}")
+        print(f"\n   位置效应 = d(AB,BA) − ε = {pct(R['pos']['rate'] - R['eps']['rate'])}"
+              f"   ← 负值/跨 0 = 位置没有额外贡献")
         print(f"   编码效应 = d(AB,AB3) − ε = {pct(R['enc']['rate'] - R['eps']['rate'])}")
     print(f"\n④ 位置偏好（边缘分布，不依赖上面的分解）")
     p = R["prefer_second"]

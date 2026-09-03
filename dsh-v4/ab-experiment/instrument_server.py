@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # 改这里等于改判据 —— 跑起来之后不许改，理由见 ab_verdict.py 的同类注释。
 GATES = {
     "eps":        (0.05, "le", "管线噪声 ε",     "＞5% → 历史所有 MDE 要重算"),
-    "delta":      (0.30, "le", "扰动敏感 δ",     "≥30% → 决策边界任意，成对比较不可用"),
+    "delta":      (0.30, "le", "扰动效应 δ",     "= d(AB,AB3) − ε。≥30% → 决策边界对不可见扰动都任意"),
     "code_ok":    (0.90, "ge", "码读对率",       "＜90% → 图像通道有问题，位置之争无意义"),
     "halluc":     (0.02, "le", "幻觉码",         "＞2% → 答案不是内容寻址的"),
     "aa_nontie":  (0.20, "le", "AA 编造率",      "≥20% → 编造确认，理由字段永不外显"),
@@ -64,15 +64,19 @@ def load(run_dir):
 
 
 def disagree(rows, c1, c2):
-    """两个条件之间「选中的物理照片不同」的比例。只算两个条件都跑到的对。"""
+    """两个条件之间「答案不同」的比例。分母是两个条件都跑到的全部对。
+
+    ⚠️ 弃权也是一个答案，必须计入 —— 口径要和 instrument_check.py 和报告
+    完全一致。这里曾经只统计「两次都明确」的子集，于是页面和报告对同一批
+    数据给出不同的数（30% vs 62.8%），而且位置效应在两个口径下**符号相反**。
+    """
     by = {}
     for r in rows:
         if r.get("phase") != "matrix":
             continue
-        by.setdefault(r.get("pair"), {})[r.get("condition")] = r.get("winner_photo")
+        a = r.get("winner_photo") or r.get("winner")
+        by.setdefault(r.get("pair"), {})[r.get("condition")] = a
     both = [(v[c1], v[c2]) for v in by.values() if c1 in v and c2 in v]
-    # 平局/都不要不参与：它们不指向某一张照片，「选中的照片不同」无从谈起。
-    both = [(x, y) for x, y in both if x and y]
     if not both:
         return None, 0
     return sum(1 for x, y in both if x != y) / len(both), len(both)
@@ -82,6 +86,7 @@ def stats(rows):
     s = {}
     eps, n_eps = disagree(rows, "AB", "AB2")
     d_raw, n_d = disagree(rows, "AB", "AB3")
+    s["enc_raw"] = (d_raw, n_d)
     ba, n_ba = disagree(rows, "AB", "BA")
     s["eps"] = (eps, n_eps)
     s["delta"] = ((d_raw - eps) if (d_raw is not None and eps is not None) else None, n_d)
@@ -217,15 +222,17 @@ tr.pass td.big2{{color:#16a34a}} tr.fail td.big2{{color:#dc2626}}
 
 <h2>分解</h2>
 <table><tr><th>量</th><th>值</th><th>样本</th><th>含义</th></tr>
-<tr><td>d(AB, BA) 原始不一致</td><td class='n big2'>{_f(s['ba_raw'][0])}</td><td class=n>n={s['ba_raw'][1]}</td>
-    <td class=note2>你历史上看到的那个 ~50%</td></tr>
+<tr><td>d(AB, BA) 不一致率</td><td class='n big2'>{_f(s['ba_raw'][0])}</td><td class=n>n={s['ba_raw'][1]}</td>
+    <td class=note2>对调位置后答案不同的比例（弃权也算一种答案）</td></tr>
 <tr><td>其中 ε 管线噪声</td><td class='n big2'>{_f(s['eps'][0])}</td><td class=n>n={s['eps'][1]}</td>
     <td class=note2>temp=0，理论上应为 0</td></tr>
-<tr><td>其中 δ 扰动敏感</td><td class='n big2'>{_f(s['delta'][0])}</td><td class=n>n={s['delta'][1]}</td>
-    <td class=note2>肉眼不可见的重编码就翻转的比例</td></tr>
+<tr><td>d(AB, AB3) 不一致率</td><td class='n big2'>{_f(s['enc_raw'][0])}</td><td class=n>n={s['enc_raw'][1]}</td>
+    <td class=note2>只换了肉眼不可见的 JPEG 编码</td></tr>
+<tr><td>编码效应 = d(AB,AB3) − ε</td><td class='n big2'>{_f(s['delta'][0])}</td><td class=n>n={s['delta'][1]}</td>
+    <td class=note2>负值或跨 0 = 换字节没有额外贡献</td></tr>
 <tr><td><b>剩下的 = 位置效应</b></td><td class='n big2'>{_f(s['position'][0])}</td><td class=n>n={s['position'][1]}</td>
-    <td class=note2>d(AB,BA) − ε。⚠️ 这个量换口径会变号（全口径下为负），
-        CI 跨 0 —— 位置结论请看边缘统计「正确答案在前/在后的选中率」，那条不依赖口径</td></tr>
+    <td class=note2>d(AB,BA) − ε。负值或跨 0 = 位置没有额外贡献。
+        位置结论的主证据是边缘统计「正确答案在前/在后的选中率」，那条不依赖任何相减</td></tr>
 </table>
 
 <h2>最近 5 次调用</h2>

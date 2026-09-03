@@ -82,3 +82,39 @@ def test_码读对率两处一致(tmp_path):
     server = _load("instrument_server")
     s = server.stats(server.load(str(d))[0])
     assert s["code_ok"][0] == pytest.approx(4 / 5)
+
+
+def test_口径_弃权也算一种答案_两处一致(tmp_path):
+    """「平局 → 甲赢」必须算作一次不一致，而且两处实现要给出同一个数。
+
+    为什么钉死这一条：曾经进度页只统计「两次都明确」的子集，报告用全部对，
+    于是同一批数据两个数（30% vs 62.8%）。更糟的是那个子集**按结果筛选**
+    出来，位置效应在两个口径下符号相反 —— 引用哪一个都能得出相反结论。
+    """
+    d = tmp_path / "run"
+    d.mkdir()
+    rows = [
+        # 1) 两次都明确、同一张 → 一致
+        _row(pair="p1", condition="AB",  winner="JIA", winner_code="AAAA", winner_photo="A.JPG"),
+        _row(pair="p1", condition="AB2", winner="JIA", winner_code="AAAA", winner_photo="A.JPG"),
+        # 2) 平局 → 甲赢：**必须算不一致**
+        _row(pair="p2", condition="AB",  winner="TIE", winner_code="NONE", winner_photo=None),
+        _row(pair="p2", condition="AB2", winner="JIA", winner_code="AAAA", winner_photo="A.JPG"),
+        # 3) 平局 → 都不够格：也算不一致
+        _row(pair="p3", condition="AB",  winner="TIE",     winner_code="NONE", winner_photo=None),
+        _row(pair="p3", condition="AB2", winner="NEITHER", winner_code="NONE", winner_photo=None),
+        # 4) 两次都平局 → 一致
+        _row(pair="p4", condition="AB",  winner="TIE", winner_code="NONE", winner_photo=None),
+        _row(pair="p4", condition="AB2", winner="TIE", winner_code="NONE", winner_photo=None),
+    ]
+    (d / "calls.jsonl").write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+
+    check = _load("instrument_check")
+    rate, diff, n = check.compare(check.pair_map(check.load(str(d))), "AB", "AB2")
+    assert (diff, n) == (2, 4), "p2 和 p3 必须算不一致，分母必须是全部 4 对"
+
+    server = _load("instrument_server")
+    s_rate, s_n = server.disagree(server.load(str(d))[0], "AB", "AB2")
+    assert (s_rate, s_n) == (rate, n), (
+        f"进度页 {s_rate:.1%}(n={s_n}) ≠ 判分脚本 {rate:.1%}(n={n}) —— 口径又分叉了")
