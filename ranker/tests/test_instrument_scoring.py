@@ -118,3 +118,39 @@ def test_口径_弃权也算一种答案_两处一致(tmp_path):
     s_rate, s_n = server.disagree(server.load(str(d))[0], "AB", "AB2")
     assert (s_rate, s_n) == (rate, n), (
         f"进度页 {s_rate:.1%}(n={s_n}) ≠ 判分脚本 {rate:.1%}(n={n}) —— 口径又分叉了")
+
+
+def test_比较用的是编码指向的照片_不是甲乙槽位(tmp_path):
+    """AB 答「甲」、BA 也答「甲」—— 但那是两张不同的照片，必须判不一致。
+
+    这是整套方法成立的前提。按槽位标签比较会把这一对判成「一致」，
+    结论整个反过来 —— 而这正是这一轮要消灭的那个错误。
+    """
+    d = tmp_path / "run"
+    d.mkdir()
+    rows = [
+        # AB：甲=A(码 AAAA)、乙=B(码 BBBB)，模型答甲 → 选中 A
+        _row(pair="p", condition="AB", slot_jia="A.JPG", slot_yi="B.JPG",
+             code_jia="AAAA", code_yi="BBBB", read_jia="AAAA", read_yi="BBBB",
+             winner="JIA", winner_code="AAAA", winner_photo="A.JPG"),
+        # BA：位置对调，甲=B(码 BBBB)、乙=A(码 AAAA)，模型还是答甲 → 选中 B
+        _row(pair="p", condition="BA", slot_jia="B.JPG", slot_yi="A.JPG",
+             code_jia="BBBB", code_yi="AAAA", read_jia="BBBB", read_yi="AAAA",
+             winner="JIA", winner_code="BBBB", winner_photo="B.JPG"),
+    ]
+    (d / "calls.jsonl").write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+
+    check = _load("instrument_check")
+    by = check.pair_map(check.load(str(d)))
+    rate, diff, n = check.compare(by, "AB", "BA")
+    assert (diff, n) == (1, 1), (
+        "两次都答『甲』但那是两张不同照片 —— 必须判不一致。"
+        "判成一致说明比较用的是槽位标签而不是编码。")
+
+    # 两个 winner 枚举值相同，正是为什么不能拿它来比
+    assert by["p"]["AB"]["winner"] == by["p"]["BA"]["winner"] == "JIA"
+
+    server = _load("instrument_server")
+    s_rate, s_n = server.disagree(server.load(str(d))[0], "AB", "BA")
+    assert (s_rate, s_n) == (rate, n), "进度页和判分脚本必须一致"
