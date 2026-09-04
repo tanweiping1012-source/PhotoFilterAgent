@@ -226,6 +226,13 @@ def run_tournament(
     #   ① 没有任何一局说「有人够格」—— 即有信息的局全是 neither
     #      （a/b 说某张更好，tie 说两张都够格，三者都是反证）
     #   ② neither 的局数 ≥ 总局数的一半 —— 不让一局定生死，也不让全是噪声的组被淘汰
+    #
+    # ⚠️ 已知边界，**是刻意保留的，不要「修」**：
+    #   2 局的组（3 张照片）里 [neither, 翻覆] 会被淘汰 —— 半数门槛在这里等于 ≥1，
+    #   等于一次 neither 判决就带走整组。提过加一条「neither ≥ 2」来堵它，
+    #   用户 2026-09-04 明确决定不加。
+    #   （另一处边界：6 局 [neither×3, 翻覆×3] 正好卡在等号上，同样保留 ——
+    #    那 3 局本身已经是 6 次一致的模型回答、零反证。）
     informative = [v for _, _, v in matches if v != "inconsistent"]
     n_neither = sum(1 for v in informative if v == "neither")
     rejected = (
