@@ -35,13 +35,18 @@ import numpy as np
 
 # 四个取值，对应模型的四个答案：
 #   a / b     某一张更值得留
-#   tie       两张都够格，分不出高下
-#   neither   两张**都不够格** —— 这是「整组淘汰」的入口
+#   tie       两张都够格，分不出高下 —— **有信息**：它说「有人够格」
+#   neither   两张**都不够格** —— 「整组淘汰」的入口
+#   inconsistent  正反两次翻覆，模型**没给出稳定答案** —— 没有信息
+#
+# inconsistent 以前在 load_verdicts 里被折成 tie。那是错的：
+# tie 携带「有人够格」这个信息，翻覆什么也没说。折叠掉它等于让噪声否决信号 ——
+# 实测一组 6 局里 5 局说 neither，被 1 局翻覆挡住，整组淘汰就此不触发。
 #
 # neither 是 2026-09-04 加的。在此之前 TS 侧 compare.ts 已经能产出它，
 # 而这里的类型只有三个值、run_tournament 也只认 "b"，
 # 于是 neither 传下来的实际效果是「擂主继续守擂」—— 和它的字面意思正好相反。
-Verdict = Literal["a", "b", "tie", "neither"]
+Verdict = Literal["a", "b", "tie", "neither", "inconsistent"]
 
 
 class Judge(Protocol):
@@ -132,8 +137,7 @@ class ReplayJudge:
 
 
 #: TS 侧 compare.ts 的 winner 取值。'inconsistent' 是它独有的，Python 不认。
-_TS_ONLY = {"inconsistent"}
-_VALID: set[str] = {"a", "b", "tie", "neither"}
+_VALID: set[str] = {"a", "b", "tie", "neither", "inconsistent"}
 
 
 def load_verdicts(raw: dict) -> dict[tuple[str, str], Verdict]:
@@ -144,18 +148,17 @@ def load_verdicts(raw: dict) -> dict[tuple[str, str], Verdict]:
     中间没有映射；run_tournament 又只认 "b" —— 于是任何没见过的字符串都
     **静默变成「擂主守擂」**。加一个新取值就会无声改变选片结果，没有测试会红。
 
-    inconsistent（双向翻覆）显式映射成 tie：翻覆的含义是「这一局没分出高下」，
-    不是「都不够格」。以前这个行为是巧合，现在是明写的。
+    inconsistent（双向翻覆）**原样保留**，不再折成 tie。
+    两者在赛制里效果相同（擂主守擂），但对「整组淘汰」的判定完全不同：
+    tie 说「有人够格」，翻覆什么也没说。
     """
     out: dict[tuple[str, str], Verdict] = {}
     for r in raw.get("verdicts", []):
         w = r["winner"]
-        if w in _TS_ONLY:
-            w = "tie"
         if w not in _VALID:
             raise ValueError(
                 f"verdicts 里出现无法识别的 winner：{w!r}（{r['a']} vs {r['b']}）。"
-                f"允许：{sorted(_VALID)} 加 {sorted(_TS_ONLY)}。"
+                f"允许：{sorted(_VALID)}。"
             )
         out[(r["a"], r["b"])] = w  # type: ignore[assignment]
     return out
@@ -181,8 +184,9 @@ def run_tournament(
     平局时擂主不下台 —— 平局很常见（AB/BA 双向不一致就判平局），
     不该因为一次没分出高下就换人。这让结果对比较噪声更稳。
 
-    neither（两张都不够格）在赛制里等同平局，擂主守擂。只有**每一局都是
-    neither** 时整组淘汰（rejected=True）—— 不让任何单独一次回答决定一整组。
+    neither（两张都不够格）和 inconsistent（翻覆）在赛制里都等同平局，擂主守擂。
+    整组淘汰（rejected=True）要求：有信息的局全是 neither（翻覆计为弃权），
+    且 neither 局数 ≥ 半数 —— 不让单独一次回答决定一整组，也不让噪声否决信号。
 
     只打 n-1 局而不是全循环 n(n-1)/2：全循环在 309 张上是 1114 次调用，
     擂台赛 362 次。也不能只比前 3 名 —— 实测金标常排在组内第 5、6、8、14 位。
@@ -198,22 +202,38 @@ def run_tournament(
             champ = challenger
         # neither 在赛制里当作「没分出高下」，擂主守擂 —— 和 tie 同样处理。
         # 它对**这一组去留**的影响不在这里，而在下面的全体一致判定。
-    # 整组淘汰：**这一组的每一局都是 neither**。
+    # 整组淘汰的判据。**翻覆计为弃权。**
     #
-    # 为什么要求全体一致，而不是「有一局 neither 就淘汰」：
+    # 演化过程（两次都是被数据推翻的）：
     #
-    #   · 单局 neither 一次就能带走整组，而实测同一个调用重复问有 62.8% 改口 ——
-    #     那等于把整组的命运交给噪声最大的那个环节。
-    #   · 实际会出现「x 赢了两局、最后一局 neither」这种局面。前面的胜负是
-    #     真实信息，不该被最后一次回答一笔勾销。
+    #   v1「有一局 neither 就淘汰」
+    #      一次回答就能带走整组，而重复问同一对有 62.8% 改口 ——
+    #      等于把整组命运交给噪声最大的环节。实际会出现「赢了两局、最后一局
+    #      neither」这种局面，前面的胜负是真实信息，不该被一次回答勾销。
     #
-    # 全体一致意味着 (n-1) 局 × 2 个方向 = 2(n-1) 次回答全是 neither
-    # （compare.ts 里两个方向都答 neither 才会记成 neither，单向的记 inconsistent）。
-    # 在 62.8% 的噪声地板下这是个很强的过滤器。
+    #   v2「每一局都是 neither 才淘汰」
+    #      过度纠正到另一头。本轮实测每局翻覆率 38%，于是全票能触发的概率：
+    #      4 局 14.8% · 5 局 9.2% · 6 局 5.7% · 7 局 3.5%。
+    #      eval-people-309 实测 0/9 组被淘汰，而标注者的判断里有 35% 是整组都不要。
+    #      抓到的典型：某组 6 局 [翻覆, neither×5] —— 模型 5 次说都不够格，
+    #      被 1 次翻覆挡住。**测的不是模型能力，是规则和噪声地板不兼容。**
     #
-    # 另一个好处：赛制本身完全不变，每张照片仍然至少被比较过一次 ——
-    # 不存在「没上过场就被决定去留」的照片。
-    rejected = bool(matches) and all(v == "neither" for _, _, v in matches)
+    #   v3（现在）翻覆计为弃权
+    #      根子在 inconsistent 的语义被用错了：它表示模型**没给出稳定答案**，
+    #      是「没有信息」，而 v2 把它当成「有信息、且不是 neither」，于是噪声能否决信号。
+    #
+    # 现在的判据两条同时成立才淘汰：
+    #   ① 没有任何一局说「有人够格」—— 即有信息的局全是 neither
+    #      （a/b 说某张更好，tie 说两张都够格，三者都是反证）
+    #   ② neither 的局数 ≥ 总局数的一半 —— 不让一局定生死，也不让全是噪声的组被淘汰
+    informative = [v for _, _, v in matches if v != "inconsistent"]
+    n_neither = sum(1 for v in informative if v == "neither")
+    rejected = (
+        bool(matches)
+        and bool(informative)
+        and all(v == "neither" for v in informative)
+        and n_neither * 2 >= len(matches)
+    )
     if rejected:
         # 这是标注者最看重的一档：75 组判断里有 26 组（35%）是「整组都不要」。
         # 擂台赛原本**结构上**产不出这个结果（永远返回一个冠军）。

@@ -20,6 +20,22 @@ from photofilter_rank.pipeline import (
 SC = {"x": 0.9, "y": 0.8, "z": 0.7, "w": 0.6}
 
 
+class _Seq:
+    """按顺序作答，用完回落到 'a'（擂主守擂）。"""
+
+    name = "seq"
+    calls = 0
+
+    def __init__(self, seq):
+        self.seq = list(seq)
+        self.i = 0
+
+    def compare(self, a, b):
+        v = self.seq[self.i] if self.i < len(self.seq) else "a"
+        self.i += 1
+        return v
+
+
 class ScriptedJudge:
     """按剧本作答。缺省 'a'（擂主守擂）。"""
 
@@ -138,14 +154,41 @@ def test_load_verdicts_接受四个合法取值():
     assert load_verdicts(raw)[("3", "4")] == "neither"
 
 
-def test_load_verdicts_把翻覆映射成平局():
-    """inconsistent 是 TS 侧独有的取值，含义是「这一局没分出高下」。
+def test_load_verdicts_保留翻覆不折成平局():
+    """翻覆必须原样保留 —— 它和 tie 在赛制里效果相同，但含义完全不同。
 
-    以前它原样塞进去，靠 run_tournament「只认 b」而碰巧表现正确。
-    现在是明写的映射。
+    tie 是「两次都主动说分不出」，携带「有人够格」这个信息；
+    翻覆是模型没给出稳定答案，**什么也没说**。
+
+    折成 tie 的代价实测过：某组 6 局 [翻覆, neither×5]，模型 5 次说都不够格，
+    被 1 次翻覆挡住，整组淘汰不触发。噪声否决了信号。
     """
     raw = {"verdicts": [{"a": "1", "b": "2", "winner": "inconsistent"}]}
-    assert load_verdicts(raw)[("1", "2")] == "tie"
+    assert load_verdicts(raw)[("1", "2")] == "inconsistent"
+
+
+def test_翻覆计为弃权_不挡整组淘汰():
+    """本轮实测抓到的那一组：6 局里 5 局说都不够格，1 局翻覆。"""
+    out = run_tournament(
+        ["x", "y", "z", "w", "v", "u", "t"], dict(zip("xyzwvut", [.9,.8,.7,.6,.5,.4,.3])),
+        _Seq(["inconsistent"] + ["neither"] * 5))
+    assert out.rejected is True, "翻覆被当成了「有信息且不是 neither」，噪声否决了信号"
+
+
+def test_neither不到半数不淘汰():
+    """不让一局定生死，也不让全是噪声的组被淘汰。"""
+    out = run_tournament(
+        ["x", "y", "z", "w"], {"x": .9, "y": .8, "z": .7, "w": .6},
+        _Seq(["neither", "inconsistent", "inconsistent"]))
+    assert out.rejected is False
+
+
+def test_平局是有信息的反证():
+    """tie 说「两张都够格」，它挡住整组淘汰是对的 —— 和翻覆不同。"""
+    out = run_tournament(
+        ["x", "y", "z", "w"], {"x": .9, "y": .8, "z": .7, "w": .6},
+        _Seq(["tie", "neither", "neither"]))
+    assert out.rejected is False
 
 
 def test_load_verdicts_拒绝未知取值():
