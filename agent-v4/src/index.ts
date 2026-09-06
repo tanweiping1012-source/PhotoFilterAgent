@@ -176,21 +176,35 @@ export function apply(ctx: Context, config: Config): void {
    *   ① 少传 withFace  → 锚点上人脸只有 24 像素，文字说「闭眼」模型看不到证据
    *   ② 少传 labels    → 14 张照片没烧名字，模型只能自己数第几幅
    *   ③ 用考题的 folder 去取锚点图 —— 锚点根本在另一个目录，取不到
+   *   ④ 把**候选池的排除清单**传进来取锚点图（2026-09-06 修）——
+   *      排除清单一旦含有锚点自身（为了防泄题，这正是要做的事），
+   *      preview 就一张都取不回来：实测「生成 0 张 512px 预览，10 张缺失」。
+   *      于是提示词照旧写着「范例图排在最前面」「判表情看人脸特写」，
+   *      而**一张范例图都没附上**，模型被要求看不存在的图。
+   *      两件事必须分开：排除清单管的是**候选池能选谁**，
+   *      锚点是**故意要给模型看的范例**，按定义不受候选池约束。
    */
   async function buildAnchorBlock(
     anchors: { folder: string; text: string; photos: string[]; labels: Record<string, string> } | null,
     signal: AbortSignal | undefined,
   ): Promise<AnchorBlock | null> {
     if (!anchors || !anchors.photos.length) return null
+    // 空排除清单是**故意的**，见上面 ④。锚点由人手工指名，本来就该取得到。
     const ap = await ranker.preview(
-      anchors.folder, anchors.photos, config.excludedRelativePaths, 512, signal, true,
+      anchors.folder, anchors.photos, [], 512, signal, true,
       anchors.labels,
     )
-    return {
-      text: anchors.text,
-      jpegs: anchors.photos.flatMap((x) =>
-        [ap.previews[x], ap.faces[x]].filter(Boolean) as string[]),
+    const jpegs = anchors.photos.flatMap((x) =>
+      [ap.previews[x], ap.faces[x]].filter(Boolean) as string[])
+    // 宁可整轮失败，也不要「文字说有范例、实际一张没附」那种静默残废 ——
+    // 那种状态下测出来的「锚点没用」是假的，而指标一切正常。
+    if (!jpegs.length) {
+      throw new Error(
+        `锚点一张图都没取到（${anchors.photos.length} 张全缺）。`
+        + `检查 anchorsFile 的 folder 是否指向真实目录：${anchors.folder}`,
+      )
     }
+    return { text: anchors.text, jpegs }
   }
 
   function assertAllowed(folder: string, roots: string[], what: string): string {

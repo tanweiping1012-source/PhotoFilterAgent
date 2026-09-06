@@ -106,3 +106,23 @@ def test_抄错的码必须留原文():
     i = COMPARE.index("本对作废")
     seg = COMPARE[max(0, i - 800):i + 200]
     assert "codesRead" in seg, "幻觉码分支没有保留抄回来的原文，而那正是最需要查的一档"
+
+
+# ── 锚点不受候选池排除清单影响 ────────────────────────────────────
+#
+# 2026-09-06：生产把 config.excludedRelativePaths 传给了取锚点图那一步。
+# 排除清单里正好含着 10 张锚点自身（为防泄题，这本来就是要做的），
+# 于是 preview 一张都取不回来 —— 提示词照旧写「范例图排在最前面」，
+# 却一张范例图都没附。实验组 2 整轮失败就是这么来的，而且指标全绿。
+#
+# 这条守的是 CLI 那一侧的事实：--exclude 会把 --names 点名的照片一起吃掉。
+# 所以调用方**必须**传空清单，不能图省事把候选池那份复用过去。
+def test_preview的exclude会吃掉点名要的照片(tmp_path):
+    from photofilter_rank.scan import list_photos
+
+    for n in ("A.JPG", "B.JPG"):
+        (tmp_path / n).write_bytes(b"\xff\xd8\xff\xe0stub")
+
+    assert [p.name for p in list_photos(tmp_path, ())] == ["A.JPG", "B.JPG"]
+    # 点名要 A，同时把 A 放进排除清单 —— A 就没了。
+    assert [p.name for p in list_photos(tmp_path, ("A.JPG",))] == ["B.JPG"]
