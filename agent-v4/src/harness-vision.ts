@@ -190,19 +190,25 @@ function parseToolArguments(
     //   ≥2 个           → 模型调了多次，不知道该采信哪一次
     //   名字不对        → 调了别的工具
     // 2026-09-06 实验组 2（每局 24 幅图）整轮触发这条，而 4 幅图的两组各 120/120 成功；
-    // 当时的报错三种合一，查不下去，所以把现场补进来。散文摘要只留头 200 字，
-    // 够判断「它在答什么」，又不至于把整段理由灌进日志。
+    // 当时的报错三种合一，查不下去，所以把现场补进来。
+    //
+    // 摘要长度先是 200 字，第一次真跑只截到「[Image content」六个字就没了 ——
+    // 不够判断模型在干什么。**已确认那不是 harness 的占位符**：
+    // harness 的两种替换文本都以 `[image omitted` 开头
+    // （llm/src/content.ts:9 与 :18），所以那是模型自己写的。
+    // 加到 1000 字，并报出文本块个数与总长，好分辨「写了一点」和「写了一大篇」。
     const kinds = blocks.map(block => String(block.type))
-    const prose = blocks
+    const texts = blocks
       .filter(block => block.type === 'text')
       .map(block => String((block as { text?: unknown }).text ?? ''))
-      .join(' ')
-      .slice(0, 200)
+    const full = texts.join(' ')
+    const prose = full.slice(0, 1000)
     throw new HarnessVisionError(
       `模型没有且仅调用结构化工具 ${expectedTool}；禁止解析纯文本或回退其他模型。`
       + ` 现场：tool-call ${calls.length} 个`
       + (calls.length ? `（名字 ${calls.map(c => String(c.name)).join('/')}）` : '')
       + `，返回块 [${kinds.join(',')}]`
+      + `，文本块 ${texts.length} 个/共 ${full.length} 字`
       + (prose ? `，散文开头「${prose}」` : ''),
       { code: 'STRUCTURED_OUTPUT_UNSUPPORTED' },
     )
