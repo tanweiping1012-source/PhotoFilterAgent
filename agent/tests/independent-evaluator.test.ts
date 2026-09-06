@@ -4,9 +4,11 @@ import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SubagentRun } from '@deepseek-ai/dsh-subagent'
+import { HARNESS_VISION_PROTOCOL } from '../src/harness-vision.ts'
 import {
   INDEPENDENT_EVALUATOR_PERSONA,
   captureIndependentEvaluatorRoute,
+  extractIndependentEvaluatorAuditOutput,
   forceIndependentEvaluatorRoute,
   independentEvaluatorToolDefinition,
   installIndependentEvaluatorRouteOverride,
@@ -43,8 +45,33 @@ function parentAgent(
   } as unknown as Agent
 }
 
-function fakeRun(): SubagentRun {
-  return { marker: 'offline-run' } as unknown as SubagentRun
+function fakeRun(report: string | null = 'PASS: offline audit'): SubagentRun {
+  const callId = 'audit-call'
+  const events = report === null ? [] : [
+    {
+      type: 'tool/call', seq: 1, time: 1,
+      data: { turn: 1, step: 1, callId, name: 'audit_selection', arguments: '{}' },
+    },
+    {
+      type: 'tool/result', seq: 2, time: 2,
+      data: {
+        turn: 1,
+        step: 1,
+        message: {
+          role: 'user', id: 'result-message', source: { kind: 'tool', callId },
+          content: [{
+            type: 'tool-result', toolCallId: callId, isError: false,
+            content: [{ type: 'text', text: report }],
+          }],
+        },
+        sourceEventSeqs: [1],
+      },
+    },
+  ]
+  return {
+    marker: 'offline-run',
+    localAgent: { session: { events } },
+  } as unknown as SubagentRun
 }
 
 function fakeContext(
@@ -84,7 +111,7 @@ test('captures the live request header instead of stale creation-time agent opti
   assert.equal(route.parentSessionId, 'parent-session')
   assert.equal(
     route.routeIdentity,
-    'current-provider\u0000current-model\u0000dsh-llm-tool-call-v1\u0000high',
+    `current-provider\u0000current-model\u0000${HARNESS_VISION_PROTOCOL}\u0000high`,
   )
   assert.equal(Object.isFrozen(route), true)
 })
@@ -243,7 +270,29 @@ test('spawns one constrained child with the current route, parent, signal, perso
   assert.deepEqual(settleCalls, [run])
 })
 
-test('rejects non-completed child outcomes and completed runs with empty output', async () => {
+test('returns the durable audit tool result instead of a contradictory child summary', async () => {
+  const run = fakeRun('INCOMPLETE：route healthy\nnext_action=retry_audit')
+  const parent = parentAgent({ provider: 'current-provider', model: 'current-model' })
+  const exec = execution(parent)
+  let synchronized = false
+  const tool = independentEvaluatorToolDefinition(
+    fakeContext(run),
+    (async () => ({ status: 'completed', output: 'BLOCKED: invented by child' })) as never,
+    defineOfflineTool,
+    async (args, receivedExec) => {
+      assert.equal(args, INPUT)
+      assert.equal(receivedExec, exec)
+      synchronized = true
+    },
+  )
+  const result = await tool.execute(INPUT, exec)
+
+  assert.equal(result, 'INCOMPLETE：route healthy\nnext_action=retry_audit')
+  assert.equal(extractIndependentEvaluatorAuditOutput(run), result)
+  assert.equal(synchronized, true)
+})
+
+test('rejects non-completed child outcomes and completed runs without a durable audit result', async () => {
   const parent = parentAgent({ provider: 'current-provider', model: 'current-model' })
 
   const failedRun = fakeRun()
@@ -257,7 +306,7 @@ test('rejects non-completed child outcomes and completed runs with empty output'
     /子 Agent 未完成（failed）：offline failure/u,
   )
 
-  const emptyRun = fakeRun()
+  const emptyRun = fakeRun(null)
   const emptyTool = independentEvaluatorToolDefinition(
     fakeContext(emptyRun),
     (async () => ({ status: 'completed', output: ' \n\t ' })) as never,
@@ -265,6 +314,6 @@ test('rejects non-completed child outcomes and completed runs with empty output'
   )
   await assert.rejects(
     () => emptyTool.execute(INPUT, execution(parent)),
-    /已结束但没有审计输出/u,
+    /必须恰好记录一次 audit_selection 调用/u,
   )
 })

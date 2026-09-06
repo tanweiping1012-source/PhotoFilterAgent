@@ -143,6 +143,23 @@ test('returns TIE when swapped judgments disagree', async () => {
   assert.equal(result.winner, 'TIE')
 })
 
+test('pairwise v2 derives the winner locally and ignores a contradictory provider winner field', async () => {
+  const ab = {
+    winner: 'SECOND', confidence: 0.9, reason: 'legacy contradictory field must be ignored',
+    dimensionDeltas: Object.fromEntries(Object.keys(dimensions).map(key => [key, 1])),
+  }
+  const ba = {
+    winner: 'FIRST', confidence: 0.9, reason: 'legacy contradictory field must be ignored',
+    dimensionDeltas: Object.fromEntries(Object.keys(dimensions).map(key => [key, -1])),
+  }
+  const requests: StructuredVisionRequest[] = []
+  const client = new PortraitVisionClient({ transport: fakeTransport([ab, ba], requests) as never })
+  const result = await client.comparePair('A', 'YQ==', 'B', 'Yg==')
+
+  assert.equal(result.winner, 'A')
+  assert.equal('winner' in requests[0].tool.parameters.properties, false)
+})
+
 test('cache identity binds provider model protocol reasoning and prompt hashes', () => {
   const identity = (selectedRoute: HarnessModelRoute) => new PortraitVisionClient({
     transport: fakeTransport([], [], selectedRoute) as never,

@@ -217,26 +217,31 @@ test('audit FAIL rebuild feedback survives selector repairs and reload, then cle
     const source = new RunState()
     source.absorb(report('rebuild-feedback'), '/photos')
     source.portraitRebuildFeedback = {
-      schemaVersion: 'portrait-rebuild-feedback-v1',
+      schemaVersion: 'portrait-rebuild-feedback-v2',
       datasetFingerprint: 'rebuild-feedback',
       failedSelectionHash: 'failed-selection',
       selectedIds: ['p001'],
-      strongerChallengerIds: ['p002'],
+      disqualifiedSelectedIds: ['p002'],
+      strongerChallengerIds: ['p001'],
       selectorIdentityKey: 'selector-v1',
       selectorPairwiseIdentityKey: 'selector-pair-v1',
       auditProviderIdentityKey: 'audit-provider-v1',
       feedbackHash: 'feedback-v1',
+      consumedBySelectionHash: 'rebuilt-selection',
     }
 
     source.recordPortrait(assessment('p002', 95), 'high', 'selector-v1')
-    assert.deepEqual(source.portraitRebuildFeedback?.strongerChallengerIds, ['p002'])
+    assert.deepEqual(source.portraitRebuildFeedback?.disqualifiedSelectedIds, ['p002'])
+    assert.deepEqual(source.portraitRebuildFeedback?.strongerChallengerIds, ['p001'])
     assert.equal(await saveState(source, workdir), true)
 
     const restored = new RunState()
     restored.absorb(report('rebuild-feedback'), '/photos')
     assert.equal(await loadState(restored, workdir, '/photos'), true)
     assert.equal(restored.portraitRebuildFeedback?.failedSelectionHash, 'failed-selection')
-    assert.deepEqual(restored.portraitRebuildFeedback?.strongerChallengerIds, ['p002'])
+    assert.deepEqual(restored.portraitRebuildFeedback?.disqualifiedSelectedIds, ['p002'])
+    assert.deepEqual(restored.portraitRebuildFeedback?.strongerChallengerIds, ['p001'])
+    assert.equal(restored.portraitRebuildFeedback?.consumedBySelectionHash, 'rebuilt-selection')
 
     restored.setPreference({ expression: { joyful: 1 } })
     assert.equal(restored.portraitRebuildFeedback, undefined)
@@ -626,4 +631,30 @@ test('scope changes reuse paid scores but invalidate scope-bound decisions', asy
   } finally {
     await rm(workdir, { recursive: true, force: true })
   }
+})
+
+test('target changes invalidate downstream decisions but preserve paid portrait scores', () => {
+  const state = new RunState()
+  state.absorb(report('target-change'), '/target-change', undefined, 'people_only')
+  state.recordPortrait(assessment('p001'), 'low', 'selector-key')
+  state.portraitDraft = {
+    keep: ['p001'],
+    why: { p001: 'synthetic' },
+    baselineScores: { p001: 80 },
+    personalizedScores: { p001: 80 },
+    selectionHash: 'selection',
+    preference: state.preference,
+    selectorIdentityKey: 'selector-key',
+    selectorPairwiseIdentityKey: 'pairwise-key',
+  }
+  state.portraitAudit = passingAudit('target-change', 'selection', ['p001'])
+  state.proposal = { keep: ['p001'], why: { p001: 'synthetic' } }
+
+  state.setTargets({ people: 2 })
+
+  assert.equal(state.targets.people, 2)
+  assert.equal(state.portraitScores.has('p001'), true)
+  assert.equal(state.portraitDraft, undefined)
+  assert.equal(state.portraitAudit, undefined)
+  assert.equal(state.proposal, undefined)
 })

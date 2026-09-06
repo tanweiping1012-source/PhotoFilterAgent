@@ -88,6 +88,8 @@ test('audit cache identities bind role dataset id detail prompt and full Harness
   assert.notEqual(key, auditScoreCacheKey({ ...base, provider: providerFor({ provider: 'provider-b' }) }))
   assert.notEqual(key, auditScoreCacheKey({ ...base, provider: providerFor({ reasoningEffort: 'high' }) }))
   assert.notEqual(key, auditScoreCacheKey({ ...base, provider: { ...provider, auditBaselinePromptHash: 'changed' } }))
+  const pairwisePromptChanged = { ...provider, auditPairwisePromptHash: 'changed-pairwise-prompt' }
+  assert.equal(key, auditScoreCacheKey({ ...base, provider: pairwisePromptChanged }))
 
   const ab = auditPairwiseLegCacheKey({
     datasetFingerprint: 'dataset-a', challengerId: 'p02', selectedId: 'p01', order: 'AB', provider,
@@ -96,6 +98,10 @@ test('audit cache identities bind role dataset id detail prompt and full Harness
     datasetFingerprint: 'dataset-a', challengerId: 'p02', selectedId: 'p01', order: 'BA', provider,
   })
   assert.notEqual(ab, ba)
+  assert.notEqual(ab, auditPairwiseLegCacheKey({
+    datasetFingerprint: 'dataset-a', challengerId: 'p02', selectedId: 'p01', order: 'AB',
+    provider: pairwisePromptChanged,
+  }))
   assert.notEqual(auditV3ContextKey({
     datasetFingerprint: 'dataset-a', candidateScope: 'people_only', selectedIds: ['p01'], target: 1, seed: 'a', provider,
   }), auditV3ContextKey({

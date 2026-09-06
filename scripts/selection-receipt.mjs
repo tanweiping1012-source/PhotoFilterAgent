@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { isAbsolute, normalize } from 'node:path'
 
-export const SELECTION_RECEIPT_SCHEMA_VERSION = 'photo-filter-selection-receipt/v1'
+export const SELECTION_RECEIPT_SCHEMA_VERSION = 'photo-filter-selection-receipt/v2'
 export const SELECTION_RECEIPT_GENERATOR = '@photo-filter-agent/dsh-photo-filter-agent'
 export const PHOTO_SCAN_POLICY_VERSION = 'photo-scan-policy-v1'
 
@@ -9,6 +9,7 @@ const ROOT_KEYS = Object.freeze([
   'auditStatus',
   'candidateScope',
   'datasetFingerprint',
+  'decisionIdentity',
   'excludedRelativePaths',
   'generator',
   'promptIdentity',
@@ -19,6 +20,7 @@ const ROOT_KEYS = Object.freeze([
   'schemaVersion',
   'selectedContentHashes',
   'selectedItems',
+  'selectedOrder',
   'selectionHash',
   'sourceRoot',
   'target',
@@ -29,6 +31,17 @@ const PROMPT_KEYS = Object.freeze([
   'auditBaselineHash',
   'auditPairwiseHash',
   'selectorBaselineHash',
+  'selectorPairwiseHash',
+])
+const DECISION_KEYS = Object.freeze([
+  'highRefinementPlanVersion',
+  'localGateVersion',
+  'pairwisePlanVersion',
+  'preferenceHash',
+  'rankingPolicyVersion',
+  'selectorBaselineHash',
+  'selectorPairwiseHash',
+  'selectorRouteIdentity',
 ])
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u
 
@@ -110,10 +123,18 @@ export function selectionHashFromReceiptItems({
   rubricVersion,
   datasetFingerprint,
   candidateScope,
+  decisionIdentity,
   selectedIds,
 }) {
   return sha256Hex(
-    `${rubricVersion}\0${datasetFingerprint}\0${candidateScope}\0${[...selectedIds].sort().join('\0')}`,
+    [
+      SELECTION_RECEIPT_SCHEMA_VERSION,
+      rubricVersion,
+      datasetFingerprint,
+      candidateScope,
+      canonicalJson(decisionIdentity),
+      ...[...selectedIds].sort(),
+    ].join('\0'),
   )
 }
 
@@ -125,10 +146,12 @@ function unsignedReceipt(receipt) {
     excludedRelativePaths: [...receipt.excludedRelativePaths],
     scanPolicyIdentity: receipt.scanPolicyIdentity,
     datasetFingerprint: receipt.datasetFingerprint,
+    decisionIdentity: { ...receipt.decisionIdentity },
     selectionHash: receipt.selectionHash,
     candidateScope: receipt.candidateScope,
     target: receipt.target,
     selectedItems: receipt.selectedItems.map(item => ({ id: item.id, sha256: item.sha256 })),
+    selectedOrder: [...receipt.selectedOrder],
     selectedContentHashes: [...receipt.selectedContentHashes],
     auditStatus: receipt.auditStatus,
     routeIdentity: receipt.routeIdentity,
@@ -138,6 +161,7 @@ function unsignedReceipt(receipt) {
     },
     promptIdentity: {
       selectorBaselineHash: receipt.promptIdentity.selectorBaselineHash,
+      selectorPairwiseHash: receipt.promptIdentity.selectorPairwiseHash,
       auditBaselineHash: receipt.promptIdentity.auditBaselineHash,
       auditPairwiseHash: receipt.promptIdentity.auditPairwiseHash,
     },
@@ -167,6 +191,7 @@ export function createFrozenSelectionReceipt(input) {
       ? photoScanPolicyIdentity(input.excludedRelativePaths)
       : input.scanPolicyIdentity,
     datasetFingerprint: input.datasetFingerprint,
+    decisionIdentity: input.decisionIdentity,
     selectionHash: input.selectionHash,
     candidateScope: input.candidateScope,
     target: input.target,
@@ -178,6 +203,9 @@ export function createFrozenSelectionReceipt(input) {
     selectedContentHashes: Array.isArray(input.selectedItems)
       ? input.selectedItems.map(item => item.sha256).sort()
       : input.selectedContentHashes,
+    selectedOrder: Array.isArray(input.selectedOrder)
+      ? [...input.selectedOrder]
+      : input.selectedOrder,
     auditStatus: input.auditStatus,
     routeIdentity: input.routeIdentity,
     rubricIdentity: input.rubricIdentity,
@@ -215,6 +243,43 @@ function validateUnsignedReceipt(value) {
     throw new TypeError('scanPolicyIdentity does not match excludedRelativePaths')
   }
   const datasetFingerprint = assertSha256(value.datasetFingerprint, 'datasetFingerprint')
+  assertExactKeys(value.decisionIdentity, DECISION_KEYS, 'decisionIdentity')
+  const decisionIdentity = {
+    highRefinementPlanVersion: assertNonEmptyString(
+      value.decisionIdentity.highRefinementPlanVersion,
+      'decisionIdentity.highRefinementPlanVersion',
+      256,
+    ),
+    localGateVersion: assertNonEmptyString(
+      value.decisionIdentity.localGateVersion,
+      'decisionIdentity.localGateVersion',
+      256,
+    ),
+    pairwisePlanVersion: assertNonEmptyString(
+      value.decisionIdentity.pairwisePlanVersion,
+      'decisionIdentity.pairwisePlanVersion',
+      256,
+    ),
+    preferenceHash: assertSha256(value.decisionIdentity.preferenceHash, 'decisionIdentity.preferenceHash'),
+    rankingPolicyVersion: assertNonEmptyString(
+      value.decisionIdentity.rankingPolicyVersion,
+      'decisionIdentity.rankingPolicyVersion',
+      256,
+    ),
+    selectorBaselineHash: assertSha256(
+      value.decisionIdentity.selectorBaselineHash,
+      'decisionIdentity.selectorBaselineHash',
+    ),
+    selectorPairwiseHash: assertSha256(
+      value.decisionIdentity.selectorPairwiseHash,
+      'decisionIdentity.selectorPairwiseHash',
+    ),
+    selectorRouteIdentity: assertNonEmptyString(
+      value.decisionIdentity.selectorRouteIdentity,
+      'decisionIdentity.selectorRouteIdentity',
+      4096,
+    ),
+  }
   const selectionHash = assertSha256(value.selectionHash, 'selectionHash')
   if (value.candidateScope !== 'auto' && value.candidateScope !== 'people_only') {
     throw new TypeError('candidateScope must be auto or people_only')
@@ -237,6 +302,15 @@ function validateUnsignedReceipt(value) {
   }
   if (selectedItems.some((item, index) => index > 0 && item.id < selectedItems[index - 1].id)) {
     throw new TypeError('selectedItems must be sorted by id')
+  }
+  if (!Array.isArray(value.selectedOrder) || value.selectedOrder.length !== value.target
+    || value.selectedOrder.some(id => typeof id !== 'string')) {
+    throw new TypeError('selectedOrder must contain exactly target anonymous IDs')
+  }
+  const selectedOrder = [...value.selectedOrder]
+  if (new Set(selectedOrder).size !== selectedOrder.length
+    || [...selectedOrder].sort().some((id, index) => id !== selectedItems[index].id)) {
+    throw new TypeError('selectedOrder must be a permutation of selectedItems IDs')
   }
   if (!Array.isArray(value.selectedContentHashes)) {
     throw new TypeError('selectedContentHashes must be an array')
@@ -267,6 +341,7 @@ function validateUnsignedReceipt(value) {
     rubricVersion: rubricIdentity.version,
     datasetFingerprint,
     candidateScope: value.candidateScope,
+    decisionIdentity,
     selectedIds: selectedItems.map(item => item.id),
   })
   if (selectionHash !== expectedSelectionHash) {
@@ -278,6 +353,10 @@ function validateUnsignedReceipt(value) {
       value.promptIdentity.selectorBaselineHash,
       'promptIdentity.selectorBaselineHash',
     ),
+    selectorPairwiseHash: assertSha256(
+      value.promptIdentity.selectorPairwiseHash,
+      'promptIdentity.selectorPairwiseHash',
+    ),
     auditBaselineHash: assertSha256(
       value.promptIdentity.auditBaselineHash,
       'promptIdentity.auditBaselineHash',
@@ -287,6 +366,11 @@ function validateUnsignedReceipt(value) {
       'promptIdentity.auditPairwiseHash',
     ),
   }
+  if (decisionIdentity.selectorBaselineHash !== promptIdentity.selectorBaselineHash
+    || decisionIdentity.selectorPairwiseHash !== promptIdentity.selectorPairwiseHash
+    || decisionIdentity.selectorRouteIdentity !== routeIdentity) {
+    throw new TypeError('decisionIdentity does not match selector prompt/route identity')
+  }
 
   return {
     schemaVersion: SELECTION_RECEIPT_SCHEMA_VERSION,
@@ -295,10 +379,12 @@ function validateUnsignedReceipt(value) {
     excludedRelativePaths,
     scanPolicyIdentity,
     datasetFingerprint,
+    decisionIdentity,
     selectionHash,
     candidateScope: value.candidateScope,
     target: value.target,
     selectedItems,
+    selectedOrder,
     selectedContentHashes,
     auditStatus: 'PASS',
     routeIdentity,

@@ -89,6 +89,55 @@ export interface Preview {
   jpeg_base64: string
 }
 
+export interface ReferenceSheetPairInput {
+  anchor_id: string
+  left_id: string
+  right_id: string
+  left_label: string
+  right_label: string
+  left_face_critical: boolean
+  right_face_critical: boolean
+  left_face_focus?: ReferenceSheetFaceFocus | null
+  right_face_focus?: ReferenceSheetFaceFocus | null
+}
+
+export interface ReferenceSheetFaceFocus {
+  center_x: number
+  center_y: number
+  side_fraction: number
+}
+
+export interface ReferenceSheetCellReport {
+  cell: number
+  label: string
+  face_critical: boolean
+  primary_face_short_edge_pixels: number | null
+  /** Explicit focus inset source; null means no inset was rendered. */
+  face_region_source: 'explicit_focus_unverified' | null
+}
+
+export interface ReferenceSheetCellIdentity {
+  cell: number
+  anchor_id: string | null
+  slot: 'A' | 'B' | 'FIRST' | 'SECOND'
+  anonymous_id: string
+  source_preview_sha256: string
+}
+
+export interface ReferenceSheetPreview {
+  layout_protocol: string
+  width: number
+  height: number
+  pair_count: number
+  asset_count: number
+  bytes: number
+  jpeg_sha256: string
+  jpeg_base64: string
+  cells: ReferenceSheetCellReport[]
+  source_preview_sha256: string[]
+  ordered_cell_identity: ReferenceSheetCellIdentity[]
+}
+
 /** PASS 后冻结选片的原图内容身份；不包含路径或文件名。 */
 export interface ContentHash {
   id: string
@@ -168,10 +217,53 @@ export class PhotoEngine {
   }
 
   /** 生成一张照片的无元数据缩放 JPEG。原图只读。 */
-  preview(id: string, detail: 'low' | 'standard' | 'high', signal?: AbortSignal): Promise<Preview> {
+  preview(
+    id: string,
+    detail: 'low' | 'standard' | 'high',
+    signal?: AbortSignal,
+    expectedOriginalSha256?: string,
+  ): Promise<Preview> {
+    const args = ['preview', id, '--workdir', this.workdir, '--detail', detail]
+    if (expectedOriginalSha256) args.push('--expected-sha256', expectedOriginalSha256)
     return invoke<Preview>(
       this.binary,
-      ['preview', id, '--workdir', this.workdir, '--detail', detail],
+      args,
+      signal,
+    )
+  }
+
+  /** Generate the frozen visual-anchor grid entirely in memory. */
+  referenceSheet(
+    pairs: readonly ReferenceSheetPairInput[],
+    signal?: AbortSignal,
+  ): Promise<ReferenceSheetPreview> {
+    return invoke<ReferenceSheetPreview>(
+      this.binary,
+      ['reference-sheet', '--workdir', this.workdir, '--pairs-json', JSON.stringify(pairs)],
+      signal,
+    )
+  }
+
+  /** Compose two high-detail candidates into one labelled FIRST/SECOND JPEG. */
+  candidatePairSheet(
+    firstId: string,
+    secondId: string,
+    firstFaceFocus: ReferenceSheetFaceFocus,
+    secondFaceFocus: ReferenceSheetFaceFocus,
+    firstExpectedOriginalSha256: string,
+    secondExpectedOriginalSha256: string,
+    signal?: AbortSignal,
+  ): Promise<ReferenceSheetPreview> {
+    return invoke<ReferenceSheetPreview>(
+      this.binary,
+      [
+        'candidate-pair-sheet', firstId, secondId,
+        '--workdir', this.workdir,
+        '--first-face-focus-json', JSON.stringify(firstFaceFocus),
+        '--second-face-focus-json', JSON.stringify(secondFaceFocus),
+        '--first-expected-sha256', firstExpectedOriginalSha256,
+        '--second-expected-sha256', secondExpectedOriginalSha256,
+      ],
       signal,
     )
   }

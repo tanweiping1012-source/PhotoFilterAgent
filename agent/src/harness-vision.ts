@@ -7,8 +7,17 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 
-export const HARNESS_VISION_PROTOCOL = 'dsh-llm-tool-call-v1'
+/**
+ * The provider sees one typed tool envelope whose `result`
+ * object carries the domain result without a second JSON escaping layer.
+ * The exact domain JSON Schema is included both in the tool declaration and
+ * in the prompt; the decoded object is still validated locally. In particular,
+ * empty arrays must retain their declared types rather than a free-form shape.
+ * This requires ordinary tool use, not provider-specific forced tool choice.
+ */
+export const HARNESS_VISION_PROTOCOL = 'dsh-llm-typed-envelope-v4'
 
 export interface HarnessModelRoute {
   provider: string
@@ -87,12 +96,30 @@ export interface StructuredVisionRequest {
   maxTokens: number
 }
 
+/** One no-image, exact-domain-contract probe performed before photo bytes. */
+export interface HarnessVisionContractProbe extends Omit<StructuredVisionRequest, 'jpegs'> {
+  /** Stable public label included in the preflight receipt/cache identity. */
+  label: string
+  /** Literal decoded domain result the routed model must reproduce. */
+  expected: Readonly<Record<string, unknown>>
+}
+
 export interface HarnessVisionPreflight {
   route: HarnessModelRoute
   imageInput: true
   structuredToolCall: true
   /** A text-only adapter dispatch authenticated and reached this exact route. */
   dynamicRouteProbe: true
+  /** Exact local attachment ceilings observed for this routed execution. */
+  imageLimits: HarnessVisionAttachmentLimits
+  /** Exact no-image domain contracts proven through the same envelope. */
+  contractsProbed: readonly string[]
+}
+
+export interface HarnessVisionAttachmentLimits {
+  maxImagesPerMessage: number
+  maxMessageImageBytes: number
+  mediaTypes: readonly string[]
 }
 
 export class HarnessVisionError extends Error {
@@ -121,6 +148,30 @@ export function resolveHarnessModelRoute(exec: HarnessVisionExecution): HarnessM
     throw new HarnessVisionError('无法解析当前 DSH 会话的 provider/model；视觉评估已阻止。', {
       code: 'MODEL_ROUTE_UNRESOLVED',
     })
+  }
+  return Object.freeze({
+    provider,
+    model,
+    protocol: HARNESS_VISION_PROTOCOL,
+    ...(nonEmpty(reasoningEffort) ? { reasoningEffort } : {}),
+  })
+}
+
+/**
+ * Experiment acceptance is bound to the route selected for this exact turn.
+ * Unlike the compatibility resolver above, it must never fall back to stale
+ * Agent options when the request header is absent or incomplete.
+ */
+export function resolveStrictHarnessModelRoute(exec: HarnessVisionExecution): HarnessModelRoute {
+  const routed = exec.agent?.session?.requestHeader?.()?.config
+  const provider = routed?.provider
+  const model = routed?.model
+  const reasoningEffort = routed?.reasoningEffort
+  if (!nonEmpty(provider) || !nonEmpty(model)) {
+    throw new HarnessVisionError(
+      '锚点实验无法从当前 DSH request header 解析 provider/model；图片请求已阻止。',
+      { code: 'EXPERIMENT_ROUTE_HEADER_REQUIRED' },
+    )
   }
   return Object.freeze({
     provider,
@@ -182,11 +233,19 @@ function publicFailureDetails(error: unknown): { code?: string; status?: number 
 function parseToolArguments(
   blocks: readonly Record<string, unknown>[],
   expectedTool: string,
+  nonce: string,
+  finish: unknown,
 ): Record<string, unknown> {
   const calls = blocks.filter(block => block.type === 'tool-call')
   if (calls.length !== 1 || calls[0]?.name !== expectedTool) {
+    const blockTypes = [...new Set(blocks.map(block => String(block.type ?? 'unknown')))].sort()
+    const finishKind = finish && typeof finish === 'object' && 'kind' in finish
+      ? String((finish as { kind?: unknown }).kind ?? 'unknown')
+      : 'missing'
     throw new HarnessVisionError(
-      `模型没有且仅调用结构化工具 ${expectedTool}；禁止解析纯文本或回退其他模型。`,
+      `模型没有且仅调用结构化工具 ${expectedTool}；` +
+      `finish=${finishKind}，blocks=${blockTypes.join(',') || 'none'}；` +
+      '禁止解析纯文本或回退其他模型。',
       { code: 'STRUCTURED_OUTPUT_UNSUPPORTED' },
     )
   }
@@ -196,17 +255,91 @@ function parseToolArguments(
       code: 'INVALID_TOOL_ARGUMENTS',
     })
   }
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
-    }
-  } catch {
-    // Normalize every malformed provider payload to one stable public error.
+  const invalid = (stage: string): never => {
+    // Never include JSON.parse's message: it can quote private photo evidence.
+    throw new HarnessVisionError(`结构化工具信封验证失败；stage=${stage}。`, {
+      code: 'INVALID_TOOL_ENVELOPE',
+    })
   }
-  throw new HarnessVisionError('结构化工具参数不是有效 JSON 对象。', {
-    code: 'INVALID_TOOL_ARGUMENTS',
+  let envelope: unknown
+  try { envelope = JSON.parse(raw) } catch { return invalid('outer_json') }
+  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
+    return invalid('outer_object')
+  }
+  const row = envelope as Record<string, unknown>
+  if (Object.keys(row).length !== 2 || !Object.hasOwn(row, 'nonce') || !Object.hasOwn(row, 'result')) {
+    const missing = ['nonce', 'result'].filter(key => !Object.hasOwn(row, key)).join('+') || 'none'
+    const extraCount = Object.keys(row).filter(key => key !== 'nonce' && key !== 'result').length
+    return invalid(`envelope_keys,missing=${missing},extra_count=${extraCount}`)
+  }
+  if (row.nonce !== nonce) return invalid('nonce')
+  if (!row.result || typeof row.result !== 'object' || Array.isArray(row.result)) {
+    return invalid('result_object')
+  }
+  return row.result as Record<string, unknown>
+}
+
+function defaultContractProbe(): HarnessVisionContractProbe {
+  const nonce = randomUUID()
+  const expected = Object.freeze({ ok: true, probe: nonce })
+  return Object.freeze({
+    label: 'generic-tool-envelope',
+    system: 'You are a capability probe. Call the supplied tool exactly once. Do not answer with text.',
+    user: `No image is attached. Reproduce this exact JSON object: ${JSON.stringify(expected)}`,
+    tool: {
+      name: 'photo_filter_model_preflight',
+      description: 'Confirm that this exact routed model can produce the required JSON tool envelope.',
+      parameters: {
+        type: 'object', additionalProperties: false,
+        required: ['ok', 'probe'],
+        properties: {
+          ok: { type: 'boolean', enum: [true] },
+          probe: { type: 'string', enum: [nonce] },
+        },
+      },
+    },
+    maxTokens: 160,
+    expected,
   })
+}
+
+/** Only expected-contract paths and fixed categories may enter diagnostics. */
+function contractMismatchSummary(actual: unknown, expected: unknown): string {
+  const issues: string[] = []
+  const visit = (a: unknown, e: unknown, path: string): void => {
+    if (issues.length >= 8 || isDeepStrictEqual(a, e)) return
+    if (Array.isArray(e)) {
+      if (!Array.isArray(a)) { issues.push(`${path}:type`); return }
+      if (a.length !== e.length) issues.push(`${path}:length`)
+      for (let i = 0; i < e.length && issues.length < 8; i++) visit(a[i], e[i], `${path}[${i}]`)
+    } else if (e && typeof e === 'object') {
+      if (!a || typeof a !== 'object' || Array.isArray(a)) { issues.push(`${path}:type`); return }
+      const ar = a as Record<string, unknown>
+      const er = e as Record<string, unknown>
+      if (Object.keys(ar).some(key => !Object.hasOwn(er, key))) issues.push(`${path}:extra_keys`)
+      for (const key of Object.keys(er)) {
+        if (issues.length >= 8) break
+        if (!Object.hasOwn(ar, key)) issues.push(`${path}.${key}:missing`)
+        else visit(ar[key], er[key], `${path}.${key}`)
+      }
+    } else issues.push(`${path}:${typeof a === typeof e ? 'value' : 'type'}`)
+  }
+  visit(actual, expected, 'result')
+  return issues.join(',')
+}
+
+/** Stable identity for route-local preflight caching; contains no credentials. */
+export function harnessVisionContractProbeIdentity(
+  probes: readonly HarnessVisionContractProbe[],
+): string {
+  return JSON.stringify(probes.map(probe => ({
+    label: probe.label,
+    system: probe.system,
+    user: probe.user,
+    tool: probe.tool,
+    maxTokens: probe.maxTokens,
+    expected: probe.expected,
+  })))
 }
 
 /**
@@ -244,6 +377,16 @@ export class HarnessVisionTransport {
     return { llm: this.services.llm, attachments: this.services.attachments }
   }
 
+  /** Read-only local limits; this never resolves, stores or transmits an image. */
+  attachmentLimits(): Readonly<HarnessVisionAttachmentLimits> {
+    const { attachments } = this.requireServices()
+    return Object.freeze({
+      maxImagesPerMessage: attachments.imageLimits.maxImagesPerMessage,
+      maxMessageImageBytes: attachments.imageLimits.maxMessageImageBytes,
+      mediaTypes: Object.freeze([...attachments.imageLimits.mediaTypes]),
+    })
+  }
+
   /** Local, no-image gate. It may query adapter-owned model metadata. */
   async assertLocalCapabilities(signal?: AbortSignal): Promise<void> {
     const { llm, attachments } = this.requireServices()
@@ -278,6 +421,12 @@ export class HarnessVisionTransport {
         code: 'PAIRWISE_ATTACHMENT_UNSUPPORTED',
       })
     }
+    if (!Number.isInteger(attachments.imageLimits.maxMessageImageBytes)
+      || attachments.imageLimits.maxMessageImageBytes <= 0) {
+      throw new HarnessVisionError('当前 attachment service 图片字节上限无效；视觉评估已阻止。', {
+        code: 'ATTACHMENT_BYTE_LIMIT_INVALID',
+      })
+    }
   }
 
   /**
@@ -285,32 +434,32 @@ export class HarnessVisionTransport {
    * This must pass before any JPEG is saved or sent. It is intentionally not a
    * silent text-JSON fallback: scoring accepts the same tool-call protocol.
    */
-  async preflight(signal?: AbortSignal): Promise<HarnessVisionPreflight> {
+  async preflight(
+    signal?: AbortSignal,
+    contractProbes: readonly HarnessVisionContractProbe[] = [defaultContractProbe()],
+    beforeDispatch?: () => void,
+  ): Promise<HarnessVisionPreflight> {
     await this.assertLocalCapabilities(signal)
-    const nonce = randomUUID()
-    const payload = await this.callTool({
-      system: 'You are a capability probe. Call the supplied tool exactly once. Do not answer with text.',
-      user: `Call photo_filter_model_preflight with ok=true and nonce=${nonce}. No image is attached.`,
-      jpegs: [],
-      tool: {
-        name: 'photo_filter_model_preflight',
-        description: 'Confirm that this exact routed model can produce required structured tool arguments.',
-        parameters: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['ok', 'nonce'],
-          properties: {
-            ok: { type: 'boolean', enum: [true] },
-            nonce: { type: 'string', enum: [nonce] },
-          },
-        },
-      },
-      maxTokens: 80,
-    }, signal)
-    if (payload.ok !== true || payload.nonce !== nonce) {
-      throw new HarnessVisionError('模型预检工具返回值不匹配；图片尚未发送。', {
-        code: 'MODEL_PREFLIGHT_MISMATCH',
+    if (!contractProbes.length || contractProbes.some(probe => !nonEmpty(probe.label))) {
+      throw new HarnessVisionError('模型预检合同列表为空或标签无效；图片尚未发送。', {
+        code: 'MODEL_PREFLIGHT_CONTRACT_INVALID',
       })
+    }
+    for (const probe of contractProbes) {
+      beforeDispatch?.()
+      const payload = await this.callTool({
+        system: probe.system,
+        user: probe.user,
+        jpegs: [],
+        tool: probe.tool,
+        maxTokens: probe.maxTokens,
+      }, signal)
+      if (!isDeepStrictEqual(payload, probe.expected)) {
+        throw new HarnessVisionError(`模型预检合同 ${probe.label} 返回值不匹配；` +
+          `mismatch=${contractMismatchSummary(payload, probe.expected)}；图片尚未发送。`, {
+          code: 'MODEL_PREFLIGHT_MISMATCH',
+        })
+      }
     }
     this.preflightPassed = true
     return Object.freeze({
@@ -318,6 +467,8 @@ export class HarnessVisionTransport {
       imageInput: true,
       structuredToolCall: true,
       dynamicRouteProbe: true,
+      imageLimits: this.attachmentLimits(),
+      contractsProbed: Object.freeze(contractProbes.map(probe => probe.label)),
     })
   }
 
@@ -382,8 +533,32 @@ export class HarnessVisionTransport {
     // attachment. Credentials/tool support were already proven by the
     // text-only preflight for this same route.
     const refs = encoded.length ? await attachments.saveImages(encoded) : []
-    const content: Array<Record<string, unknown>> = [{ type: 'text', text: request.user }]
+    const nonce = randomUUID()
+    const resultSchema = JSON.stringify(request.tool.parameters)
+    const instruction = `${request.user}\n\n` +
+      `OUTPUT CONTRACT: Call ${request.tool.name} exactly once with nonce=${nonce}. ` +
+      'Its result argument must be a JSON object (not a JSON-encoded string) ' +
+      `that matches this JSON Schema: ${resultSchema}. ` +
+      'Do not answer with text or Markdown and do not call any other tool.'
+    const content: Array<Record<string, unknown>> = []
     for (const attachment of refs) content.push({ type: 'image', attachment })
+    content.push({ type: 'text', text: instruction })
+    const wireTool = {
+      name: request.tool.name,
+      description: `${request.tool.description} Return only the required JSON envelope.`,
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['nonce', 'result'],
+        properties: {
+          nonce: { type: 'string', enum: [nonce] },
+          result: {
+            ...request.tool.parameters,
+            description: 'The complete result object matching the OUTPUT CONTRACT schema; do not stringify it.',
+          },
+        },
+      },
+    }
     const messages = [{
       id: randomUUID(),
       role: 'user',
@@ -394,7 +569,7 @@ export class HarnessVisionTransport {
       ...prepared.config,
       messages,
       system: request.system,
-      tools: [request.tool],
+      tools: [wireTool],
       ...(this.sessionId ? { sessionId: this.sessionId } : {}),
       ...(signal ? { signal } : {}),
     }
@@ -409,11 +584,21 @@ export class HarnessVisionTransport {
     }
     const failure = failureFromFinish(finish)
     if (failure) throw failure
-    return parseToolArguments(blocks, request.tool.name)
+    return parseToolArguments(blocks, request.tool.name, nonce, finish)
   }
 }
 
 /** Provider-neutral backpressure/limit signals stop new paid work. */
+export const HARNESS_REJECTED_RESPONSE_CODES: readonly string[] = Object.freeze([
+  'STRUCTURED_OUTPUT_UNSUPPORTED', 'INVALID_TOOL_ARGUMENTS', 'INVALID_TOOL_ENVELOPE', 'MAX_TOKENS',
+])
+
+/** These errors are emitted only after receiving a terminal adapter response. */
+export function isHarnessVisionRejectedResponse(error: unknown): error is HarnessVisionError {
+  return error instanceof HarnessVisionError
+    && HARNESS_REJECTED_RESPONSE_CODES.includes(error.code ?? '')
+}
+
 export function isHarnessVisionCircuitBreakerError(error: unknown): boolean {
   if (error instanceof HarnessVisionError) {
     if (error.status === 401 || error.status === 403 || error.status === 429) return true

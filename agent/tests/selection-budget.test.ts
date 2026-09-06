@@ -60,8 +60,13 @@ test('build selection gates high on durability and refuses to freeze an incomple
     'selectionHash === rebuildFeedback.failedSelectionHash',
   )
   const draftFreeze = buildSource.indexOf('state.portraitDraft = {')
+  const durableReload = buildSource.indexOf(
+    'await loadState(state, config.workdir, state.folder, state.limit)',
+  )
+  const feedbackRead = buildSource.indexOf('const feedback = state.portraitRebuildFeedback')
 
   assert.ok(durableGate >= 0 && highStage > durableGate)
+  assert.ok(durableReload >= 0 && feedbackRead > durableReload)
   assert.ok(incompleteGate >= 0 && draftFreeze > incompleteGate)
   assert.ok(repeatedFailedHashGate > incompleteGate && draftFreeze > repeatedFailedHashGate)
   assert.match(buildSource, /最佳人像必须比较完整目录；当前 analyze_folder 使用了 limit/u)
@@ -69,6 +74,16 @@ test('build selection gates high on durability and refuses to freeze an incomple
   assert.match(buildSource, /next_action=fix_model_route；禁止在当前 turn 自动重试 build_selection 或 status/u)
   assert.match(buildSource, /portraitSelectorPairwiseCheckpoint/u)
   assert.match(buildSource, /next_action=fix_rebuild_loop/u)
+  assert.match(buildSource, /const rebuildFeedback = validRebuildFeedback/u)
+  assert.doesNotMatch(buildSource, /requiredIds/u)
+  assert.doesNotMatch(
+    buildSource,
+    /feedback\.consumedBySelectionHash !== state\.portraitDraft\?\.selectionHash/u,
+  )
+  assert.match(
+    buildSource,
+    /下一步必须调用 independent_evaluator.*禁止重复 build_selection/su,
+  )
 })
 
 test('refinement checkpoint identity binds dataset, scope, target, preference, and rubric/model', () => {
@@ -162,6 +177,44 @@ test('pairwise planner reports a strict pair and bidirectional-call ceiling', ()
   assert.equal(plan.bidirectionalCallCap, MAX_PAIRWISE_PAIRS * 2)
   assert.equal(new Set(plan.pairs.map(pair =>
     [pair.leftId, pair.rightId].sort().join('|'))).size, plan.pairs.length)
+})
+
+test('comparison-first planner builds a connected ladder across the Top-K cutline', () => {
+  const candidates: RankingCandidate[] = Array.from({ length: 80 }, (_, index) => ({
+    id: `p${String(index + 1).padStart(3, '0')}`,
+    score: 100 - index / 10,
+    eligibility: 'eligible',
+  }))
+  const preliminary = rankPortraits(candidates, { topK: 20 })
+  const plan = planPairwiseBudget(candidates, preliminary, [], 20)
+  const cutlinePairs = plan.pairs.filter(pair => pair.source === 'cutline')
+  const nodes = new Set(cutlinePairs.flatMap(pair => [pair.leftId, pair.rightId]))
+  const selected = new Set(preliminary.map(item => item.id))
+
+  assert.equal(plan.pairs.length, MAX_PAIRWISE_PAIRS)
+  assert.equal(cutlinePairs.length, MAX_PAIRWISE_PAIRS)
+  assert.equal(nodes.size, MAX_PAIRWISE_PAIRS + 1)
+  assert.ok([...nodes].some(id => selected.has(id)))
+  assert.ok([...nodes].some(id => !selected.has(id)))
+
+  const adjacency = new Map<string, Set<string>>()
+  for (const pair of cutlinePairs) {
+    if (!adjacency.has(pair.leftId)) adjacency.set(pair.leftId, new Set())
+    if (!adjacency.has(pair.rightId)) adjacency.set(pair.rightId, new Set())
+    adjacency.get(pair.leftId)!.add(pair.rightId)
+    adjacency.get(pair.rightId)!.add(pair.leftId)
+  }
+  const start = [...nodes][0]
+  const visited = new Set([start])
+  const queue = [start]
+  while (queue.length) {
+    for (const neighbor of adjacency.get(queue.shift()!) ?? []) {
+      if (visited.has(neighbor)) continue
+      visited.add(neighbor)
+      queue.push(neighbor)
+    }
+  }
+  assert.equal(visited.size, nodes.size)
 })
 
 test('audit challengers reserve pairwise slots first while preserving the global pair cap', () => {

@@ -79,6 +79,47 @@ function nonEmptyString(value: unknown): value is string {
 }
 
 /**
+ * Return the exact audit_selection tool result recorded by the isolated child.
+ *
+ * The child's final prose is model-authored and therefore cannot be trusted as
+ * the audit status channel: it may shorten INCOMPLETE to a bare status word or
+ * even reclassify a healthy retry_audit result as BLOCKED. The durable tool
+ * event is the authoritative boundary. Requiring one local call/result pair
+ * also proves that the child actually used the only allowed audit tool.
+ */
+export function extractIndependentEvaluatorAuditOutput(run: SubagentRun): string {
+  const events = run.localAgent?.session.events
+  if (!events) {
+    throw new Error('independent_evaluator 无法读取隔离子 Agent 的本地审计轨迹；已阻止未验证报告。')
+  }
+  const calls = events.filter(event =>
+    event.type === 'tool/call' && event.data.name === 'audit_selection')
+  if (calls.length !== 1) {
+    throw new Error(`independent_evaluator 必须恰好记录一次 audit_selection 调用；实际 ${calls.length} 次。`)
+  }
+  const callId = calls[0]!.data.callId
+  const blocks = events.flatMap(event => event.type === 'tool/result'
+    ? event.data.message.content.filter(block =>
+      block.type === 'tool-result' && block.toolCallId === callId)
+    : [])
+  if (blocks.length !== 1) {
+    throw new Error(`independent_evaluator 必须恰好记录一次 audit_selection 结果；实际 ${blocks.length} 次。`)
+  }
+  const block = blocks[0]!
+  const output = block.content
+    .filter(item => item.type === 'text')
+    .map(item => item.text)
+    .join('')
+  if (block.isError || !nonEmptyString(output)) {
+    throw new Error(
+      'independent_evaluator 的 audit_selection 原始结果为空或失败；已拒绝使用子 Agent 自述替代。' +
+      (nonEmptyString(output) ? ` ${output}` : ''),
+    )
+  }
+  return output
+}
+
+/**
  * Capture the route of the model request that is currently executing the tool.
  * There is intentionally no AgentOptions fallback: a missing request header is
  * not evidence that the user selected the agent's creation-time default.
@@ -167,6 +208,10 @@ export function renderIndependentEvaluatorPrompt(args: IndependentEvaluatorInput
 
 type SettleSubagentRun = typeof settleSubagentRun
 type DefineEvaluatorTool = (options: any) => ToolDefinition
+type AfterAuditPersisted = (
+  args: IndependentEvaluatorInput,
+  exec: ToolRunContext,
+) => Promise<void>
 
 /**
  * Create the model-facing tool options. `defineTool` remains at the plugin entry
@@ -177,6 +222,7 @@ export function independentEvaluatorToolDefinition(
   ctx: Context,
   settleRun: SettleSubagentRun,
   defineEvaluatorTool: DefineEvaluatorTool,
+  afterAuditPersisted?: AfterAuditPersisted,
 ): ToolDefinition {
   return defineEvaluatorTool({
     name: 'independent_evaluator',
@@ -216,10 +262,16 @@ export function independentEvaluatorToolDefinition(
           (outcome.detail ? `：${outcome.detail}` : ''),
         )
       }
-      if (!nonEmptyString(outcome.output)) {
-        throw new Error('independent_evaluator 子 Agent 已结束但没有审计输出。')
-      }
-      return outcome.output
+      // Never return the child's model-authored paraphrase. The exact durable
+      // audit_selection result is the only status/report source the parent may
+      // observe, preventing INCOMPLETE/BLOCKED drift and missing ledgers.
+      const output = extractIndependentEvaluatorAuditOutput(run)
+      // The evaluator is intentionally a different Agent with a different
+      // RunState. Its durable audit checkpoint must be reloaded into the
+      // parent before a following build/propose tool can consume the verdict
+      // or anonymous rebuild feedback. Never copy child memory directly.
+      await afterAuditPersisted?.(args, exec)
+      return output
     },
   })
 }

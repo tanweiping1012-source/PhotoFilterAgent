@@ -1,0 +1,25 @@
+{
+  "name": "@photo-filter-agent/dsh-photo-anchor-lab-codex-v1",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Isolated DSH package for Photo Curator Anchor Lab (Codex).",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test tests/scaffold.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-attachment": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-subagent": "*"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "*"
+  }
+}

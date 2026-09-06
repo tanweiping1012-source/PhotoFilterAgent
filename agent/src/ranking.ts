@@ -9,6 +9,9 @@
 import { MAX_DIVERSITY_BONUS, type PreferenceProfile } from './preferences.ts'
 import type { EligibilityStatus } from './rubric.ts'
 
+/** Any ranking-policy change invalidates frozen decision receipts. */
+export const PORTRAIT_RANKING_POLICY_VERSION = 'portrait-ranking-v2-comparison-first' as const
+
 export interface RankingCandidate {
   id: string
   /** Baseline plus any already-bounded preference overlay, in 0–100. */
@@ -24,7 +27,11 @@ export interface RankingCandidate {
 export interface PairwiseComparison {
   leftId: string
   rightId: string
-  /** 1 means left wins, 0 right wins, 0.5 a tie; intermediate probabilities are allowed. */
+  /**
+   * 1 means left wins and 0 right wins. In this flow 0.5 means AB/BA was
+   * unstable, so it is durable no-direction evidence and does not update BT.
+   * Other intermediate directional probabilities are allowed.
+   */
   leftOutcome: number
   /** Confidence multiplier in (0, 10], default 1. */
   weight?: number
@@ -41,11 +48,20 @@ export interface BradleyTerryOptions {
 export interface RankPortraitOptions extends BradleyTerryOptions {
   topK: number
   comparisons?: readonly PairwiseComparison[]
+  /**
+   * Independently audited counterexamples that must remain in the active set.
+   * They still need to be eligible and inside Top-K capacity. A hard numeric
+   * family cap fails closed when the required set itself violates that user
+   * instruction; `auto` may relax rather than silently dropping evidence.
+   */
+  requiredIds?: readonly string[]
   /** 0–1; semantic novelty has a maximum four-point budget. */
   diversityStrength?: number
   /**
-   * Per-family selection cap. `auto` chooses the smallest uniform cap that can
-   * still return exact Top-K; a positive integer is an explicit cap;
+   * Per-family selection cap. `auto` starts from the smallest uniform cap that
+   * can return exact Top-K, but relaxes it when the best capped-out photo is
+   * more than the four-point diversity budget above the best capped-in photo.
+   * A positive integer is an explicit hard cap;
    * `unlimited` preserves series when the user explicitly asks for them.
    * @default 'auto'
    */
@@ -154,7 +170,7 @@ export function fitBradleyTerryScores(
     throw new RangeError('iterations must be an integer between 1 and 10000')
   }
 
-  const normalized = comparisons.map((comparison, index) => {
+  const normalized = comparisons.flatMap((comparison, index) => {
     if (!ids.has(comparison.leftId) || !ids.has(comparison.rightId)) {
       throw new TypeError(`comparisons[${index}] references an unknown candidate`)
     }
@@ -169,10 +185,15 @@ export function fitBradleyTerryScores(
     if (typeof weight !== 'number' || !Number.isFinite(weight) || weight <= 0 || weight > 10) {
       throw new RangeError(`comparisons[${index}].weight must be in (0, 10]`)
     }
+    // AB and BA disagreeing is uncertainty, not evidence that two images have
+    // equal latent quality. Treating it as an equality observation collapses
+    // a strong absolute score toward a weak opponent and can invert the
+    // rubric by far more than the bounded diversity budget.
+    if (comparison.leftOutcome === 0.5) return []
     // Canonicalize left/right so caller ordering cannot influence summation order.
-    return comparison.leftId < comparison.rightId
+    return [comparison.leftId < comparison.rightId
       ? { leftId: comparison.leftId, rightId: comparison.rightId, outcome: comparison.leftOutcome, weight }
-      : { leftId: comparison.rightId, rightId: comparison.leftId, outcome: 1 - comparison.leftOutcome, weight }
+      : { leftId: comparison.rightId, rightId: comparison.leftId, outcome: 1 - comparison.leftOutcome, weight }]
   }).sort((a, b) => a.leftId.localeCompare(b.leftId)
     || a.rightId.localeCompare(b.rightId)
     || a.outcome - b.outcome
@@ -292,10 +313,10 @@ export function resolveFamilyCap(
 
 /**
  * Return exactly Top-K eligible portraits whenever at least K eligible photos
- * exist. Near-duplicate families use the strictest uniform cap compatible with
- * exact K by default. This is a baseline set constraint, not part of the
- * four-point semantic diversity bonus. Explicit policy can tighten the cap or
- * remove it when a user requests a series.
+ * exist. Balanced `auto` starts with the strictest feasible uniform family cap,
+ * but no diversity constraint may displace a photo by more than four points.
+ * Explicit numeric policies remain hard user instructions; `unlimited` keeps
+ * a deliberate series.
  */
 export function rankPortraits(
   candidates: readonly RankingCandidate[],
@@ -313,7 +334,21 @@ export function rankPortraits(
   if (options.topK === 0) return Object.freeze([])
 
   const eligible = candidates.filter(candidate => candidate.eligibility === 'eligible')
-  const effectiveFamilyCap = resolveFamilyCap(candidates, options.topK, options.familyCap ?? 'auto')
+  const eligibleById = new Map(eligible.map(candidate => [candidate.id, candidate]))
+  const requiredIds = [...(options.requiredIds ?? [])]
+  if (new Set(requiredIds).size !== requiredIds.length) {
+    throw new TypeError('requiredIds contains duplicates')
+  }
+  if (requiredIds.length > options.topK) {
+    throw new RangeError(`requiredIds cannot exceed topK ${options.topK}`)
+  }
+  for (const id of requiredIds) {
+    if (!eligibleById.has(id)) {
+      throw new RangeError(`required candidate is unknown or ineligible: ${id}`)
+    }
+  }
+  const familyPolicy = options.familyCap ?? 'auto'
+  const effectiveFamilyCap = resolveFamilyCap(candidates, options.topK, familyPolicy)
 
   const comparisonScores = fitBradleyTerryScores(
     eligible,
@@ -325,11 +360,67 @@ export function rankPortraits(
   const selectedIds = new Set<string>()
   const selectedFamilyCounts = new Map<string, number>()
 
+  if (typeof familyPolicy === 'number') {
+    const requiredFamilyCounts = new Map<string, number>()
+    for (const id of requiredIds) {
+      const family = familyKey(eligibleById.get(id)!)
+      requiredFamilyCounts.set(family, (requiredFamilyCounts.get(family) ?? 0) + 1)
+    }
+    const violation = [...requiredFamilyCounts.entries()]
+      .find(([, count]) => count > familyPolicy)
+    if (violation) {
+      throw new RangeError(
+        `requiredIds violate familyCap ${familyPolicy} for family ${violation[0]}`,
+      )
+    }
+  }
+
+  // Freeze the externally required active set before applying family/diversity
+  // preferences to the remaining slots. Required rows receive no novelty
+  // bonus: audit evidence authorizes inclusion, not a fabricated score lift.
+  for (const candidate of requiredIds
+    .map(id => eligibleById.get(id)!)
+    .sort((left, right) => comparisonScores[right.id] - comparisonScores[left.id]
+      || left.id.localeCompare(right.id))) {
+    const family = familyKey(candidate)
+    selectedIds.add(candidate.id)
+    selectedFamilyCounts.set(family, (selectedFamilyCounts.get(family) ?? 0) + 1)
+    selectedCandidates.push(candidate)
+    selected.push(Object.freeze({
+      id: candidate.id,
+      familyId: candidate.familyId,
+      baseScore: candidate.score,
+      comparisonScore: comparisonScores[candidate.id],
+      diversityBonus: 0,
+      finalScore: comparisonScores[candidate.id],
+      rank: selected.length + 1,
+    }))
+  }
+
   while (selected.length < options.topK) {
-    const available = eligible.filter(candidate => (
-      !selectedIds.has(candidate.id)
-      && (selectedFamilyCounts.get(familyKey(candidate)) ?? 0) < effectiveFamilyCap
-    ))
+    const remaining = eligible.filter(candidate => !selectedIds.has(candidate.id))
+    const cappedAvailable = remaining.filter(candidate =>
+      (selectedFamilyCounts.get(familyKey(candidate)) ?? 0) < effectiveFamilyCap)
+    let available = cappedAvailable
+    if (familyPolicy === 'auto') {
+      const bestRemaining = Math.max(...remaining.map(candidate => comparisonScores[candidate.id]))
+      const bestCapped = cappedAvailable.length
+        ? Math.max(...cappedAvailable.map(candidate => comparisonScores[candidate.id]))
+        : Number.NEGATIVE_INFINITY
+      if (!cappedAvailable.length || bestRemaining > bestCapped + MAX_DIVERSITY_BONUS) {
+        // Balanced diversity is a bounded preference, not a license to keep a
+        // materially weaker photo. Once the cap costs >4 points, relax it only
+        // for the global quality frontier; semantic novelty still decides
+        // within that same four-point band below.
+        available = remaining.filter(candidate =>
+          comparisonScores[candidate.id] >= bestRemaining - MAX_DIVERSITY_BONUS)
+      }
+    }
+    if (!available.length) {
+      throw new RangeError(
+        `familyCap cannot fill exact Top-K after requiredIds: selected ${selected.length} of ${options.topK}`,
+      )
+    }
     const frontierBest = Math.max(...available.map(candidate => comparisonScores[candidate.id]))
     const frontierFloor = frontierBest - MAX_DIVERSITY_BONUS
     let best: { candidate: RankingCandidate; bonus: number; finalScore: number } | undefined
@@ -370,7 +461,12 @@ export function rankPortraits(
       rank: selected.length + 1,
     }))
   }
-  return Object.freeze(selected)
+  if (!requiredIds.length) return Object.freeze(selected)
+  return Object.freeze([...selected]
+    .sort((left, right) => right.finalScore - left.finalScore
+      || right.comparisonScore - left.comparisonScore
+      || left.id.localeCompare(right.id))
+    .map((row, index) => Object.freeze({ ...row, rank: index + 1 })))
 }
 
 function hashSeed(seed: string | number): number {

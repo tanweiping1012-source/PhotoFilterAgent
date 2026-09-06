@@ -402,15 +402,20 @@ func runPreview(_ options: Options) {
     guard let index = try? AnonymousIndex.read(from: workdir) else {
         fail("读不到索引，请先运行 analyze")
     }
-    guard let path = index.byAnonymous[anonymous] else { fail("未知的照片 ID: \(anonymous)") }
+    guard index.byAnonymous[anonymous] != nil else { fail("未知的照片 ID: \(anonymous)") }
 
     let detail = options.flag("detail") ?? "low"
     guard let size = AIReviewPreviewSize(detail: detail) else {
         fail("未知档位: \(detail)（可用 low / standard / high）")
     }
     do {
+        let sourceData = try VerifiedImageSource.load(
+            id: anonymous,
+            index: index,
+            expectedSHA256: options.flag("expected-sha256")
+        )
         let data = try AIReviewPreviewEncoder.jpegData(
-            for: URL(fileURLWithPath: path),
+            for: sourceData,
             maximumPixelSize: size.maximumPixelSize
         )
         emit([
@@ -422,6 +427,60 @@ func runPreview(_ options: Options) {
         ])
     } catch {
         fail("无法生成预览: \(error)")
+    }
+}
+
+// MARK: - reference-sheet（视觉锚点实验；仅输出匿名、去元数据 JPEG）
+
+func runReferenceSheet(_ options: Options) {
+    guard let workdir = options.flag("workdir") else { fail("缺少 --workdir") }
+    guard let rawPairs = options.flag("pairs-json"),
+          let pairsData = rawPairs.data(using: .utf8),
+          let pairs = try? JSONDecoder().decode([ReferenceSheetPairInput].self, from: pairsData) else {
+        fail("--pairs-json 必须是 ReferenceSheetPairInput JSON 数组")
+    }
+    guard let index = try? AnonymousIndex.read(from: workdir) else {
+        fail("读不到索引，请先运行 analyze")
+    }
+    do {
+        emit(try ReferenceSheetEncoder.anchorSheet(pairs: pairs, index: index).dictionary)
+    } catch {
+        fail("无法生成参考图版: \(error.localizedDescription)")
+    }
+}
+
+func runCandidatePairSheet(_ options: Options) {
+    guard options.positional.count == 2 else {
+        fail("用法: photofilter candidate-pair-sheet <FIRST匿名ID> <SECOND匿名ID> --workdir <路径> --first-face-focus-json <JSON> --second-face-focus-json <JSON>")
+    }
+    guard let workdir = options.flag("workdir") else { fail("缺少 --workdir") }
+    guard let firstExpectedSHA256 = options.flag("first-expected-sha256"),
+          let secondExpectedSHA256 = options.flag("second-expected-sha256") else {
+        fail("双候选图版必须绑定 analyze 阶段冻结的两个原图 SHA-256")
+    }
+    guard let firstFocusJSON = options.flag("first-face-focus-json"),
+          let firstFocusData = firstFocusJSON.data(using: .utf8),
+          let firstFocus = try? JSONDecoder().decode(ReferenceSheetFaceFocus.self, from: firstFocusData),
+          let secondFocusJSON = options.flag("second-face-focus-json"),
+          let secondFocusData = secondFocusJSON.data(using: .utf8),
+          let secondFocus = try? JSONDecoder().decode(ReferenceSheetFaceFocus.self, from: secondFocusData) else {
+        fail("双候选图版必须提供两个 high 阶段冻结的人脸 focus JSON")
+    }
+    guard let index = try? AnonymousIndex.read(from: workdir) else {
+        fail("读不到索引，请先运行 analyze")
+    }
+    do {
+        emit(try ReferenceSheetEncoder.candidatePairSheet(
+            firstID: options.positional[0],
+            secondID: options.positional[1],
+            firstFaceFocus: firstFocus,
+            secondFaceFocus: secondFocus,
+            firstExpectedOriginalSHA256: firstExpectedSHA256,
+            secondExpectedOriginalSHA256: secondExpectedSHA256,
+            index: index
+        ).dictionary)
+    } catch {
+        fail("无法生成双候选图版: \(error.localizedDescription)")
     }
 }
 
@@ -565,6 +624,8 @@ switch options.command {
 case "analyze": await runAnalyze(options)
 case "select": await runSelect(options)
 case "preview": runPreview(options)
+case "reference-sheet": runReferenceSheet(options)
+case "candidate-pair-sheet": runCandidatePairSheet(options)
 case "resolve": runResolve(options)
 case "content-hashes": runContentHashes(options)
 case "export": runExport(options)
@@ -579,8 +640,16 @@ default:
     select <目录> --people N --scenery M [--limit N] [--workdir <路径>] [--exclude-relative-json '["relative/path"]']
         使用同一套排除规则完成确定性本地选片。
 
-    preview <匿名ID> --workdir <路径> [--detail low|standard|high]
+    preview <匿名ID> --workdir <路径> [--detail low|standard|high] [--expected-sha256 <原图SHA-256>]
         输出无元数据 JPEG 的 base64（512 / 1024 / 1536px）。
+
+    reference-sheet --workdir <路径> --pairs-json '<JSON数组>'
+        在内存中生成匿名视觉锚点参考图版，不写原图、不复制元数据。
+
+    candidate-pair-sheet <FIRST匿名ID> <SECOND匿名ID> --workdir <路径>
+        --first-face-focus-json <JSON> --second-face-focus-json <JSON>
+        --first-expected-sha256 <原图SHA-256> --second-expected-sha256 <原图SHA-256>
+        使用 high 阶段冻结的两个人脸 focus，生成保持细节、带 FIRST/SECOND 标签的双候选图版。
 
     resolve <匿名ID...> --workdir <路径>
         本机解析匿名 ID 为真实路径（不进模型上下文）。

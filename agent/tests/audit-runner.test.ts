@@ -16,6 +16,9 @@ import type {
 } from '../src/portrait-vision.ts'
 import { PORTRAIT_BASELINE_RUBRIC_VERSION, PORTRAIT_DIMENSION_IDS } from '../src/rubric.ts'
 import {
+  auditScoreCacheKey,
+} from '../src/audit-v3.ts'
+import {
   loadState,
   RunState,
   saveState,
@@ -85,6 +88,21 @@ function assessment(id: string, score: number): PortraitBaselineAssessment {
   }
 }
 
+function needsReviewAssessment(id: string): PortraitBaselineAssessment {
+  const result = assessment(id, 50)
+  return {
+    ...result,
+    eligibility: {
+      status: 'needs_review',
+      failureCodes: ['HR_PRIMARY_SUBJECT_UNINTERPRETABLE'],
+      evidence: ['synthetic ambiguous primary subject'],
+      assessability: 0.8,
+      ambiguousIntent: true,
+    },
+    baselineScore: null,
+  }
+}
+
 function pairDecision(order: 'AB' | 'BA', challengerWins: boolean): PairwiseRawDecision {
   return {
     order,
@@ -116,7 +134,13 @@ function initialState(fingerprint: string, folder: string): RunState {
   return state
 }
 
-function fakeRuntime(calls: string[], nearScore: number, challengerWins: boolean): {
+function fakeRuntime(
+  calls: string[],
+  nearScore: number,
+  challengerWins: boolean,
+  selectedEligible = true,
+  allRemainingScore?: number,
+): {
   engine: AuditPreviewSource
   client: AuditVisionProvider
 } {
@@ -137,7 +161,10 @@ function fakeRuntime(calls: string[], nearScore: number, challengerWins: boolean
       async scoreBaseline(id, _jpeg, detail, _signal, role) {
         assert.equal(role, 'audit')
         calls.push(`score:${detail}:${id}`)
-        const score = id === SELECTED_ID ? 80 : id === NEAR_ID ? nearScore : 30
+        if (id === SELECTED_ID && !selectedEligible) return needsReviewAssessment(id)
+        const score = id === SELECTED_ID
+          ? 80
+          : allRemainingScore ?? (id === NEAR_ID ? nearScore : 30)
         return assessment(id, score)
       },
       async comparePairLeg(aId, _aJpeg, bId, _bJpeg, order) {
@@ -148,7 +175,10 @@ function fakeRuntime(calls: string[], nearScore: number, challengerWins: boolean
   }
 }
 
-async function exerciseResume(finalStatus: 'PASS' | 'FAIL'): Promise<void> {
+async function exerciseResume(
+  finalStatus: 'PASS' | 'FAIL',
+  simulateLegacyCheckpoint = false,
+): Promise<void> {
   const workdir = await mkdtemp(join(tmpdir(), `photo-filter-offline-${finalStatus.toLowerCase()}-`))
   const folder = `/synthetic-${finalStatus.toLowerCase()}`
   const fingerprint = `offline-${finalStatus.toLowerCase()}`
@@ -180,6 +210,15 @@ async function exerciseResume(finalStatus: 'PASS' | 'FAIL'): Promise<void> {
     assert.equal(first.portraitAudit?.status, 'INCOMPLETE')
     assert.equal(first.portraitAudit?.stage, 'pairwise')
     assert.equal(first.portraitAudit?.attemptedCallsThisAttempt, 32)
+    assert.equal(first.portraitAudit?.attemptedCalls, 32)
+    assert.equal(first.portraitAudit?.succeededCalls, 32)
+    assert.equal(first.portraitAudit?.failedCalls, 0)
+    assert.equal(first.portraitAudit?.unresolvedCalls, 0)
+    assert.equal(first.portraitAudit?.uniqueCachedAssets, 32)
+    assert.equal(first.portraitAudit?.accountingBasis, 'exact')
+    assert.equal(first.portraitAudit?.attemptNumber, 1)
+    assert.equal(first.portraitAudit?.progressDelta, 32)
+    assert.equal(first.portraitAudit?.stalledRounds, 0)
     assert.equal(first.portraitAudit?.remainingCount, 0)
     assert.equal(first.portraitAudit?.pairwiseRemainingCount, 1)
     assert.match(validateProposal(first, [SELECTED_ID]).reason ?? '', /PASS/u)
@@ -191,6 +230,15 @@ async function exerciseResume(finalStatus: 'PASS' | 'FAIL'): Promise<void> {
     const resumed = new RunState()
     resumed.absorb(syntheticReport(fingerprint), folder, undefined, 'people_only')
     assert.equal(await loadState(resumed, workdir, folder), true)
+    if (simulateLegacyCheckpoint && resumed.portraitAudit) {
+      delete resumed.portraitAudit.attemptedCalls
+      delete resumed.portraitAudit.succeededCalls
+      delete resumed.portraitAudit.failedCalls
+      delete resumed.portraitAudit.unresolvedCalls
+      delete resumed.portraitAudit.uniqueCachedAssets
+      delete resumed.portraitAudit.accountingBasis
+      resumed.portraitAudit.cachedCalls = 999
+    }
     const secondOutput = await runAuditV3({
       ...common,
       state: resumed,
@@ -203,12 +251,39 @@ async function exerciseResume(finalStatus: 'PASS' | 'FAIL'): Promise<void> {
     assert.equal(resumed.portraitAudit?.remainingCount, 0)
     assert.equal(resumed.portraitAudit?.pairwiseRemainingCount, 0)
     assert.equal(resumed.portraitAudit?.lastAttemptPaidCalls, 1)
+    assert.equal(resumed.portraitAudit?.lastAttemptSucceededCalls, 1)
+    assert.equal(resumed.portraitAudit?.lastAttemptFailedCalls, 0)
+    assert.equal(resumed.portraitAudit?.lastAttemptCachedCalls, 32)
+    assert.equal(resumed.portraitAudit?.attemptedCalls, 33)
+    assert.equal(resumed.portraitAudit?.succeededCalls, 33)
+    assert.equal(resumed.portraitAudit?.failedCalls, 0)
+    assert.equal(resumed.portraitAudit?.unresolvedCalls, 0)
+    assert.equal(resumed.portraitAudit?.uniqueCachedAssets, 33)
+    assert.equal(resumed.portraitAudit?.cachedCalls, 33)
+    assert.equal(
+      resumed.portraitAudit?.accountingBasis,
+      simulateLegacyCheckpoint ? 'legacy_success_lower_bound' : 'exact',
+    )
     assert.equal(resumed.portraitAudit?.pairwiseEvaluatedCount, 2)
+    assert.equal(resumed.portraitAudit?.attemptNumber, 2)
+    assert.equal(resumed.portraitAudit?.progressDelta, 1)
+    assert.equal(resumed.portraitAudit?.stalledRounds, 0)
     assert.deepEqual(resumed.portraitDraft?.keep, [SELECTED_ID])
     assert.equal(calls.length, new Set(calls).size, 'a successful checkpointed provider operation was repeated')
     assert.ok(calls.slice(32).every(call => !firstAttemptCalls.has(call)))
     assert.equal(calls.filter(call => call.startsWith('pair:')).length, 2)
     assert.equal(resumed.portraitAudit?.paidCalls, calls.length)
+
+    const callsBeforeTerminalReplay = calls.length
+    const terminalOutput = await runAuditV3({
+      ...common,
+      state: resumed,
+      persist: () => saveState(resumed, workdir),
+    })
+    assert.match(terminalOutput, new RegExp(`^${finalStatus}：`, 'u'))
+    assert.equal(calls.length, callsBeforeTerminalReplay,
+      'a terminal audit context scheduled another provider operation')
+    assert.equal(resumed.portraitAudit?.attemptNumber, 2)
 
     if (finalStatus === 'PASS') {
       assert.equal(resumed.portraitAudit?.nextAction, 'propose')
@@ -216,8 +291,18 @@ async function exerciseResume(finalStatus: 'PASS' | 'FAIL'): Promise<void> {
       assert.deepEqual(validateProposal(resumed, [SELECTED_ID]), { ok: true })
     } else {
       assert.equal(resumed.portraitAudit?.nextAction, 'rebuild_selection')
-      assert.deepEqual(resumed.portraitAudit?.strongerChallengers.map(item => item.id), [NEAR_ID])
-      assert.deepEqual(resumed.portraitRebuildFeedback?.strongerChallengerIds, [NEAR_ID])
+      assert.deepEqual(
+        resumed.portraitAudit?.strongerChallengers.map(item => item.id),
+        [NEAR_ID],
+      )
+      assert.deepEqual(
+        resumed.portraitRebuildFeedback?.disqualifiedSelectedIds,
+        [],
+      )
+      assert.deepEqual(
+        resumed.portraitRebuildFeedback?.strongerChallengerIds,
+        [NEAR_ID],
+      )
       assert.equal(resumed.portraitRebuildFeedback?.failedSelectionHash,
         `selection-${fingerprint}`)
       assert.equal(resumed.portraitRebuildFeedback?.selectorIdentityKey, 'selector-offline')
@@ -241,6 +326,145 @@ test('offline audit resumes an isolated INCOMPLETE checkpoint to quality FAIL wi
   await exerciseResume('FAIL')
 })
 
+test('offline audit feeds an ineligible selected ID back as an anonymous hard exclusion', async () => {
+  const folder = '/synthetic-ineligible-selection'
+  const fingerprint = 'offline-ineligible-selection'
+  const state = initialState(fingerprint, folder)
+  const runtime = fakeRuntime([], 79, false, false)
+
+  const output = await runAuditV3({
+    state,
+    candidateIdentities: state.portraitCandidates().map(candidate => ({ id: candidate.id })),
+    frozenSelectedIds: [SELECTED_ID],
+    target: 1,
+    seed: 'offline-ineligible-selection-seed',
+    selectionHash: `selection-${fingerprint}`,
+    auditProviderIdentityKey: 'audit-provider-offline',
+    selectorIdentityKey: 'selector-offline',
+    selectorPairwiseIdentityKey: 'selector-pairwise-offline',
+    inspectConcurrency: 4,
+    engine: runtime.engine,
+    client: runtime.client,
+    persist: async () => true,
+  })
+
+  assert.match(output, /^FAIL：/u)
+  assert.deepEqual(state.portraitAudit?.strongerChallengers, [])
+  assert.deepEqual(state.portraitRebuildFeedback?.disqualifiedSelectedIds, [SELECTED_ID])
+  assert.deepEqual(state.portraitRebuildFeedback?.strongerChallengerIds, [])
+  assert.equal(state.portraitRebuildFeedback?.schemaVersion, 'portrait-rebuild-feedback-v2')
+})
+
+test('completed FAIL bounds anonymous rebuild feedback to the strongest 12 challenger IDs', async () => {
+  const folder = '/synthetic-bounded-feedback'
+  const fingerprint = 'offline-bounded-feedback'
+  const state = initialState(fingerprint, folder)
+  const runtime = fakeRuntime([], 90, true, true, 90)
+  const input = {
+    state,
+    candidateIdentities: state.portraitCandidates().map(candidate => ({ id: candidate.id })),
+    frozenSelectedIds: [SELECTED_ID],
+    target: 1,
+    seed: 'offline-bounded-feedback-seed',
+    selectionHash: `selection-${fingerprint}`,
+    auditProviderIdentityKey: 'audit-provider-offline',
+    selectorIdentityKey: 'selector-offline',
+    selectorPairwiseIdentityKey: 'selector-pairwise-offline',
+    inspectConcurrency: 4,
+    engine: runtime.engine,
+    client: runtime.client,
+    persist: async () => true,
+  }
+
+  assert.match(await runAuditV3(input), /^INCOMPLETE：/u)
+  assert.match(await runAuditV3(input), /^FAIL：/u)
+  assert.equal(state.portraitAudit?.strongerChallengers.length, IDS.length - 1)
+  assert.equal(state.portraitRebuildFeedback?.strongerChallengerIds.length, 12)
+})
+
+test('later audit FAIL preserves previously consumed hard exclusions until PASS', async () => {
+  const folder = '/synthetic-cumulative-exclusion'
+  const fingerprint = 'offline-cumulative-exclusion'
+  const state = initialState(fingerprint, folder)
+  state.portraitRebuildFeedback = {
+    schemaVersion: 'portrait-rebuild-feedback-v2',
+    datasetFingerprint: fingerprint,
+    failedSelectionHash: 'older-failed-selection',
+    selectedIds: ['p002'],
+    disqualifiedSelectedIds: ['p002'],
+    strongerChallengerIds: [],
+    selectorIdentityKey: 'selector-offline',
+    selectorPairwiseIdentityKey: 'selector-pairwise-offline',
+    auditProviderIdentityKey: 'audit-provider-offline',
+    feedbackHash: 'older-feedback',
+    consumedBySelectionHash: `selection-${fingerprint}`,
+  }
+  const runtime = fakeRuntime([], 82, true)
+  const input = {
+    state,
+    candidateIdentities: state.portraitCandidates().map(candidate => ({ id: candidate.id })),
+    frozenSelectedIds: [SELECTED_ID],
+    target: 1,
+    seed: 'offline-cumulative-exclusion-seed',
+    selectionHash: `selection-${fingerprint}`,
+    auditProviderIdentityKey: 'audit-provider-offline',
+    selectorIdentityKey: 'selector-offline',
+    selectorPairwiseIdentityKey: 'selector-pairwise-offline',
+    inspectConcurrency: 4,
+    engine: runtime.engine,
+    client: runtime.client,
+    persist: async () => true,
+  }
+
+  assert.match(await runAuditV3(input), /^INCOMPLETE：/u)
+  assert.match(await runAuditV3(input), /^FAIL：/u)
+  assert.deepEqual(state.portraitRebuildFeedback?.disqualifiedSelectedIds, ['p002'])
+  assert.deepEqual(state.portraitRebuildFeedback?.strongerChallengerIds, [NEAR_ID])
+  assert.equal(state.portraitRebuildFeedback?.consumedBySelectionHash, undefined)
+})
+
+test('later FAIL recovers a durable selector-high versus audit-high eligibility disagreement', async () => {
+  const folder = '/synthetic-durable-audit-exclusion'
+  const fingerprint = 'offline-durable-audit-exclusion'
+  const state = initialState(fingerprint, folder)
+  const durableId = 'p002'
+  const runtime = fakeRuntime([], 82, true)
+  state.recordPortrait(assessment(durableId, 78), 'high', 'selector-offline')
+  state.recordPortraitAudit(
+    needsReviewAssessment(durableId),
+    'high',
+    auditScoreCacheKey({
+      datasetFingerprint: fingerprint,
+      id: durableId,
+      detail: 'high',
+      provider: runtime.client.cacheIdentity,
+    }),
+  )
+  const input = {
+    state,
+    candidateIdentities: state.portraitCandidates().map(candidate => ({ id: candidate.id })),
+    frozenSelectedIds: [SELECTED_ID],
+    target: 1,
+    seed: 'offline-durable-audit-exclusion-seed',
+    selectionHash: `selection-${fingerprint}`,
+    auditProviderIdentityKey: 'audit-provider-offline',
+    selectorIdentityKey: 'selector-offline',
+    selectorPairwiseIdentityKey: 'selector-pairwise-offline',
+    inspectConcurrency: 4,
+    engine: runtime.engine,
+    client: runtime.client,
+    persist: async () => true,
+  }
+
+  assert.match(await runAuditV3(input), /^INCOMPLETE：/u)
+  assert.match(await runAuditV3(input), /^FAIL：/u)
+  assert.deepEqual(state.portraitRebuildFeedback?.disqualifiedSelectedIds, [durableId])
+})
+
+test('legacy audit accounting resumes as an explicit lower bound without inflating unique cache assets', async () => {
+  await exerciseResume('PASS', true)
+})
+
 test('provider auth circuit is terminal for the same audit route and repeats zero provider calls', async () => {
   const folder = '/synthetic-circuit'
   const fingerprint = 'offline-circuit'
@@ -249,6 +473,10 @@ test('provider auth circuit is terminal for the same audit route and repeats zer
   const runtime = fakeRuntime([], 79, false)
   runtime.client.scoreBaseline = async () => {
     providerCalls += 1
+    assert.equal(state.portraitAudit?.attemptedCalls, 1,
+      'attempt was not checkpointed before provider dispatch')
+    assert.equal(state.portraitAudit?.unresolvedCalls, 1,
+      'in-flight provider outcome was not represented durably')
     throw new Error('HTTP 401 unauthorized')
   }
   const input = {
@@ -274,10 +502,138 @@ test('provider auth circuit is terminal for the same audit route and repeats zer
   assert.equal(state.portraitAudit?.status, 'INCOMPLETE')
   assert.equal(state.portraitAudit?.nextAction, 'fix_model_route')
   assert.match(state.portraitAudit?.circuitBreaker ?? '', /401/u)
-  assert.ok(providerCalls > 0 && providerCalls <= 4)
+  assert.equal(providerCalls, 1)
+  assert.equal(state.portraitAudit?.attemptedCalls, 1)
+  assert.equal(state.portraitAudit?.succeededCalls, 0)
+  assert.equal(state.portraitAudit?.failedCalls, 1)
+  assert.equal(state.portraitAudit?.unresolvedCalls, 0)
+  assert.equal(state.portraitAudit?.uniqueCachedAssets, 0)
+  assert.equal(state.portraitAudit?.accountingBasis, 'exact')
+  assert.deepEqual(state.portraitAudit?.failureStats?.[`score:high:${SELECTED_ID}`], {
+    attempts: 1,
+    consecutiveSameCode: 1,
+    lastCode: 'Error',
+    lastStatus: undefined,
+    lastMessage: 'HTTP 401 unauthorized',
+  })
 
   const callsAfterCircuit = providerCalls
   const second = await runAuditV3(input)
   assert.match(second, /^BLOCKED：/u)
   assert.equal(providerCalls, callsAfterCircuit, 'same broken route was probed again')
+})
+
+test('local preview failure stays outside the provider attempt ledger', async () => {
+  const folder = '/synthetic-preview-failure'
+  const fingerprint = 'offline-preview-failure'
+  const state = initialState(fingerprint, folder)
+  let providerCalls = 0
+  const runtime = fakeRuntime([], 79, false)
+  let previewCalls = 0
+  runtime.engine.preview = async () => {
+    previewCalls += 1
+    throw new Error('synthetic local preview failure')
+  }
+  runtime.client.scoreBaseline = async () => {
+    providerCalls += 1
+    return assessment(SELECTED_ID, 79)
+  }
+
+  const output = await runAuditV3({
+    state,
+    candidateIdentities: state.portraitCandidates().map(candidate => ({ id: candidate.id })),
+    frozenSelectedIds: [SELECTED_ID],
+    target: 1,
+    seed: 'offline-preview-failure-seed',
+    selectionHash: `selection-${fingerprint}`,
+    auditProviderIdentityKey: 'audit-provider-preview-failure',
+    selectorIdentityKey: 'selector-preview-failure',
+    selectorPairwiseIdentityKey: 'selector-pairwise-preview-failure',
+    inspectConcurrency: 4,
+    engine: runtime.engine,
+    client: runtime.client,
+    persist: async () => true,
+  })
+
+  assert.match(output, /^INCOMPLETE：/u)
+  assert.match(output, /本地预览未完成/u)
+  assert.equal(providerCalls, 0)
+  assert.equal(state.portraitAudit?.attemptedCalls, 0)
+  assert.equal(state.portraitAudit?.succeededCalls, 0)
+  assert.equal(state.portraitAudit?.failedCalls, 0)
+  assert.equal(state.portraitAudit?.unresolvedCalls, 0)
+  assert.equal(state.portraitAudit?.attemptNumber, 1)
+  assert.equal(state.portraitAudit?.stalledRounds, 1)
+  assert.deepEqual(state.portraitAudit?.failureStats, {})
+
+  const second = await runAuditV3({
+    state,
+    candidateIdentities: state.portraitCandidates().map(candidate => ({ id: candidate.id })),
+    frozenSelectedIds: [SELECTED_ID],
+    target: 1,
+    seed: 'offline-preview-failure-seed',
+    selectionHash: `selection-${fingerprint}`,
+    auditProviderIdentityKey: 'audit-provider-offline',
+    selectorIdentityKey: 'selector-preview-failure',
+    selectorPairwiseIdentityKey: 'selector-pairwise-preview-failure',
+    inspectConcurrency: 4,
+    engine: runtime.engine,
+    client: runtime.client,
+    persist: async () => true,
+  })
+  assert.match(second, /^INCOMPLETE：/u)
+  assert.match(second, /next_action=diagnose_stall/u)
+  assert.equal(state.portraitAudit?.attemptNumber, 2)
+  assert.equal(state.portraitAudit?.stalledRounds, 2)
+  const callsBeforeStallReplay = previewCalls
+  const third = await runAuditV3({
+    state,
+    candidateIdentities: state.portraitCandidates().map(candidate => ({ id: candidate.id })),
+    frozenSelectedIds: [SELECTED_ID],
+    target: 1,
+    seed: 'offline-preview-failure-seed',
+    selectionHash: `selection-${fingerprint}`,
+    auditProviderIdentityKey: 'audit-provider-offline',
+    selectorIdentityKey: 'selector-preview-failure',
+    selectorPairwiseIdentityKey: 'selector-pairwise-preview-failure',
+    inspectConcurrency: 4,
+    engine: runtime.engine,
+    client: runtime.client,
+    persist: async () => true,
+  })
+  assert.match(third, /next_action=diagnose_stall/u)
+  assert.equal(previewCalls, callsBeforeStallReplay)
+})
+
+test('audit report preserves failures across provider batches', async () => {
+  const folder = '/synthetic-batch-failures'
+  const fingerprint = 'offline-batch-failures'
+  const state = initialState(fingerprint, folder)
+  const runtime = fakeRuntime([], 79, false)
+  runtime.client.scoreBaseline = async id => {
+    if (id === SELECTED_ID) return assessment(id, 80)
+    throw new Error(`synthetic invalid assessment ${id}`)
+  }
+
+  const output = await runAuditV3({
+    state,
+    candidateIdentities: state.portraitCandidates().map(candidate => ({ id: candidate.id })),
+    frozenSelectedIds: [SELECTED_ID],
+    target: 1,
+    seed: 'offline-batch-failures-seed',
+    selectionHash: `selection-${fingerprint}`,
+    auditProviderIdentityKey: 'audit-provider-batch-failures',
+    selectorIdentityKey: 'selector-batch-failures',
+    selectorPairwiseIdentityKey: 'selector-pairwise-batch-failures',
+    inspectConcurrency: 4,
+    engine: runtime.engine,
+    client: runtime.client,
+    persist: async () => true,
+  })
+
+  assert.equal(state.portraitAudit?.attemptedCalls, IDS.length)
+  assert.equal(state.portraitAudit?.succeededCalls, 1)
+  assert.equal(state.portraitAudit?.failedCalls, IDS.length - 1)
+  assert.equal(output.match(/评分未完成 p\d{3}：synthetic invalid assessment p\d{3}/gu)?.length, 16,
+    'report kept only the final provider batch instead of the bounded cross-batch failure history')
 })

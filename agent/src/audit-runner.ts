@@ -9,6 +9,7 @@
 
 import {
   decidePortraitAuditStatus,
+  type PortraitAuditFailureStat,
   type PortraitAuditReport,
   type RunState,
 } from './state.ts'
@@ -37,6 +38,46 @@ import {
   type AuditPromotionPlan,
   type AuditUniversePlan,
 } from './audit-v3.ts'
+
+const AUDIT_REBUILD_FEEDBACK_LIMIT = 12
+const AUDIT_FAILURE_STATS_LIMIT = 128
+const AUDIT_STALL_LIMIT = 2
+
+const AUDIT_STAGE_ORDER: Record<NonNullable<PortraitAuditReport['stage']>, number> = {
+  selected_high: 0,
+  remaining_low: 1,
+  promotion_high: 2,
+  pairwise: 3,
+  complete: 4,
+}
+
+function providerFailureDetails(error: unknown): {
+  code: string
+  status?: number
+  message: string
+} {
+  const row = error && typeof error === 'object'
+    ? error as { code?: unknown; status?: unknown; name?: unknown; message?: unknown }
+    : undefined
+  const status = typeof row?.status === 'number' && Number.isFinite(row.status)
+    ? row.status
+    : undefined
+  const code = typeof row?.code === 'string' && row.code.trim()
+    ? row.code.trim()
+    : status !== undefined
+      ? `HTTP_${status}`
+      : typeof row?.name === 'string' && row.name.trim()
+        ? row.name.trim()
+        : 'UNKNOWN_PROVIDER_ERROR'
+  const rawMessage = typeof row?.message === 'string'
+    ? row.message
+    : error instanceof Error ? error.message : '视觉请求失败'
+  // Request IDs are not an error identity and can also be needlessly noisy.
+  const message = rawMessage
+    .replace(/(?:request[_ -]?id|req[_ -]?id)\s*[:=]\s*[A-Za-z0-9_-]+/giu, 'request_id=<redacted>')
+    .slice(0, 240)
+  return { code, status, message }
+}
 
 export interface AuditPreviewSource {
   preview(
@@ -167,12 +208,47 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
     && (previousReport.stage === 'pairwise' || previousReport.stage === 'complete')
   let providerBudget = AUDIT_PROVIDER_CALL_BUDGET
   let attemptedCalls = 0
-  let paidCalls = 0
+  let succeededCalls = 0
+  let failedCalls = 0
   let cachedCalls = 0
-  let accountedPaid = 0
-  let accountedCached = 0
+  let accountedSucceeded = 0
   let lastFailures: string[] = []
   let circuitBreaker: string | undefined
+  const failureStats: Record<string, PortraitAuditFailureStat> = {
+    ...(previousReport?.failureStats ?? {}),
+  }
+  const recordProviderFailure = (key: string, error: unknown): PortraitAuditFailureStat => {
+    const details = providerFailureDetails(error)
+    const previous = failureStats[key]
+    if (!previous && Object.keys(failureStats).length >= AUDIT_FAILURE_STATS_LIMIT) {
+      const evict = Object.entries(failureStats)
+        .sort((left, right) => left[1].attempts - right[1].attempts || left[0].localeCompare(right[0]))[0]?.[0]
+      if (evict) delete failureStats[evict]
+    }
+    const result: PortraitAuditFailureStat = {
+      attempts: (previous?.attempts ?? 0) + 1,
+      consecutiveSameCode: previous?.lastCode === details.code
+        ? previous.consecutiveSameCode + 1
+        : 1,
+      lastCode: details.code,
+      lastStatus: details.status,
+      lastMessage: details.message,
+    }
+    failureStats[key] = result
+    return result
+  }
+  const previousSucceededCalls = previousReport?.succeededCalls
+    ?? previousReport?.paidCalls
+    ?? 0
+  const previousAttemptedCalls = previousReport?.attemptedCalls
+    ?? previousSucceededCalls
+  const previousFailedCalls = previousReport?.failedCalls
+    ?? Math.max(0, previousAttemptedCalls - previousSucceededCalls)
+  const previousUnresolvedCalls = previousReport?.unresolvedCalls ?? 0
+  const accountingBasis: NonNullable<PortraitAuditReport['accountingBasis']> = previousReport
+    && previousReport.attemptedCalls === undefined
+    ? 'legacy_success_lower_bound'
+    : previousReport?.accountingBasis ?? 'exact'
 
   const legKey = (plan: AuditPairPlan, order: 'AB' | 'BA') => auditPairwiseLegCacheKey({
     datasetFingerprint: state.datasetFingerprint!,
@@ -201,13 +277,28 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
         `StageC promoted-high=${report.promotionHighCompleted}/${promotionPlan?.promotionIds.length ?? 0}；` +
         `StageD≤8 pairs/16 legs。`,
       `hard_budget=${AUDIT_PROVIDER_CALL_BUDGET} attempted=${report.attemptedCallsThisAttempt} ` +
-        `paid=${report.lastAttemptPaidCalls} cached=${report.lastAttemptCachedCalls}；` +
-        `cumulative_paid=${report.paidCalls} cumulative_cached=${report.cachedCalls ?? 0}。`,
+        `succeeded=${report.lastAttemptSucceededCalls ?? report.lastAttemptPaidCalls ?? 0} ` +
+        `failed=${report.lastAttemptFailedCalls ?? 0} unresolved=${report.lastAttemptUnresolvedCalls ?? 0} ` +
+        `cache_hits=${report.lastAttemptCachedCalls ?? 0}；` +
+        `cumulative_attempted=${report.attemptedCalls ?? report.paidCalls} ` +
+        `succeeded=${report.succeededCalls ?? report.paidCalls} failed=${report.failedCalls ?? 0} ` +
+        `unresolved=${report.unresolvedCalls ?? 0} ` +
+        `unique_cached_assets=${report.uniqueCachedAssets ?? report.cachedCalls ?? 0} ` +
+        `accounting=${report.accountingBasis ?? 'legacy_success_lower_bound'}。`,
+      `attempt=${report.attemptNumber ?? 0} progress_delta=${report.progressDelta ?? 0} ` +
+        `stalled_rounds=${report.stalledRounds ?? 0} ` +
+        `prior_remaining=${report.priorRemainingCount ?? 'n/a'} ` +
+        `prior_pairwise_remaining=${report.priorPairwiseRemainingCount ?? 'n/a'}。`,
       `候选 ${candidateIdentities.length}；固定 seed random R=${universe.randomCount}；` +
         `selection_hash=${selectionHash}（名单保持冻结）。`,
       ...(report.circuitBreaker ? [`circuit_breaker=${report.circuitBreaker}`] : []),
+      ...Object.entries(report.failureStats ?? {})
+        .sort((left, right) => right[1].attempts - left[1].attempts || left[0].localeCompare(right[0]))
+        .slice(0, 16)
+        .map(([key, stat]) =>
+          `失败历史 ${key}：累计${stat.attempts}次，同类连续${stat.consecutiveSameCode}次，code=${stat.lastCode}`),
       ...lastFailures.slice(0, 16),
-      ...report.strongerChallengers.slice(0, 12).map(item =>
+      ...report.strongerChallengers.slice(0, AUDIT_REBUILD_FEEDBACK_LIMIT).map(item =>
         `反例 ${item.id} audit=${item.score} margin=${item.margin.toFixed(1)}：${item.reason}`),
       report.status === 'INCOMPLETE'
         ? routeBlocked
@@ -225,6 +316,7 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
     stage: NonNullable<PortraitAuditReport['stage']>,
     status: 'PASS' | 'FAIL' | 'INCOMPLETE' = 'INCOMPLETE',
     quality?: ReturnType<typeof evaluateAuditQuality>,
+    finalizeAttempt = false,
   ): Promise<PortraitAuditReport> => {
     const selectedHighCompleted = universe.selectedHighIds.length
       - pendingScoreIds(universe.selectedHighIds, 'high').length
@@ -237,10 +329,35 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
       + (promotionPlan?.promotionIds.length ?? 0)
     const scoreCompleted = selectedHighCompleted + remainingLowCompleted + promotionHighCompleted
     const legsRemaining = pendingLegs()
-    state.paidCalls.portraitAudit += paidCalls - accountedPaid
-    state.paidCalls.cached += cachedCalls - accountedCached
-    accountedPaid = paidCalls
-    accountedCached = cachedCalls
+    const pairwiseEvaluatedCount = pairPlans.length * 2 - legsRemaining.length
+    const uniqueCachedAssets = scoreCompleted + pairwiseEvaluatedCount
+    const previousAssets = previousReport?.uniqueCachedAssets
+      ?? (previousReport
+        ? previousReport.evaluatedCount + (previousReport.pairwiseEvaluatedCount ?? 0)
+        : 0)
+    const progressDelta = Math.max(0, uniqueCachedAssets - previousAssets)
+    const stageAdvanced = previousReport?.stage === undefined
+      ? uniqueCachedAssets > 0 || stage !== 'selected_high'
+      : AUDIT_STAGE_ORDER[stage] > AUDIT_STAGE_ORDER[previousReport.stage]
+    const madeProgress = progressDelta > 0 || stageAdvanced
+    const attemptNumber = finalizeAttempt
+      ? (previousReport?.attemptNumber ?? 0) + 1
+      : previousReport?.attemptNumber ?? 0
+    const stalledRounds = finalizeAttempt
+      ? status === 'INCOMPLETE' && !madeProgress
+        ? (previousReport?.stalledRounds ?? 0) + 1
+        : 0
+      : previousReport?.stalledRounds ?? 0
+    const nextAction: NonNullable<PortraitAuditReport['nextAction']> = status === 'INCOMPLETE'
+      ? circuitBreaker
+        ? 'fix_model_route'
+        : finalizeAttempt && stalledRounds >= AUDIT_STALL_LIMIT
+          ? 'diagnose_stall'
+          : 'retry_audit'
+      : status === 'PASS' ? 'propose' : 'rebuild_selection'
+    state.paidCalls.portraitAudit += succeededCalls - accountedSucceeded
+    accountedSucceeded = succeededCalls
+    const unresolvedCalls = attemptedCalls - succeededCalls - failedCalls
     const report: PortraitAuditReport = {
       schemaVersion: 'portrait-audit-v3',
       datasetFingerprint: state.datasetFingerprint!,
@@ -260,17 +377,33 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
         ...pendingScoreIds(universe.remainingLowIds, 'low'),
         ...pendingScoreIds(promotionPlan?.promotionIds ?? [], 'high'),
       ],
-      pairwiseEvaluatedCount: pairPlans.length * 2 - legsRemaining.length,
+      pairwiseEvaluatedCount,
       pairwisePlannedCount: pairPlans.length * 2,
       pairwiseRemainingCount: legsRemaining.length,
       failedPairKeys: legsRemaining.map(leg => `${leg.plan.challengerId}/${leg.plan.selectedId}/${leg.order}`),
-      paidCalls: (previousReport?.paidCalls ?? 0) + paidCalls,
-      cachedCalls: (previousReport?.cachedCalls ?? 0) + cachedCalls,
-      lastAttemptPaidCalls: paidCalls,
+      paidCalls: previousSucceededCalls + succeededCalls,
+      cachedCalls: uniqueCachedAssets,
+      attemptedCalls: previousAttemptedCalls + attemptedCalls,
+      succeededCalls: previousSucceededCalls + succeededCalls,
+      failedCalls: previousFailedCalls + failedCalls,
+      unresolvedCalls: previousUnresolvedCalls + unresolvedCalls,
+      uniqueCachedAssets,
+      accountingBasis,
+      lastAttemptPaidCalls: succeededCalls,
       lastAttemptCachedCalls: cachedCalls,
-      nextAction: status === 'INCOMPLETE'
-        ? circuitBreaker ? 'fix_model_route' : 'retry_audit'
-        : status === 'PASS' ? 'propose' : 'rebuild_selection',
+      lastAttemptSucceededCalls: succeededCalls,
+      lastAttemptFailedCalls: failedCalls,
+      lastAttemptUnresolvedCalls: unresolvedCalls,
+      nextAction,
+      attemptNumber,
+      priorRemainingCount: previousReport?.remainingCount,
+      priorPairwiseRemainingCount: previousReport?.pairwiseRemainingCount,
+      progressDelta: finalizeAttempt ? progressDelta : previousReport?.progressDelta ?? 0,
+      stalledRounds,
+      lastProgressStage: finalizeAttempt && madeProgress
+        ? stage
+        : previousReport?.lastProgressStage,
+      failureStats: { ...failureStats },
       contextKey,
       stage,
       selectedHighIds: [...universe.selectedHighIds],
@@ -288,22 +421,49 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
       auditProviderIdentityKey,
     }
     state.portraitAudit = report
-    if (status === 'FAIL' && report.strongerChallengers.length > 0) {
-      const strongerChallengerIds = report.strongerChallengers.map(item => item.id)
+    if (status === 'FAIL' && (
+      quality?.selectedQualityIssueIds.length || report.strongerChallengers.length
+    )) {
+      // Recover durable high-detail audit disagreements even if an older
+      // cumulative feedback record was written by a prior selection. This is
+      // still evaluator-only evidence: only anonymous IDs cross the boundary.
+      // Requiring selector high prevents a random promoted audit candidate
+      // from becoming a migration-time hard exclusion.
+      const durableAuditDisqualifiedIds = candidateIdentities
+        .map(candidate => candidate.id)
+        .filter(id => state.cachedPortrait(id, 'high', selectorIdentityKey)
+          ?.assessment.eligibility.status === 'eligible'
+          && auditAssessment(id, 'high') !== undefined
+          && auditAssessment(id, 'high')!.eligibility.status !== 'eligible')
+      const disqualifiedSelectedIds = [...new Set([
+        ...(state.portraitRebuildFeedback?.disqualifiedSelectedIds ?? []),
+        ...(quality?.selectedQualityIssueIds ?? []),
+        ...durableAuditDisqualifiedIds,
+      ])]
+      // Feedback stays deliberately bounded and carries IDs only. The
+      // selector must re-score/re-compare these counterexamples itself; it
+      // never receives the evaluator's full ranking, scores, or reasons.
+      const strongerChallengerIds = report.strongerChallengers
+        .slice(0, AUDIT_REBUILD_FEEDBACK_LIMIT)
+        .map(item => item.id)
       const feedbackHash = createHash('sha256').update([
-        'portrait-rebuild-feedback-v1',
+        'portrait-rebuild-feedback-v2',
         state.datasetFingerprint!,
         selectionHash,
         selectorIdentityKey,
         selectorPairwiseIdentityKey,
         auditProviderIdentityKey,
+        'disqualified-selected',
+        ...disqualifiedSelectedIds,
+        'stronger-challengers',
         ...strongerChallengerIds,
       ].join('\u0000')).digest('hex')
       state.portraitRebuildFeedback = {
-        schemaVersion: 'portrait-rebuild-feedback-v1',
+        schemaVersion: 'portrait-rebuild-feedback-v2',
         datasetFingerprint: state.datasetFingerprint!,
         failedSelectionHash: selectionHash,
         selectedIds: [...frozenSelectedIds],
+        disqualifiedSelectedIds: [...disqualifiedSelectedIds],
         strongerChallengerIds,
         selectorIdentityKey,
         selectorPairwiseIdentityKey,
@@ -330,6 +490,20 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
     return renderReport(previousReport)
   }
 
+  // Completed evidence is terminal for this exact context. Replaying the tool
+  // is a zero-provider-call read, not another pass through cached checkpoints.
+  if (previousReport?.stage === 'complete'
+    && (previousReport.status === 'PASS' || previousReport.status === 'FAIL')) {
+    return renderReport(previousReport)
+  }
+
+  // Two completed invocations without any new asset or stage advance indicate
+  // a deterministic local/provider failure, not useful retry work.
+  if (previousReport?.nextAction === 'diagnose_stall'
+    && (previousReport.stalledRounds ?? 0) >= AUDIT_STALL_LIMIT) {
+    return renderReport(previousReport)
+  }
+
   // Freeze v3 universe/random plan before the first paid request.
   await checkpoint('selected_high')
 
@@ -347,11 +521,27 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
         AUDIT_CHECKPOINT_BATCH_SIZE,
         inspectConcurrency,
       ))
-      providerBudget -= batch.length
-      attemptedCalls += batch.length
-      const outcomes = await Promise.all(batch.map(async id => {
+      const prepared = await Promise.all(batch.map(async id => {
         try {
-          const preview = await engine.preview(id, detail, signal)
+          return { id, preview: await engine.preview(id, detail, signal), ok: true as const }
+        } catch (error) {
+          return {
+            id,
+            ok: false as const,
+            message: error instanceof Error ? error.message : '本地预览失败',
+          }
+        }
+      }))
+      const ready = prepared.filter(item => item.ok)
+      const previewFailures = prepared.filter(item => !item.ok)
+        .map(item => `本地预览未完成 ${item.id}：${item.message}`)
+      providerBudget -= ready.length
+      attemptedCalls += ready.length
+      // Reserve attempts durably before dispatch. A process crash can then be
+      // reported as unresolved instead of silently under-counting a request.
+      await checkpoint(stage)
+      const outcomes = await Promise.all(ready.map(async ({ id, preview }) => {
+        try {
           const assessment = await client.scoreBaseline(id, preview.jpeg_base64, detail, signal, 'audit')
           state.recordPortraitAudit(assessment, detail, scoreKey(id, detail))
           return { id, ok: true as const }
@@ -359,14 +549,23 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
           return {
             id,
             ok: false as const,
+            error,
             message: error instanceof Error ? error.message : '视觉评分失败',
             circuit: isPortraitVisionCircuitBreakerError(error),
           }
         }
       }))
-      paidCalls += outcomes.filter(outcome => outcome.ok).length
-      lastFailures = outcomes.filter(outcome => !outcome.ok)
-        .map(outcome => `评分未完成 ${outcome.id}：${outcome.message}`)
+      succeededCalls += outcomes.filter(outcome => outcome.ok).length
+      failedCalls += outcomes.filter(outcome => !outcome.ok).length
+      const providerFailureLines = outcomes.filter(outcome => !outcome.ok).map(outcome => {
+        const stat = recordProviderFailure(`score:${detail}:${outcome.id}`, outcome.error)
+        return `评分未完成 ${outcome.id}：${outcome.message}（累计第${stat.attempts}次；同类连续${stat.consecutiveSameCode}次）`
+      })
+      lastFailures = [
+        ...lastFailures,
+        ...previewFailures,
+        ...providerFailureLines,
+      ].slice(-64)
       const breaker = outcomes.find(outcome => !outcome.ok && outcome.circuit)
       if (breaker && !breaker.ok) circuitBreaker = breaker.message
       await checkpoint(stage)
@@ -375,12 +574,12 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
 
   await runScoreStage(universe.selectedHighIds, 'high', 'selected_high')
   if (pendingScoreIds(universe.selectedHighIds, 'high').length || circuitBreaker || providerBudget <= 0) {
-    return renderReport(await checkpoint('selected_high'))
+    return renderReport(await checkpoint('selected_high', 'INCOMPLETE', undefined, true))
   }
 
   await runScoreStage(universe.remainingLowIds, 'low', 'remaining_low')
   if (pendingScoreIds(universe.remainingLowIds, 'low').length || circuitBreaker || providerBudget <= 0) {
-    return renderReport(await checkpoint('remaining_low'))
+    return renderReport(await checkpoint('remaining_low', 'INCOMPLETE', undefined, true))
   }
 
   if (!promotionPlan) {
@@ -394,7 +593,7 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
   }
   await runScoreStage(promotionPlan.promotionIds, 'high', 'promotion_high')
   if (pendingScoreIds(promotionPlan.promotionIds, 'high').length || circuitBreaker || providerBudget <= 0) {
-    return renderReport(await checkpoint('promotion_high'))
+    return renderReport(await checkpoint('promotion_high', 'INCOMPLETE', undefined, true))
   }
 
   if (!pairPlanFrozen) {
@@ -422,14 +621,29 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
     .slice(0, Math.min(providerBudget, AUDIT_MAX_PAIRWISE_LEGS))
   for (let offset = 0; offset < scheduledLegs.length && !circuitBreaker; offset += 1) {
     const batch = scheduledLegs.slice(offset, offset + 1)
-    providerBudget -= batch.length
-    attemptedCalls += batch.length
-    const outcomes = await Promise.all(batch.map(async leg => {
+    const prepared = await Promise.all(batch.map(async leg => {
       try {
         const [challenger, selected] = await Promise.all([
           engine.preview(leg.plan.challengerId, 'high', signal),
           engine.preview(leg.plan.selectedId, 'high', signal),
         ])
+        return { leg, challenger, selected, ok: true as const }
+      } catch (error) {
+        return {
+          leg,
+          ok: false as const,
+          message: error instanceof Error ? error.message : '本地预览失败',
+        }
+      }
+    }))
+    const ready = prepared.filter(item => item.ok)
+    const previewFailures = prepared.filter(item => !item.ok)
+      .map(item => `比较预览未完成 ${item.leg.key.slice(0, 12)}：${item.message}`)
+    providerBudget -= ready.length
+    attemptedCalls += ready.length
+    await checkpoint('pairwise')
+    const outcomes = await Promise.all(ready.map(async ({ leg, challenger, selected }) => {
+      try {
         const decision = await client.comparePairLeg(
           leg.plan.challengerId,
           challenger.jpeg_base64,
@@ -449,21 +663,31 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
       } catch (error) {
         return {
           key: leg.key,
+          failureKey: `pair:${leg.plan.challengerId}:${leg.plan.selectedId}:${leg.order}`,
           ok: false as const,
+          error,
           message: error instanceof Error ? error.message : '视觉比较失败',
           circuit: isPortraitVisionCircuitBreakerError(error),
         }
       }
     }))
-    paidCalls += outcomes.filter(outcome => outcome.ok).length
-    lastFailures = outcomes.filter(outcome => !outcome.ok)
-      .map(outcome => `比较 leg 未完成 ${outcome.key.slice(0, 12)}：${outcome.message}`)
+    succeededCalls += outcomes.filter(outcome => outcome.ok).length
+    failedCalls += outcomes.filter(outcome => !outcome.ok).length
+    const providerFailureLines = outcomes.filter(outcome => !outcome.ok).map(outcome => {
+      const stat = recordProviderFailure(outcome.failureKey, outcome.error)
+      return `比较 leg 未完成 ${outcome.failureKey}：${outcome.message}（累计第${stat.attempts}次；同类连续${stat.consecutiveSameCode}次）`
+    })
+    lastFailures = [
+      ...lastFailures,
+      ...previewFailures,
+      ...providerFailureLines,
+    ].slice(-64)
     const breaker = outcomes.find(outcome => !outcome.ok && outcome.circuit)
     if (breaker && !breaker.ok) circuitBreaker = breaker.message
     await checkpoint('pairwise')
   }
   if (pendingLegs().length || circuitBreaker) {
-    return renderReport(await checkpoint('pairwise'))
+    return renderReport(await checkpoint('pairwise', 'INCOMPLETE', undefined, true))
   }
 
   const bestAssessments = new Map([
@@ -501,5 +725,5 @@ export async function runAuditV3(input: RunAuditV3Input): Promise<string> {
     lastFailures = quality.selectedQualityIssueIds.map(id =>
       `入选项质量反例 ${id}：v3 high audit 未达到 eligible baseline。`)
   }
-  return renderReport(await checkpoint('complete', status, quality))
+  return renderReport(await checkpoint('complete', status, quality, true))
 }

@@ -1,3 +1,6 @@
 engine/.build/
 bench/out/
 node_modules/
+.venv-qrealign/
+.models/
+.qrealign-cache/

@@ -19,6 +19,10 @@ import { createHash } from 'node:crypto'
 import { link, mkdir, readFile, realpath, unlink, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative } from 'node:path'
 import { PhotoEngine, type Candidate } from './engine.ts'
+import {
+  LOCAL_PORTRAIT_GATE_VERSION,
+  localPortraitEligible,
+} from './local-eligibility.ts'
 import { mapWithConcurrency } from './pool.ts'
 import {
   currentExportSelectionHash,
@@ -60,13 +64,16 @@ import {
   type PreferenceProfileInput,
 } from './preferences.ts'
 import {
+  PORTRAIT_RANKING_POLICY_VERSION,
   portraitRankPolicy,
   rankPortraits,
   type PairwiseComparison,
   type RankingCandidate,
 } from './ranking.ts'
 import {
+  HIGH_REFINEMENT_PLAN_VERSION,
   MAX_PAIRWISE_PAIRS,
+  PAIRWISE_PLAN_VERSION,
   highRefinementContextKey,
   planHighRefinement,
   planPairwiseBudget,
@@ -83,7 +90,9 @@ import {
 } from './independent-evaluator.ts'
 import {
   createFrozenSelectionReceipt,
+  selectionHashFromReceiptItems,
   serializeFrozenSelectionReceipt,
+  type FrozenSelectionDecisionIdentity,
   type FrozenSelectionReceipt,
 } from '../../scripts/selection-receipt.mjs'
 
@@ -164,7 +173,7 @@ function row(candidate: Candidate, effectiveCategory: Category = candidate.categ
   if (candidate.family) parts.push(`连拍${candidate.family}`)
   if (candidate.risk.length) parts.push(`风险:${candidate.risk.join(',')}`)
   if (candidate.face) parts.push(candidate.face)
-  if (candidate.eyes_closed) parts.push('本地提示:可能闭眼，需结合意图复核')
+  if (candidate.eyes_closed) parts.push('本地门控:闭眼')
   if (candidate.local_top) parts.push('本地优等')
   if (candidate.t !== undefined) parts.push(`+${candidate.t}s`)
   return parts.join(' ')
@@ -174,13 +183,15 @@ function portraitSelectionHash(
   datasetFingerprint: string,
   candidateScope: CandidateScope,
   ids: readonly string[],
+  decisionIdentity: FrozenSelectionDecisionIdentity,
 ): string {
-  return createHash('sha256')
-    .update(
-      `${PORTRAIT_BASELINE_RUBRIC_VERSION}\u0000${datasetFingerprint}\u0000${candidateScope}\u0000` +
-      [...ids].sort().join('\u0000'),
-    )
-    .digest('hex')
+  return selectionHashFromReceiptItems({
+    rubricVersion: PORTRAIT_BASELINE_RUBRIC_VERSION,
+    datasetFingerprint,
+    candidateScope,
+    decisionIdentity,
+    selectedIds: ids,
+  })
 }
 
 function uniqueStrings(value: unknown): string[] {
@@ -274,7 +285,6 @@ export function apply(ctx: Context, config: Config): void {
     ? undefined
     : 'Photo Curator 只允许执行照片策展专用工具。')
   installIndependentEvaluatorRouteOverride(ctx)
-  ctx.tools.register(independentEvaluatorToolDefinition(ctx, settleRun, defineTool))
   const excludedRelativePaths = normalizeExcludedRelativePaths(config.excludedRelativePaths)
   // 一个 preset 实例会服务多个 Harness session。运行状态必须按 Agent 隔离；否则一个
   // 会话切换目录会让另一个会话预览或导出错误的匿名 ID。
@@ -309,6 +319,25 @@ export function apply(ctx: Context, config: Config): void {
     engines.set(key, created)
     return created
   }
+
+  ctx.tools.register(independentEvaluatorToolDefinition(
+    ctx,
+    settleRun,
+    defineTool,
+    async (args, exec) => {
+      const parentState = stateFor(exec)
+      if (!parentState.folder || parentState.folder !== args.folder
+        || parentState.candidateScope !== args.candidate_scope) {
+        throw new Error(
+          'independent_evaluator 已完成并持久化，但父会话尚未加载同一 folder/scope；' +
+          '请先单独调用 analyze_folder，再重放已缓存审计。',
+        )
+      }
+      if (!await loadState(parentState, config.workdir, args.folder, parentState.limit)) {
+        throw new Error('independent_evaluator 已完成，但父会话无法重新加载审计 checkpoint。')
+      }
+    },
+  ))
 
   // A RunState belongs to one Agent, but the model route may change between
   // steps in that session. Every identity-sensitive tool rebinds from the
@@ -408,14 +437,34 @@ export function apply(ctx: Context, config: Config): void {
       'role:selector-pairwise',
       state.datasetFingerprint ?? '',
       PORTRAIT_BASELINE_RUBRIC_VERSION,
-      configuredPortraitIdentity(state).auditPairwisePromptHash,
+      configuredPortraitIdentity(state).selectorPairwisePromptHash,
       configuredPortraitIdentity(state).routeIdentity,
+      LOCAL_PORTRAIT_GATE_VERSION,
     ].join('\u0000'))
     .digest('hex')
 
-  const selectorComparisons = (state: RunState): PairwiseComparison[] => {
+  const selectionDecisionIdentity = (state: RunState): FrozenSelectionDecisionIdentity => {
+    const identity = configuredPortraitIdentity(state)
+    return Object.freeze({
+      highRefinementPlanVersion: HIGH_REFINEMENT_PLAN_VERSION,
+      localGateVersion: LOCAL_PORTRAIT_GATE_VERSION,
+      pairwisePlanVersion: PAIRWISE_PLAN_VERSION,
+      preferenceHash: createHash('sha256').update(JSON.stringify(state.preference)).digest('hex'),
+      rankingPolicyVersion: PORTRAIT_RANKING_POLICY_VERSION,
+      selectorBaselineHash: identity.selectorBaselinePromptHash,
+      selectorPairwiseHash: identity.selectorPairwisePromptHash,
+      selectorRouteIdentity: identity.routeIdentity,
+    })
+  }
+
+  const selectorComparisons = (
+    state: RunState,
+    allowedIds?: ReadonlySet<string>,
+  ): PairwiseComparison[] => {
     const identity = selectorPairwiseIdentityKey(state)
-    return state.portraitComparisons.filter(comparison => comparison.cacheKey === identity)
+    return state.portraitComparisons.filter(comparison => comparison.cacheKey === identity
+      && (!allowedIds
+        || (allowedIds.has(comparison.leftId) && allowedIds.has(comparison.rightId))))
   }
 
   const selectorPairwiseLegKey = (
@@ -462,10 +511,12 @@ export function apply(ctx: Context, config: Config): void {
       sourceRoot: state.folder,
       excludedRelativePaths,
       datasetFingerprint: state.datasetFingerprint,
+      decisionIdentity: selectionDecisionIdentity(state),
       selectionHash: state.portraitDraft.selectionHash,
       candidateScope: state.candidateScope,
       target: keep.length,
       selectedItems: keep.map(id => ({ id, sha256: hashesById.get(id)! })),
+      selectedOrder: keep,
       auditStatus: 'PASS',
       routeIdentity: identity.routeIdentity,
       rubricIdentity: {
@@ -474,6 +525,7 @@ export function apply(ctx: Context, config: Config): void {
       },
       promptIdentity: {
         selectorBaselineHash: identity.selectorBaselinePromptHash,
+        selectorPairwiseHash: identity.selectorPairwisePromptHash,
         auditBaselineHash: identity.auditBaselinePromptHash,
         auditPairwiseHash: identity.auditPairwisePromptHash,
       },
@@ -491,16 +543,20 @@ export function apply(ctx: Context, config: Config): void {
       candidateScope: state.candidateScope,
       target,
       preferenceFingerprint: JSON.stringify(state.preference),
-      rubricModelKey: selectorCacheKey(state),
+      rubricModelKey: `${selectorCacheKey(state)}:${selectorPairwiseIdentityKey(state)}:${LOCAL_PORTRAIT_GATE_VERSION}`,
       auditFeedbackFingerprint,
     })
+  }
+
+  function locallyEligiblePortraitCandidates(state: RunState): Candidate[] {
+    return state.portraitCandidates().filter(localPortraitEligible)
   }
 
   function portraitRankingCandidates(
     state: RunState,
     baselineOnly = false,
   ): RankingCandidate[] {
-    return state.portraitCandidates().flatMap(candidate => {
+    return locallyEligiblePortraitCandidates(state).flatMap(candidate => {
       const stored = state.portraitScores.get(candidate.id)
       if (!stored || stored.cacheKey !== selectorCacheKey(state)) return []
       const score = state.portraitScore(candidate.id)
@@ -658,12 +714,10 @@ export function apply(ctx: Context, config: Config): void {
       // 分数是花过钱的资产：同一目录、同一取样上限下已经打过的分要接着用，
       // 否则每开一个新会话就把同一批照片重新买一遍。
       const restored = await loadState(state, config.workdir, folder, args.limit)
-      if (args.people_target !== undefined) {
-        state.targets.people = Math.max(0, Math.floor(args.people_target))
-      }
-      if (args.scenery_target !== undefined) {
-        state.targets.scenery = Math.max(0, Math.floor(args.scenery_target))
-      }
+      state.setTargets({
+        people: args.people_target,
+        scenery: args.scenery_target,
+      })
       await saveState(state, config.workdir)
       const multi = report.families.filter((f) => f.members.length > 1)
       const localPeopleCount = report.candidates.filter(candidate => candidate.category === 'people').length
@@ -690,7 +744,7 @@ export function apply(ctx: Context, config: Config): void {
           `build_selection 会在高分家族和切线附近执行双向 pairwise，不会让占位代表替整组参赛。\n`
         : ''
       const eyeNote = closedEyes
-        ? `本机提示 ${closedEyes} 张人物照可能闭眼；这不是自动硬淘汰，需按画面意图复核人物瞬间。\n`
+        ? `本机硬门控排除 ${closedEyes} 张明显闭眼人物照；不会发送给视觉模型，也不会进入 selector 或 audit 候选池。\n`
         : ''
       const scopeNote = candidateScope === 'people_only'
         ? `候选范围：people_only；人物评估池 ${portraitPoolCount} 张。本地分类仅作提示，不会排除任何照片。\n`
@@ -862,7 +916,9 @@ export function apply(ctx: Context, config: Config): void {
         return '拒绝执行：evaluate_pool 只允许 detail=low。high 复核必须先由 build_selection mode=plan 冻结 hard cap，再用 mode=run 执行；不要用整池 high 修复单张失败。'
       }
       const detail = 'low' as const
-      const people = state.portraitCandidates()
+      const allPeople = state.portraitCandidates()
+      const people = locallyEligiblePortraitCandidates(state)
+      const localRejected = allPeople.length - people.length
       if (!people.length) {
         if (state.candidateScope === 'auto' && state.targets.people > 0 && state.candidates.size > 0) {
           return '人物评估池为 0；本地分类未发现人物。不会自动扩大付费范围。若用户明确确认整批均为人物候选，请重新 analyze_folder，设置 candidate_scope=people_only 且 scenery_target=0。'
@@ -903,7 +959,8 @@ export function apply(ctx: Context, config: Config): void {
             : '\nnext_action=retry_evaluate_pool_low；在后续新 turn 使用相同 detail=low 只补 missing，禁止改用 high。')
         : ''
       return `全链路模型：${renderHarnessRoute(route)}\n` +
-        `完整人物池 ${people.length} 张：本次 provider 请求 ${result.attempted} · ` +
+        `完整人物池 ${allPeople.length} 张（本地硬门控排除 ${localRejected} 张）：` +
+        `本次 provider 请求 ${result.attempted} · ` +
         `成功 ${result.paid} · 失败 ${result.failures.length} · 缓存 ${result.cached} · ` +
         `eligible ${eligible} · needs_review ${review}。${failedText}`
     },
@@ -934,6 +991,13 @@ export function apply(ctx: Context, config: Config): void {
         return `拒绝执行：${error instanceof Error ? error.message : '无法解析当前 DSH 模型路由'}`
       }
       if (!state.folder || !state.datasetFingerprint) return '先运行 analyze_folder。'
+      // An independent evaluator writes through a separate Agent/RunState.
+      // Always reload the durable checkpoint at the build boundary so a later
+      // turn cannot rank from stale parent memory and silently miss new FAIL
+      // feedback. Every paid selector asset is persisted before this point.
+      if (!await loadState(state, config.workdir, state.folder, state.limit)) {
+        return '无法重新载入当前数据集 checkpoint；禁止从过期内存继续 build_selection。'
+      }
       if (state.limit !== undefined) {
         return '最佳人像必须比较完整目录；当前 analyze_folder 使用了 limit。请不传 limit 重新分析全池。'
       }
@@ -946,23 +1010,40 @@ export function apply(ctx: Context, config: Config): void {
       }
       const target = state.targets.people
       if (target <= 0) return 'people_target 必须大于 0。'
-      const people = state.portraitCandidates()
+      const people = locallyEligiblePortraitCandidates(state)
       const currentSelectorCacheKey = selectorCacheKey(state)
       const currentSelectorPairwiseKey = selectorPairwiseIdentityKey(state)
       const feedback = state.portraitRebuildFeedback
-      const rebuildFeedback = feedback
+      const validRebuildFeedback = feedback
         && feedback.datasetFingerprint === state.datasetFingerprint
         && feedback.selectorIdentityKey === currentSelectorCacheKey
         && feedback.selectorPairwiseIdentityKey === currentSelectorPairwiseKey
         && feedback.auditProviderIdentityKey === auditProviderIdentityKey(state)
         ? feedback
         : undefined
+      // Once a complete rebuild has consumed this feedback, the only valid
+      // next step is a fresh blind audit. Re-running here would silently drop
+      // hard exclusions (for example, an audit-ineligible selected image).
+      if (validRebuildFeedback?.consumedBySelectionHash
+        && validRebuildFeedback.consumedBySelectionHash === state.portraitDraft?.selectionHash) {
+        return '当前冻结名单已经消费 audit 反例；下一步必须调用 independent_evaluator。' +
+          '在得到新的 PASS/FAIL 前禁止重复 build_selection。'
+      }
+      // A partial run clears portraitDraft before any paid work. Feedback must
+      // therefore remain applicable across remaining-only retries even though
+      // both consumedBySelectionHash and portraitDraft may be absent.
+      const rebuildFeedback = validRebuildFeedback
+      const disqualifiedSelectedIds = new Set(
+        rebuildFeedback?.disqualifiedSelectedIds ?? [],
+      )
       const missing = people.filter(candidate =>
         !state.cachedPortrait(candidate.id, 'low', currentSelectorCacheKey))
       if (missing.length) {
         return `还有 ${missing.length} 张人物未完成 baseline（${missing.slice(0, 20).map(item => item.id).join(' ')}）。先调用 evaluate_pool。`
       }
       let current = portraitRankingCandidates(state)
+        .filter(candidate => !disqualifiedSelectedIds.has(candidate.id))
+      const rebuildCandidateIds = new Set(current.map(candidate => candidate.id))
       const eligibleCount = current.filter(item => item.eligibility === 'eligible').length
       if (eligibleCount < target) {
         return `eligible 人像只有 ${eligibleCount} 张，无法精确选择 ${target} 张。`
@@ -994,7 +1075,7 @@ export function apply(ctx: Context, config: Config): void {
         : freshRefinementPlan
       let estimatedPreliminary
       try {
-        const comparisons = selectorComparisons(state)
+        const comparisons = selectorComparisons(state, rebuildCandidateIds)
         estimatedPreliminary = rankPortraits(current, {
           topK: target,
           comparisons,
@@ -1006,7 +1087,7 @@ export function apply(ctx: Context, config: Config): void {
       const estimatedPairs = planPairwiseBudget(
         current,
         estimatedPreliminary,
-        selectorComparisons(state),
+        selectorComparisons(state, rebuildCandidateIds),
         target,
         MAX_PAIRWISE_PAIRS,
         auditChallengerIds,
@@ -1014,7 +1095,9 @@ export function apply(ctx: Context, config: Config): void {
       const preflight = `全链路模型：${renderHarnessRoute(route)}\n` +
         renderSelectionBudget(refinementPlan, estimatedPairs, state) +
         (rebuildFeedback
-          ? `\naudit_feedback=${auditChallengerIds.length} challengers；只用于预留 high/AB-BA 比较，不导入 evaluator 分数。`
+          ? `\naudit_feedback=${auditChallengerIds.length} challengers + ` +
+            `${disqualifiedSelectedIds.size} disqualified selected；仅传递匿名反例 ID，` +
+            '不导入 evaluator 分数或理由。'
           : '') +
         `\nrefinement_checkpoint=${resumedRefinement ? 'resumed' : mode === 'run' ? 'frozen_before_run' : 'would_freeze_on_run'} ` +
         `context=${refinementContextKey.slice(0, 12)}；重试只补这 ${refinementPlan.candidateIds.length} 张内的失败项。`
@@ -1073,19 +1156,20 @@ export function apply(ctx: Context, config: Config): void {
             'next_action=fix_model_route；禁止在当前 turn 自动重试 build_selection 或 status。修复当前会话 provider/model 后，新 turn 只补冻结计划中的 remaining。'
         }
         return `${preflight}\n` +
-          `high 实际结果：planned=${refinementPlan.candidateIds.length} paid=${refined.paid} ` +
+          `INCOMPLETE：high 实际结果 planned=${refinementPlan.candidateIds.length} paid=${refined.paid} ` +
           `cached=${refined.cached} failed=${refined.failures.length}。\n` +
           `高分辨率复核失败 ${refined.failures.length} 张：${refined.failures.map(item => item.id).join(' ')}。` +
-          '重试 build_selection 会命中成功缓存。'
+          '重试 build_selection 会命中成功缓存。\nnext_action=retry_build_selection'
       }
       // High-detail scores are paid assets. Persist them before any ranking or
       // pairwise work so a later failure still resumes with high_to_pay=0.
       await saveState(state, config.workdir)
 
       current = portraitRankingCandidates(state)
+        .filter(candidate => !disqualifiedSelectedIds.has(candidate.id))
       let preliminary
       try {
-        const comparisons = selectorComparisons(state)
+        const comparisons = selectorComparisons(state, rebuildCandidateIds)
         preliminary = rankPortraits(current, {
           topK: target,
           comparisons,
@@ -1100,7 +1184,7 @@ export function apply(ctx: Context, config: Config): void {
       const freshPairPlan = planPairwiseBudget(
         current,
         preliminary,
-        selectorComparisons(state),
+        selectorComparisons(state, rebuildCandidateIds),
         target,
         MAX_PAIRWISE_PAIRS,
         auditChallengerIds,
@@ -1223,9 +1307,9 @@ export function apply(ctx: Context, config: Config): void {
 
       let selected
       try {
-        selected = rankPortraits(portraitRankingCandidates(state), {
+        selected = rankPortraits(current, {
           topK: target,
-          comparisons: selectorComparisons(state),
+          comparisons: selectorComparisons(state, rebuildCandidateIds),
           ...portraitRankPolicy(state.preference),
         })
       } catch (error) {
@@ -1250,7 +1334,12 @@ export function apply(ctx: Context, config: Config): void {
         personalizedScores[item.id] = scores.personalized!
         why[item.id] = assessment.summary || '冻结 baseline 与切线比较均支持入选'
       }
-      const selectionHash = portraitSelectionHash(state.datasetFingerprint, state.candidateScope, keep)
+      const selectionHash = portraitSelectionHash(
+        state.datasetFingerprint,
+        state.candidateScope,
+        keep,
+        selectionDecisionIdentity(state),
+      )
       if (rebuildFeedback && selectionHash === rebuildFeedback.failedSelectionHash) {
         state.portraitDraft = undefined
         state.portraitAudit = undefined
@@ -1273,7 +1362,9 @@ export function apply(ctx: Context, config: Config): void {
         selectorPairwiseIdentityKey: selectorPairwiseIdentityKey(state),
       }
       state.portraitAudit = undefined
-      state.portraitRebuildFeedback = undefined
+      state.portraitRebuildFeedback = rebuildFeedback
+        ? { ...rebuildFeedback, consumedBySelectionHash: selectionHash }
+        : undefined
       state.proposal = undefined
       state.exportApproval = undefined
       const completedPairwiseCheckpoint = state.portraitSelectorPairwiseCheckpoint
@@ -1294,7 +1385,11 @@ export function apply(ctx: Context, config: Config): void {
           `failed=${actualPairPlan.pairs.length - pairResults.filter(Boolean).length} pairs。`,
         `待选名单已冻结：精确 ${keep.length} 张；全池 low baseline + ${refinementPlan.candidateIds.length} 张 high 复核；` +
           `本轮新增双向 pairwise ${pairResults.filter(Boolean).length} 组；` +
-          `覆盖 ${selectedFamilyCount} 个家族，同族重复 ${familyBackfillCount} 张（已进入独立审计）。`,
+          `覆盖 ${selectedFamilyCount} 个家族，同族重复 ${familyBackfillCount} 张；` +
+          (rebuildFeedback
+            ? `已消费 ${auditChallengerIds.length} 个匿名 audit 反例，` +
+              '这些反例已强制进入 selector high 与边界 pairwise，但最终仍由新证据决定是否入选。'
+            : '名单已进入独立审计。'),
         ...selected.map(item => {
           const score = state.portraitScore(item.id)!
           return `${item.rank}. ${item.id} baseline=${score.baseline} preference=${score.adjustment >= 0 ? '+' : ''}${score.adjustment} ` +
@@ -1382,9 +1477,9 @@ export function apply(ctx: Context, config: Config): void {
       }
       if (selectedIds.some(id => {
         const candidate = state.candidates.get(id)
-        return !candidate || !state.isPortraitCandidate(candidate)
+        return !candidate || !state.isPortraitCandidate(candidate) || !localPortraitEligible(candidate)
       })) {
-        return 'ERROR：selected_ids 含未知或非人物候选。'
+        return 'ERROR：selected_ids 含未知、非人物或本地硬门控不合格候选。'
       }
       if (!state.folder || !state.datasetFingerprint) {
         return 'ERROR：冻结 checkpoint 缺少目录或数据集身份；尚未调用视觉模型。'
@@ -1393,6 +1488,7 @@ export function apply(ctx: Context, config: Config): void {
         state.datasetFingerprint,
         state.candidateScope,
         selectedIds,
+        selectionDecisionIdentity(state),
       )
       if (!state.portraitDraft || state.portraitDraft.selectionHash !== selectionHash) {
         return 'ERROR：名单不是 build_selection 冻结的同一份结果。'
@@ -1407,7 +1503,7 @@ export function apply(ctx: Context, config: Config): void {
       if (frozenSelectedIds.length !== target) {
         return `ERROR：冻结名单数量 ${frozenSelectedIds.length} 与本次审计 target=${target} 不一致。`
       }
-      const candidateIdentities = state.portraitCandidates().map(candidate => ({
+      const candidateIdentities = locallyEligiblePortraitCandidates(state).map(candidate => ({
         id: candidate.id,
         family: candidate.family,
       }))

@@ -13,6 +13,7 @@ import type {
   PortraitDetail,
   PortraitVisionCacheIdentity,
 } from './portrait-vision.ts'
+import { MAX_DIVERSITY_BONUS } from './preferences.ts'
 import { PORTRAIT_BASELINE_RUBRIC_VERSION } from './rubric.ts'
 
 export const PORTRAIT_AUDIT_V3 = 'portrait-audit-v3'
@@ -21,7 +22,7 @@ export const PORTRAIT_AUDIT_V3 = 'portrait-audit-v3'
  * A policy change must invalidate a frozen audit plan, while rubric-identical
  * image assessments remain safe to reuse.
  */
-export const PORTRAIT_AUDIT_PLAN_VERSION = 'bounded-promotions-v1'
+export const PORTRAIT_AUDIT_PLAN_VERSION = 'bounded-promotions-local-gate-v2'
 // DeepSeek Harness one-shot evaluator 存在单轮墙钟上限。32 是跨模型的
 // 保守 provider-operation 硬上限；不声称任意模型都能在一轮内完成。超出时通过
 // checkpoint + INCOMPLETE 续跑 remaining，而不得改换供应商或模型。
@@ -303,7 +304,7 @@ export function evaluateAuditQuality(
     for (const id of remainingIds) {
       const assessment = bestAssessments.get(id)
       if (assessment?.baselineScore !== null && assessment?.baselineScore !== undefined
-        && assessment.baselineScore > weakestSelectedScore + 3) {
+        && assessment.baselineScore > weakestSelectedScore + MAX_DIVERSITY_BONUS) {
         stronger.set(id, {
           id,
           score: assessment.baselineScore,

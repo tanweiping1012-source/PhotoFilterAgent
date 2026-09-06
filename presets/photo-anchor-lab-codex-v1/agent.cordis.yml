@@ -1,0 +1,34 @@
+# Isolated rc.8 user preset for Photo Curator Anchor Lab (Codex).
+#
+# This file is a scaffold until the dedicated package registers every prefixed
+# domain tool below. Missing tools are a hard stop, never evidence that an arm
+# ran successfully. The preset intentionally contains no export capability.
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: |-
+      你是 Photo Curator Anchor Lab (Codex)，只负责在冻结的 A/B/C 照片锚点验收协议中完成一次可审计的人像精选。这是技术 ID 为 photo-anchor-lab-codex-v1 的 Codex 独立实验路由，不得与其他实现共享工具名、状态或验收回执。
+
+      只能调用下列专属领域工具：`anchor_lab_codex_activate`、`anchor_lab_codex_analyze_folder`、`anchor_lab_codex_evaluate_pool`、`anchor_lab_codex_build_selection`、`anchor_lab_codex_independent_evaluator`、`anchor_lab_codex_propose_selection`。任一工具缺失或返回 BLOCKED、INCOMPLETE、未知付费操作或路由不一致时，立即停止当前 turn 并如实报告；不得同 turn 重试，不得换用其他工具。主 Agent 不得直接调用仅供隔离子 Agent 使用的 `anchor_lab_codex_audit_selection`。
+
+      只处理用户本轮明确授权的目录。先冻结实验、数据集、候选表、偏好与预算身份，再完整建立候选集。A 组使用旧 baseline；B 组使用新文本 rubric；C 组的 low 与 B 完全相同，视觉锚点只能进入 high、AB/BA 选择和独立审计。三组必须共用同一候选目录快照、exact-K、seed 与预算上限。
+
+      未获得独立审计的终态 PASS 之前，不得生成最终提案，不得读取人工 pick/oracle，也不得对外宣称任一组通过。本验收 preset 不提供照片导出能力，不移动、删除、改名或写回原图。
+    complete: true
+    includeRuntimeContext: false
+
+- id: photo-anchor-lab-codex-v1
+  name: '@photo-filter-agent/dsh-photo-anchor-lab-codex-v1'
+  config:
+    engineBinary: @@PHOTO_ANCHOR_LAB_CODEX_ENGINE_BINARY@@
+    workdir: @@PHOTO_ANCHOR_LAB_CODEX_WORKDIR@@
+    artifactRoot: @@PHOTO_ANCHOR_LAB_CODEX_ARTIFACT_ROOT@@
+    allowedRoots: @@PHOTO_ANCHOR_LAB_CODEX_ALLOWED_ROOTS@@
+    excludedRelativePaths: @@PHOTO_ANCHOR_LAB_CODEX_EXCLUDED_RELATIVE_PATHS@@
+    anchorPackPath: @@PHOTO_ANCHOR_LAB_CODEX_ANCHOR_PACK_PATH@@
+    referenceSheetPath: @@PHOTO_ANCHOR_LAB_CODEX_REFERENCE_SHEET_PATH@@
+    referenceSheetReceiptPath: @@PHOTO_ANCHOR_LAB_CODEX_REFERENCE_SHEET_RECEIPT_PATH@@
+    anchorOverlapReceiptPath: @@PHOTO_ANCHOR_LAB_CODEX_ANCHOR_OVERLAP_RECEIPT_PATH@@
+    presetSourcePath: @@PHOTO_ANCHOR_LAB_CODEX_PRESET_SOURCE_PATH@@
+    maxPaidCallsPerTurn: 16

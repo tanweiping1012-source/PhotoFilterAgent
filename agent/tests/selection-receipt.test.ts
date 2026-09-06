@@ -28,8 +28,19 @@ const RUBRIC_IDENTITY = Object.freeze({
 })
 const PROMPT_IDENTITY = Object.freeze({
   selectorBaselineHash: sha256Hex('synthetic-selector-prompt'),
+  selectorPairwiseHash: sha256Hex('synthetic-selector-pairwise-prompt'),
   auditBaselineHash: sha256Hex('synthetic-audit-baseline-prompt'),
   auditPairwiseHash: sha256Hex('synthetic-audit-pairwise-prompt'),
+})
+const DECISION_IDENTITY = Object.freeze({
+  highRefinementPlanVersion: 'portrait-high-budget-fixture',
+  localGateVersion: 'local-gate-fixture',
+  pairwisePlanVersion: 'pairwise-plan-fixture',
+  preferenceHash: sha256Hex('empty-preference'),
+  rankingPolicyVersion: 'ranking-policy-fixture',
+  selectorBaselineHash: PROMPT_IDENTITY.selectorBaselineHash,
+  selectorPairwiseHash: PROMPT_IDENTITY.selectorPairwiseHash,
+  selectorRouteIdentity: 'fixture-provider\0fixture-model\0dsh-llm-tool-call-v1\0',
 })
 
 function selectedItems(contents: readonly string[]) {
@@ -45,15 +56,18 @@ function receiptInput(sourceRoot: string, contents: readonly string[]): FrozenSe
     sourceRoot,
     excludedRelativePaths: ['me-pick'],
     datasetFingerprint: DATASET_FINGERPRINT,
+    decisionIdentity: DECISION_IDENTITY,
     selectionHash: selectionHashFromReceiptItems({
       rubricVersion: RUBRIC_VERSION,
       datasetFingerprint: DATASET_FINGERPRINT,
       candidateScope: 'people_only',
+      decisionIdentity: DECISION_IDENTITY,
       selectedIds: items.map(item => item.id),
     }),
     candidateScope: 'people_only',
     target: items.length,
     selectedItems: items,
+    selectedOrder: items.map(item => item.id),
     auditStatus: 'PASS',
     routeIdentity: 'fixture-provider\0fixture-model\0dsh-llm-tool-call-v1\0',
     rubricIdentity: RUBRIC_IDENTITY,
@@ -76,7 +90,7 @@ function runOverlap(receipt: string, oracle: string, json?: string) {
   ], { encoding: 'utf8' })
 }
 
-test('receipt creation binds exact-K anonymous IDs, content multiset, audit, route, rubric, prompts, and scan policy', async () => {
+test('receipt creation binds exact-K, ordered keep, decision identity, content, audit, route, prompts, and scan policy', async () => {
   const workdir = await mkdtemp(join(tmpdir(), 'photo-filter-receipt-schema-'))
   try {
     const sourceRoot = await realpath(workdir)
@@ -92,6 +106,8 @@ test('receipt creation binds exact-K anonymous IDs, content multiset, audit, rou
     )
     assert.equal(parsed.selectedItems[1].sha256, parsed.selectedItems[2].sha256)
     assert.equal(parsed.auditStatus, 'PASS')
+    assert.deepEqual(parsed.selectedOrder, ['p001', 'p002', 'p003'])
+    assert.equal(parsed.decisionIdentity.preferenceHash, DECISION_IDENTITY.preferenceHash)
     assert.equal(
       parsed.scanPolicyIdentity,
       photoScanPolicyIdentity(parsed.excludedRelativePaths),
@@ -133,9 +149,17 @@ test('receipt rejects malformed exact-K, duplicate IDs, mismatched selection/has
     badScanPolicy.scanPolicyIdentity = sha256Hex('forged-policy')
     assert.throws(() => validateFrozenSelectionReceipt(badScanPolicy), /scanPolicyIdentity/u)
 
+    const badOrder: any = structuredClone(valid)
+    badOrder.selectedOrder[1] = badOrder.selectedOrder[0]
+    assert.throws(() => validateFrozenSelectionReceipt(badOrder), /selectedOrder/u)
+
+    const tamperedDecision: any = structuredClone(valid)
+    tamperedDecision.decisionIdentity.preferenceHash = sha256Hex('another-preference')
+    assert.throws(() => validateFrozenSelectionReceipt(tamperedDecision), /selectionHash/u)
+
     const tamperedRoute: any = structuredClone(valid)
     tamperedRoute.routeIdentity = 'another-route'
-    assert.throws(() => validateFrozenSelectionReceipt(tamperedRoute), /receiptHash/u)
+    assert.throws(() => validateFrozenSelectionReceipt(tamperedRoute), /decisionIdentity|receiptHash/u)
 
     const unknownField = { ...valid, selectedDirectory: '/not-accepted' }
     assert.throws(() => validateFrozenSelectionReceipt(unknownField), /missing or unknown fields/u)
@@ -232,7 +256,7 @@ test('overlap CLI validates the complete receipt before touching oracle and auth
     await writeFile(tamperedPath, JSON.stringify(tampered))
     const invalidBeforeMissingOracle = runOverlap(tamperedPath, join(sourceRoot, 'does-not-exist'))
     assert.notEqual(invalidBeforeMissingOracle.status, 0)
-    assert.match(invalidBeforeMissingOracle.stderr, /receiptHash does not match/u)
+    assert.match(invalidBeforeMissingOracle.stderr, /decisionIdentity|receiptHash does not match/u)
     assert.doesNotMatch(invalidBeforeMissingOracle.stderr, /Oracle directory/u)
 
     const outsideReal = await realpath(outside)

@@ -11,6 +11,7 @@ import {
   HarnessVisionTransport,
   harnessRouteIdentity,
   isHarnessVisionCircuitBreakerError,
+  type HarnessVisionContractProbe,
   type HarnessModelRoute,
 } from './harness-vision.ts'
 import {
@@ -38,6 +39,8 @@ import {
 } from './preferences.ts'
 
 const PAIRWISE_STEP_POINTS = 5
+const PAIRWISE_STABLE_MARGIN_POINTS = 2
+const PAIRWISE_STABLE_CONFIDENCE = 0.7
 // Reasoning-capable routed models can spend a substantial part of the output
 // budget before emitting the required tool call. 1,200/600 caused valid image
 // requests to terminate at maxTokens and then be paid for again on every resume.
@@ -198,11 +201,15 @@ const BASELINE_USER_PROMPT = `评估附带的这一张匿名 JPEG。严格返回
 {"eligibility":{"status":"eligible|ineligible|needs_review","failureCodes":[],"evidence":[],"assessability":0.0,"ambiguousIntent":false},"dimensionScores":{"technical_subject_legibility":0,"human_moment":0,"composition_visual_hierarchy":0,"light_color_tone":0,"travel_context_story":0,"intentionality_finish":0},"dimensionConfidences":{"technical_subject_legibility":0.0,"human_moment":0.0,"composition_visual_hierarchy":0.0,"light_color_tone":0.0,"travel_context_story":0.0,"intentionality_finish":0.0},"dimensionEvidence":{"technical_subject_legibility":[],"human_moment":[],"composition_visual_hierarchy":[],"light_color_tone":[],"travel_context_story":[],"intentionality_finish":[]},"overallConfidence":0.0,"scoreInterval":[0,100],"observableTags":{"expression":[],"gaze":[],"framing":[],"lighting":[],"mood":[],"scene":[],"poseAction":[]},"summary":""}`
 
 const PAIRWISE_SYSTEM_PROMPT = `你是隔离的旅行人像成对比较员。只比较两张匿名照片，不知道文件名、排名、选择状态或用户偏好。
-按冻结六维标尺判断，每维 delta 只能是 -2、-1、0、1、2；正数表示 FIRST 更好，负数表示 SECOND 更好。
+目标是判断同一批照片中哪张更值得保留，不做两张各自的绝对评分。
+按冻结六维逐项比较，每维 delta 只能是 -2、-1、0、1、2：
+- +2 FIRST 明显更好；+1 FIRST 略好；0 难分高下；-1 SECOND 略好；-2 SECOND 明显更好。
+delta 的正负只由 FIRST/SECOND 决定。交换图片顺序后，同一视觉判断的 delta 应反号。
+不要输出总胜者；本地程序会用冻结权重从六维 delta 唯一计算方向。
 闭眼等现象不是自动淘汰，必须判断人物瞬间与画面意图。必须调用指定的结构化工具，不要返回纯文本。`
 
 const PAIRWISE_USER_PROMPT = `比较按顺序附带的 FIRST 与 SECOND 两张匿名 JPEG。严格返回：
-{"winner":"FIRST|SECOND|TIE","dimensionDeltas":{"technical_subject_legibility":0,"human_moment":0,"composition_visual_hierarchy":0,"light_color_tone":0,"travel_context_story":0,"intentionality_finish":0},"confidence":0.0,"reason":""}`
+{"dimensionDeltas":{"technical_subject_legibility":0,"human_moment":0,"composition_visual_hierarchy":0,"light_color_tone":0,"travel_context_story":0,"intentionality_finish":0},"confidence":0.0,"reason":""}`
 
 const DIMENSION_SCORE_PROPERTIES = Object.fromEntries(
   PORTRAIT_DIMENSION_IDS.map(id => [id, { type: 'number', minimum: 0, maximum: 100 }]),
@@ -279,13 +286,12 @@ const BASELINE_TOOL = Object.freeze({
 
 const PAIRWISE_TOOL = Object.freeze({
   name: 'submit_portrait_pairwise',
-  description: '提交两张匿名人像的一个方向比较。',
+  description: '提交两张匿名人像逐维的一个方向比较；总胜者由本地权重计算。',
   parameters: {
     type: 'object',
     additionalProperties: false,
-    required: ['winner', 'dimensionDeltas', 'confidence', 'reason'],
+    required: ['dimensionDeltas', 'confidence', 'reason'],
     properties: {
-      winner: { type: 'string', enum: ['FIRST', 'SECOND', 'TIE'] },
       dimensionDeltas: {
         type: 'object', additionalProperties: false, required: [...PORTRAIT_DIMENSION_IDS],
         properties: Object.fromEntries(PORTRAIT_DIMENSION_IDS.map(id => [id, {
@@ -297,6 +303,50 @@ const PAIRWISE_TOOL = Object.freeze({
     },
   },
 })
+
+const LEGACY_BASELINE_CONTRACT_PROBE_RESULT = Object.freeze({
+  eligibility: {
+    status: 'eligible', failureCodes: [], evidence: [],
+    assessability: 0.5, ambiguousIntent: false,
+  },
+  dimensionScores: Object.fromEntries(PORTRAIT_DIMENSION_IDS.map(id => [id, 50])),
+  dimensionConfidences: Object.fromEntries(PORTRAIT_DIMENSION_IDS.map(id => [id, 0.5])),
+  dimensionEvidence: Object.fromEntries(PORTRAIT_DIMENSION_IDS.map(id => [id, ['contract-probe']])),
+  overallConfidence: 0.5,
+  scoreInterval: [50, 50],
+  observableTags: {
+    expression: [], gaze: [], framing: [], lighting: [], mood: [], scene: [], poseAction: [],
+  },
+  summary: 'contract-probe',
+})
+
+const LEGACY_PAIRWISE_CONTRACT_PROBE_RESULT = Object.freeze({
+  dimensionDeltas: Object.fromEntries(PORTRAIT_DIMENSION_IDS.map(id => [id, 0])),
+  confidence: 0.5,
+  reason: 'contract-probe',
+})
+
+/** Exact A-arm schemas exercised without images before any real candidate is sent. */
+export function portraitLegacyContractProbes(): readonly HarnessVisionContractProbe[] {
+  return Object.freeze([
+    Object.freeze({
+      label: 'legacy-baseline',
+      system: 'You are a no-image contract probe. Call the supplied tool exactly once.',
+      user: `Reproduce this exact JSON object: ${JSON.stringify(LEGACY_BASELINE_CONTRACT_PROBE_RESULT)}`,
+      tool: BASELINE_TOOL,
+      maxTokens: 1_600,
+      expected: LEGACY_BASELINE_CONTRACT_PROBE_RESULT,
+    }),
+    Object.freeze({
+      label: 'legacy-pairwise',
+      system: 'You are a no-image contract probe. Call the supplied tool exactly once.',
+      user: `Reproduce this exact JSON object: ${JSON.stringify(LEGACY_PAIRWISE_CONTRACT_PROBE_RESULT)}`,
+      tool: PAIRWISE_TOOL,
+      maxTokens: 600,
+      expected: LEGACY_PAIRWISE_CONTRACT_PROBE_RESULT,
+    }),
+  ])
+}
 
 function promptHash(system: string, user: string, tool: typeof BASELINE_TOOL | typeof PAIRWISE_TOOL): string {
   return createHash('sha256')
@@ -318,6 +368,7 @@ export interface PortraitVisionCacheIdentity {
   reasoningEffort?: string
   routeIdentity: string
   selectorBaselinePromptHash: string
+  selectorPairwisePromptHash: string
   auditBaselinePromptHash: string
   auditPairwisePromptHash: string
 }
@@ -330,6 +381,7 @@ export function portraitVisionCacheIdentity(route: HarnessModelRoute): Readonly<
     ...(route.reasoningEffort ? { reasoningEffort: route.reasoningEffort } : {}),
     routeIdentity: harnessRouteIdentity(route),
     selectorBaselinePromptHash: PORTRAIT_SELECTOR_BASELINE_PROMPT_HASH,
+    selectorPairwisePromptHash: PORTRAIT_AUDIT_PAIRWISE_PROMPT_HASH,
     auditBaselinePromptHash: PORTRAIT_AUDIT_BASELINE_PROMPT_HASH,
     auditPairwisePromptHash: PORTRAIT_AUDIT_PAIRWISE_PROMPT_HASH,
   })
@@ -564,10 +616,9 @@ export class PortraitVisionClient {
       (sum, id) => sum + normalizedDeltas[id] * PORTRAIT_BASELINE_WEIGHTS[id] / 100,
       0,
     ) * PAIRWISE_STEP_POINTS
-    const claimed = raw.winner === 'FIRST' || raw.winner === 'SECOND' || raw.winner === 'TIE' ? raw.winner : 'TIE'
-    const winner: 'A' | 'B' | 'TIE' = claimed === 'TIE'
-      ? 'TIE'
-      : (claimed === 'FIRST') === (order === 'AB') ? 'A' : 'B'
+    const winner: 'A' | 'B' | 'TIE' = normalizedMargin > 0
+      ? 'A'
+      : normalizedMargin < 0 ? 'B' : 'TIE'
     return Object.freeze({
       order,
       winner,
@@ -606,7 +657,9 @@ export function combinePairwiseLegs(
     && (first.winner === 'A' ? first.weightedMargin > 0 : first.weightedMargin < 0)
   const margin = (Math.abs(first.weightedMargin) + Math.abs(second.weightedMargin)) / 2
   const confidence = (first.confidence + second.confidence) / 2
-  const stable = sameDirection && margin >= 5 && confidence >= 0.75
+  const stable = sameDirection
+    && margin >= PAIRWISE_STABLE_MARGIN_POINTS
+    && confidence >= PAIRWISE_STABLE_CONFIDENCE
   const winner = stable ? (first.winner === 'A' ? aId : bId) : 'TIE'
   return Object.freeze({
     winner,

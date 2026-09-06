@@ -16,6 +16,7 @@ import type {
 export const DEFAULT_FAMILY_CHALLENGERS_PER_FAMILY = 2
 export const MAX_PAIRWISE_PAIRS = 24
 export const HIGH_REFINEMENT_PLAN_VERSION = 'portrait-high-budget-v2-audit-feedback'
+export const PAIRWISE_PLAN_VERSION = 'portrait-pairwise-budget-v2-connected-cutline'
 
 export interface HighRefinementPlan {
   target: number
@@ -286,24 +287,36 @@ export function planPairwiseBudget(
     members.push(candidate)
     families.set(candidate.familyId, members)
   }
+  // Keep a bounded reserve for near-duplicate decisions, but do not let many
+  // burst families consume the entire graph budget. The remaining comparisons
+  // form a connected ladder across the global Top-K cutline below.
+  const familyPairLimit = Math.min(
+    Math.floor(pairCap / 3),
+    Math.max(0, pairCap - proposed.length),
+  )
+  let familyPairsAdded = 0
   for (const familyId of [...families.keys()].sort()) {
+    if (familyPairsAdded >= familyPairLimit) break
     const members = families.get(familyId)!.sort(scoreOrder)
     if (members.length < 2) continue
     const firstRank = rankIndex.get(members[0].id) ?? Number.MAX_SAFE_INTEGER
     if (firstRank < target + 10 && members[0].score - members[1].score <= 6) {
-      addPair(members[0].id, members[1].id, 'family')
+      if (addPair(members[0].id, members[1].id, 'family')) familyPairsAdded += 1
     }
   }
 
-  const weakest = preliminary.at(-1)
-  if (weakest && proposed.length < pairCap) {
-    const challengers = eligible
-      .filter(candidate => !selectedIds.has(candidate.id))
-      .slice(0, 12)
-    for (const challenger of challengers) {
-      if (Math.abs(weakest.comparisonScore - challenger.score) <= 4) {
-        addPair(weakest.id, challenger.id, 'cutline')
-      }
+  // Comparison-first cutline ladder. With R remaining pairs, compare R+1
+  // adjacent candidates in a deterministic window spanning both sides of K.
+  // The resulting subgraph is connected, so BT evidence can propagate instead
+  // of becoming isolated one-off wins against a single weakest selection.
+  const ladderPairBudget = Math.max(0, pairCap - proposed.length)
+  const windowSize = Math.min(eligible.length, ladderPairBudget + 1)
+  if (windowSize >= 2) {
+    let windowStart = Math.max(0, target - Math.ceil(windowSize / 2))
+    windowStart = Math.min(windowStart, eligible.length - windowSize)
+    const window = eligible.slice(windowStart, windowStart + windowSize)
+    for (let index = 0; index + 1 < window.length; index += 1) {
+      addPair(window[index].id, window[index + 1].id, 'cutline')
     }
   }
 

@@ -46,6 +46,24 @@ test('pairwise evidence can separate close absolute scores deterministically', (
   assert.ok(first.b > first.a)
 })
 
+test('unstable AB/BA ties preserve absolute rubric scores instead of forcing false equality', () => {
+  const candidates = [
+    { id: 'strong', score: 78, eligibility: 'eligible' as const },
+    { id: 'weak', score: 67, eligibility: 'eligible' as const },
+  ]
+  const scores = fitBradleyTerryScores(candidates, [
+    { leftId: 'strong', rightId: 'weak', leftOutcome: 0.5, weight: 4 },
+  ])
+
+  assert.deepEqual(scores, { strong: 78, weak: 67 })
+  assert.deepEqual(
+    rankPortraits(candidates, { topK: 1, comparisons: [
+      { leftId: 'strong', rightId: 'weak', leftOutcome: 0.5, weight: 4 },
+    ] }).map(item => item.id),
+    ['strong'],
+  )
+})
+
 test('family de-duplication keeps one member when distinct families can satisfy exact K', () => {
   const selected = rankPortraits([
     { id: 'burst-a', score: 99, familyId: 'burst-1', eligibility: 'eligible' },
@@ -59,7 +77,7 @@ test('family de-duplication keeps one member when distinct families can satisfy 
   assert.equal(selected.filter(item => item.familyId === 'burst-1').length, 1)
 })
 
-test('auto cap is the smallest uniform family cap that still permits exact K', () => {
+test('auto cap starts at the smallest feasible cap but relaxes before losing more than four quality points', () => {
   const candidates: RankingCandidate[] = [
     { id: 'a1', score: 99, familyId: 'a', eligibility: 'eligible' },
     { id: 'a2', score: 96, familyId: 'a', eligibility: 'eligible' },
@@ -75,12 +93,14 @@ test('auto cap is the smallest uniform family cap that still permits exact K', (
   ], { topK: 5, diversityStrength: 1 })
 
   assert.equal(selected.length, 5)
-  assert.deepEqual(selected.map(item => item.id), ['a1', 'b1', 'a2', 'b2', 'c1'])
+  assert.deepEqual(selected.map(item => item.id), ['a1', 'b1', 'a2', 'b2', 'a3'])
   const counts = selected.reduce<Record<string, number>>((result, item) => {
     result[item.familyId!] = (result[item.familyId!] ?? 0) + 1
     return result
   }, {})
-  assert.deepEqual(counts, { a: 2, b: 2, c: 1 })
+  assert.deepEqual(counts, { a: 3, b: 2 })
+  assert.ok(candidates.find(item => item.id === 'a3')!.score
+    > candidates.find(item => item.id === 'c1')!.score + 4)
 })
 
 test('289 eligible photos in 13 families produce exact K=20 with at most two per family', () => {
@@ -105,7 +125,7 @@ test('289 eligible photos in 13 families produce exact K=20 with at most two per
   assert.ok(Math.max(...Object.values(familyCounts)) <= 2)
 })
 
-test('extremely few families raise auto cap only as far as exact K requires', () => {
+test('auto cap can overflow its feasible baseline when enforcing it would cost more than four points', () => {
   const candidates: RankingCandidate[] = [
     ...Array.from({ length: 6 }, (_, index) => ({
       id: `a${index + 1}`,
@@ -123,10 +143,11 @@ test('extremely few families raise auto cap only as far as exact K requires', ()
   assert.equal(resolveFamilyCap(candidates, 7), 4)
   const selected = rankPortraits(candidates, { topK: 7 })
   assert.equal(selected.length, 7)
-  const countA = selected.filter(item => item.familyId === 'a').length
-  const countB = selected.filter(item => item.familyId === 'b').length
-  assert.ok(countA <= 4 && countB <= 4)
-  assert.equal(countA + countB, 7)
+  assert.deepEqual(selected.map(item => item.id), [
+    'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'b1',
+  ])
+  assert.equal(selected.filter(item => item.familyId === 'a').length, 6)
+  assert.equal(selected.filter(item => item.familyId === 'b').length, 1)
 })
 
 test('explicit positive and unlimited family policies support deliberate series selection', () => {
@@ -164,6 +185,47 @@ test('exact K fails only when there are fewer eligible photos than K', () => {
     { id: 'a', score: 90, familyId: 'same', eligibility: 'eligible' },
     { id: 'b', score: 80, familyId: 'same', eligibility: 'needs_review' },
   ], { topK: 2 }), /only 1 eligible photos/)
+})
+
+test('required active-set members cannot be displaced by auto family or diversity', () => {
+  const selected = rankPortraits([
+    { id: 'best', score: 99, familyId: 'burst', diversityTags: ['same'], eligibility: 'eligible' },
+    { id: 'required', score: 85, familyId: 'burst', diversityTags: ['same'], eligibility: 'eligible' },
+    { id: 'novel', score: 98, familyId: 'other', diversityTags: ['novel'], eligibility: 'eligible' },
+    { id: 'fourth', score: 97, familyId: 'third', diversityTags: ['third'], eligibility: 'eligible' },
+  ], {
+    topK: 3,
+    diversityStrength: 1,
+    familyCap: 'auto',
+    requiredIds: ['required'],
+  })
+
+  assert.equal(selected.length, 3)
+  assert.equal(selected.some(item => item.id === 'required'), true)
+  assert.equal(selected.find(item => item.id === 'required')!.diversityBonus, 0)
+  assert.deepEqual(selected.map(item => item.rank), [1, 2, 3])
+})
+
+test('required active set fails closed for invalid capacity or explicit family conflict', () => {
+  const candidates: RankingCandidate[] = [
+    { id: 'a1', score: 99, familyId: 'a', eligibility: 'eligible' },
+    { id: 'a2', score: 98, familyId: 'a', eligibility: 'eligible' },
+    { id: 'b1', score: 97, familyId: 'b', eligibility: 'eligible' },
+  ]
+  assert.throws(
+    () => rankPortraits(candidates, { topK: 1, requiredIds: ['a1', 'b1'] }),
+    /cannot exceed topK/,
+  )
+  assert.throws(
+    () => rankPortraits(candidates, {
+      topK: 2, familyCap: 1, requiredIds: ['a1', 'a2'],
+    }),
+    /violate familyCap 1/,
+  )
+  assert.throws(
+    () => rankPortraits(candidates, { topK: 2, requiredIds: ['missing'] }),
+    /unknown or ineligible/,
+  )
 })
 
 test('near-duplicate cap is independent from bounded semantic MMR bonus', () => {

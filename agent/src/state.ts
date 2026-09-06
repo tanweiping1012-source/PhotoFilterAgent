@@ -152,6 +152,14 @@ export interface PortraitSelectorPairwiseCheckpoint {
 
 export type PortraitAuditStatus = 'PASS' | 'FAIL' | 'INCOMPLETE'
 
+export interface PortraitAuditFailureStat {
+  attempts: number
+  consecutiveSameCode: number
+  lastCode: string
+  lastStatus?: number
+  lastMessage: string
+}
+
 /**
  * 覆盖优先于质量：只要仍有计划内工作没完成，就绝不能把网络/额度问题伪装成
  * 选片质量 FAIL。覆盖完整后，才根据是否存在质量反例二分 PASS/FAIL。
@@ -185,11 +193,45 @@ export interface PortraitAuditReport {
   pairwisePlannedCount?: number
   pairwiseRemainingCount?: number
   failedPairKeys?: string[]
+  /**
+   * Legacy compatibility field. It historically counted successful provider
+   * operations despite the `paid` name. New reporting uses the explicit
+   * attempted/succeeded/failed fields below.
+   */
   paidCalls: number
+  /** Deprecated compatibility mirror of `uniqueCachedAssets`. */
   cachedCalls?: number
+  /** Cumulative provider operations sent for this frozen audit identity. */
+  attemptedCalls?: number
+  /** Cumulative successful provider operations for this frozen audit identity. */
+  succeededCalls?: number
+  /** Cumulative failed provider operations for this frozen audit identity. */
+  failedCalls?: number
+  /** Attempts persisted before dispatch whose provider outcome is still unknown. */
+  unresolvedCalls?: number
+  /** Unique score or pair-leg cache identities currently completing this audit plan. */
+  uniqueCachedAssets?: number
+  /** Legacy checkpoints cannot reconstruct failed calls that were never persisted. */
+  accountingBasis?: 'exact' | 'legacy_success_lower_bound'
   lastAttemptPaidCalls?: number
   lastAttemptCachedCalls?: number
-  nextAction?: 'retry_audit' | 'fix_model_route' | 'rebuild_selection' | 'propose'
+  lastAttemptSucceededCalls?: number
+  lastAttemptFailedCalls?: number
+  lastAttemptUnresolvedCalls?: number
+  nextAction?: 'retry_audit' | 'diagnose_stall' | 'fix_model_route' | 'rebuild_selection' | 'propose'
+  /** Number of completed tool invocations for this exact frozen audit context. */
+  attemptNumber?: number
+  /** Remaining counts at the end of the previous completed invocation. */
+  priorRemainingCount?: number
+  priorPairwiseRemainingCount?: number
+  /** Newly completed score/pair assets since the previous invocation. */
+  progressDelta?: number
+  /** Consecutive completed invocations that added no asset and advanced no stage. */
+  stalledRounds?: number
+  /** Furthest stage reached by the previous completed invocation. */
+  lastProgressStage?: PortraitAuditReport['stage']
+  /** Bounded anonymous provider-failure history; local preview failures are excluded. */
+  failureStats?: Record<string, PortraitAuditFailureStat>
   /** v3-only frozen staged plan/progress. */
   contextKey?: string
   stage?: 'selected_high' | 'remaining_low' | 'promotion_high' | 'pairwise' | 'complete'
@@ -219,15 +261,19 @@ export interface PortraitAuditReport {
  * the already-proven counterexamples must still reach the next rebuild.
  */
 export interface PortraitRebuildFeedback {
-  schemaVersion: 'portrait-rebuild-feedback-v1'
+  schemaVersion: 'portrait-rebuild-feedback-v2'
   datasetFingerprint: string
   failedSelectionHash: string
   selectedIds: string[]
+  /** IDs independently found ineligible at high detail, including durable findings from earlier selections. */
+  disqualifiedSelectedIds: string[]
   strongerChallengerIds: string[]
   selectorIdentityKey: string
   selectorPairwiseIdentityKey: string
   auditProviderIdentityKey: string
   feedbackHash: string
+  /** New selection that already consumed this feedback; retained so hard exclusions survive later audits. */
+  consumedBySelectionHash?: string
 }
 
 /** Fail closed: legacy v1/v2 PASS is evidence from a selector-contaminated plan. */
@@ -541,6 +587,29 @@ export class RunState {
     return this.preference
   }
 
+  /** Change requested output counts without re-buying per-photo scores. */
+  setTargets(input: Partial<Record<Category, number>>): Record<Category, number> {
+    const next = {
+      people: input.people === undefined
+        ? this.targets.people
+        : Math.max(0, Math.floor(input.people)),
+      scenery: input.scenery === undefined
+        ? this.targets.scenery
+        : Math.max(0, Math.floor(input.scenery)),
+    }
+    if (next.people !== this.targets.people || next.scenery !== this.targets.scenery) {
+      this.portraitRefinementCheckpoint = undefined
+      this.portraitSelectorPairwiseCheckpoint = undefined
+      this.portraitDraft = undefined
+      this.portraitAudit = undefined
+      this.portraitRebuildFeedback = undefined
+      this.proposal = undefined
+      this.exportApproval = undefined
+    }
+    this.targets = next
+    return { ...this.targets }
+  }
+
   /** 始终保留 baseline；偏好只产生可审计的第二列，且绝不恢复非 eligible。 */
   portraitScore(id: string): {
     baseline: number | null
@@ -700,7 +769,7 @@ function validExportApproval(value: ExportApproval | undefined): value is Export
 
 /** 落盘形态。分数是花过钱的资产，必须跨会话活下来。 */
 interface Persisted {
-  schemaVersion?: 2 | 3 | 4 | 5 | 6 | 7 | 8
+  schemaVersion?: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
   folder: string
   datasetFingerprint: string
   limit?: number
@@ -752,7 +821,7 @@ let stateWriteSequence = 0
 export async function saveState(state: RunState, workdir: string): Promise<boolean> {
   if (!state.folder || !state.datasetFingerprint) return false
   const payload: Persisted = {
-    schemaVersion: 8,
+    schemaVersion: 9,
     folder: state.folder,
     datasetFingerprint: state.datasetFingerprint,
     limit: state.limit,
@@ -931,13 +1000,15 @@ export async function loadState(
     : undefined
   const feedback = payload.portraitRebuildFeedback
   state.portraitRebuildFeedback = sameScope
-    && feedback?.schemaVersion === 'portrait-rebuild-feedback-v1'
+    && feedback?.schemaVersion === 'portrait-rebuild-feedback-v2'
     && feedback.datasetFingerprint === state.datasetFingerprint
     && typeof feedback.failedSelectionHash === 'string'
     && feedback.failedSelectionHash.length > 0
     && feedback.selectedIds.length > 0
     && feedback.selectedIds.every(id => portraitIds.has(id))
-    && feedback.strongerChallengerIds.length > 0
+    && Array.isArray(feedback.disqualifiedSelectedIds)
+    && feedback.disqualifiedSelectedIds.every(id => portraitIds.has(id))
+    && feedback.disqualifiedSelectedIds.length + feedback.strongerChallengerIds.length > 0
     && feedback.strongerChallengerIds.every(id => portraitIds.has(id))
     && typeof feedback.selectorIdentityKey === 'string'
     && feedback.selectorIdentityKey.length > 0
@@ -947,6 +1018,9 @@ export async function loadState(
     && feedback.auditProviderIdentityKey.length > 0
     && typeof feedback.feedbackHash === 'string'
     && feedback.feedbackHash.length > 0
+    && (feedback.consumedBySelectionHash === undefined
+      || (typeof feedback.consumedBySelectionHash === 'string'
+        && feedback.consumedBySelectionHash.length > 0))
     ? feedback
     : undefined
   state.proposal = sameScope && payload.proposal?.keep.every(id => state.candidates.has(id))

@@ -1,6 +1,7 @@
 # PhotoFilterAgent
 
-> 从一批旅行照片里，不只排除坏片，而是挑出真正值得留下的人像与风景。
+> 从一批旅行照片里，不只排除坏片，而是挑出真正值得留下的照片。人像正在完成整套“最好”
+> 闭环验收；风景已有独立基础能力，但仍在补齐同等级的全局比较与反例审计。
 
 <!--
 候选 README，2026-08-27。正式 README 与 GitHub 发布必须等待真实 DSH 验收、独立审计和人工
@@ -156,14 +157,28 @@ Photo Curator preset 和视觉工具不固定 MiniMax，也没有独立的默认
 
 - 当前 provider/model 路由和凭据是否可用；
 - 是否支持 image input；
-- 是否支持所需 tool call / structured output；
+- 是否能按当前实验组需要的**完整输出合同**完成 tool call / structured output；
 - Harness attachment 的图片数量和字节限制。
+
+这里不是只发一个 `ok=true` 的形式探针。A 会在不附带图片时分别验证 legacy 单图评分和 pairwise
+两类合同；B/C 会分别验证 low、high（含主人物 focus）和 pairwise 三类合同。探针与随后图片请求使用
+同一个 DSH adapter、provider、model、reasoning effort 和传输协议；任一合同不通过，首张照片都不会
+写入 attachment store 或发送给模型。
+
+当前候选传输协议是 `dsh-llm-typed-envelope-v4`：模型侧使用完整类型定义的工具参数结构
+`{ nonce, result }`，其中 result 直接是对象，避免 JSON 字符串的第二层转义。完整领域 JSON Schema
+同时写在工具的 result 字段定义和请求的 `OUTPUT CONTRACT` 中；返回后由插件核对随机 nonce 和信封字段，并继续用原领域
+validator 逐字段验真。这样做是因为 MiniMax 当前
+Anthropic 兼容接口的 `tool_choice` 只支持 `auto/none`，不能依赖“强制指定某个工具”来获得可靠结构；
+但协议仍坚持**必须且只能有一次目标 tool call**，纯文本 JSON、Markdown、缺字段或额外调用都按失败
+处理，不会被宽松解析成评分，也不会切换供应商。参考：[MiniMax Anthropic API](https://platform.minimax.io/docs/api-reference/text-chat-anthropic)、
+[MiniMax M3 Tool Use](https://platform.minimax.io/docs/guides/text-m3-function-call)。
 
 能力不满足时明确阻止，不能静默回退到 MiniMax 或其他模型。所有 checkpoint/cache identity 都绑定
 实际 provider、model、reasoning effort、视觉协议、rubric hash 和 prompt hash；切换任一项后旧结果
-自动失效。
+自动失效。无图预检缓存另绑定完整探针集合。无图探针本身会产生模型请求和少量 token，但不会包含照片内容。
 
-本轮开发验收选择 MiniMax-M3 只是测试会话配置，不是 PhotoFilterAgent 的产品默认设置。
+任何一次开发验收所选的具体模型都只是当时的 DSH 会话配置，不是 PhotoFilterAgent 的产品默认设置。
 
 ---
 
@@ -184,9 +199,10 @@ Photo Curator preset 和视觉工具不固定 MiniMax，也没有独立的默认
 这个分组只用于精排挑战者和集合数量限制，不再用一个代表过早替整组参赛。所有人物候选仍进入
 全池 baseline。
 
-### 2. 冻结 baseline rubric
+### 2. 冻结 baseline rubric（A 组旧基线）
 
-没有用户偏好时，每张人物照片使用同一套独立 rubric：
+当前产品人像 v3、也是锚点实验 A 组的旧基线，在没有用户偏好时让每张人物照片使用同一套独立
+rubric：
 
 | 维度 | 权重 |
 |---|---:|
@@ -206,9 +222,18 @@ Photo Curator preset 和视觉工具不固定 MiniMax，也没有独立的默认
 - 主要人物状态无法解释；
 - 灾难性拍摄失败使画面意图无法成立。
 
-闭眼、侧脸、背影、剪影、遮挡、运动模糊或非常规表情本身都不是自动淘汰条件。输出如果出现
+在这套旧基线中，闭眼、侧脸、背影、剪影、遮挡、运动模糊或非常规表情本身都不是自动淘汰条件。
+输出如果出现
 “技术清晰、人物明确”却同时标记灾难性失败等自相矛盾，结构化一致性校验会拒绝该结果并只重试
 这一张，不能把矛盾结果写入排名。
+
+锚点实验 B/C 不会悄悄改写这个 A 组。它们使用另一份冻结的分层 rubric：先判断硬淘汰，再判断
+`reject / keep_threshold / keep / best / uncertain` 绝对保留线，最后才给过线照片排序。单一主要人物
+高置信度闭眼/眨眼、人脸因技术问题不可读、无有意人物主体和明显超出生理正常范围的姿态属于硬
+淘汰；两张都不过线时必须返回 `reject_both`，不能从坏片里强选“相对不差”的一张。过线后的五维
+权重为：表情与眼神 35%、五官与脸型 25%、姿态与值得保留的瞬间 15%、技术完成度 15%、环境与
+画面 10%，即人物呈现合计 75%。这正是 A/B/C 要验证的产品假设，尚未通过真实验收前不会替换
+正式默认基线。
 
 ### 3. 用户偏好是有界 overlay
 
@@ -265,24 +290,31 @@ high 预览最长边 1536px，用于确认表情、眼神、对焦、边缘和�
 1. AB：FIRST=A，SECOND=B；
 2. BA：FIRST=B，SECOND=A。
 
-模型不知道匿名 ID、排名、入选状态或用户偏好。每个方向返回 FIRST/SECOND/TIE、六维 `-2..2`
-差值、置信度和理由。BA 结果会归一化回固定 A/B 语义。
+模型不知道匿名 ID、排名、入选状态或用户偏好。A 组保持旧六维合同；B/C 使用上述新五维分层合同，
+并额外返回左右绝对层级和 `reject_both`。两类合同都不直接相信模型的“总胜者”：模型返回每维
+`-2..2` 相对差、置信度和理由，每维 `+2/+1/0/-1/-2` 分别表示 FIRST 明显更好、FIRST 略好、难分、
+SECOND 略好、SECOND 明显更好。BA 结果会归一化回固定 A/B 语义，总方向由本地按各自冻结权重
+唯一计算，避免声明结果与维度证据自相矛盾。
 
 只有同时满足以下条件才产生稳定胜者：
 
 - 两个方向都不是 TIE；
 - 归一化后指向同一张真实照片；
-- 六维加权 margin 的方向与胜者一致；
-- 两个方向平均绝对 margin 至少 5 分；
-- 两个方向平均置信度至少 0.75。
+- 两个方向本地计算出的加权 margin 同号；
+- 两个方向平均绝对 margin 至少 2 分；
+- 两个方向平均置信度至少 0.70。
 
 否则逻辑结果为 TIE。AB 和 BA 是两个可独立恢复的 directional leg，但合并后只算一场比赛。
 
-selector 只比较最可能影响名单的照片：
+selector 使用最多 24 组比较构造 comparison-first 图：
 
-- family 前两名：该 family 最好照片处于全局前 `K+10`，且两张分差不超过 6；
-- 入选切线：当前最弱入选项与未入选前 12 名中相差不超过 4 分的挑战者；
-- 上限 24 组，即最多 48 个 directional calls。
+- 独立 audit 返回的反例优先占用比较位，但不把 evaluator 分数带回 selector；
+- 最多三分之一预算用于高位 family 前两名，且两张分差不超过 6；
+- 剩余预算在 Top-K 切线两侧构造相邻 ladder，最多用 24 条边连接 25 个候选；
+- 每条边仍执行 AB/BA 两个 directional legs，因此硬上限为 48 次 provider calls。
+
+连接切线 ladder 的目的不是增加调用数，而是让相对胜负处在同一个连通子图中，Bradley-Terry 才能
+传播证据；旧版多个互不相连的一次性比较无法可靠形成全局顺序。
 
 ### 7. baseline 锚定的 Bradley-Terry 聚合
 
@@ -292,8 +324,9 @@ Bradley-Terry 把稀疏的“谁胜过谁”证据转成全局可比较分数：
 P(A 胜 B) = sigmoid(ability(A) - ability(B))
 ```
 
-每张照片的 baseline/personalized 分数先转换为隐藏能力先验。稳定胜、负、平分别作为 `1/0/0.5`
-输入；比较权重由置信度决定。当前使用 `priorStrength=2`、最多 120 次正则化迭代，并限制单步更新，
+每张照片的 baseline/personalized 分数先转换为隐藏能力先验。稳定胜、负分别作为 `1/0` 输入；
+AB/BA 不一致的 TIE 表示“无方向证据”，不会被错误当成两张质量相等。比较权重由置信度决定。当前
+使用 `priorStrength=2`、最多 120 次正则化迭代，并限制单步更新，
 所以少量 pairwise 只能局部纠偏，不会轻易推翻完整 baseline。没有 pairwise 时输出保持原分数。
 
 ### 8. 有界多样性与 family cap
@@ -328,6 +361,11 @@ family cap 是另一层硬约束：默认 `balanced` 选择满足 exact-K 所需
 不能传 selector 的分数、理由、偏好、排名或中间状态。evaluator 使用父会话相同模型路由，但运行在
 独立子会话中，并拥有独立 prompt、rubric role、score cache 和 pairwise cache。
 
+完整 `FAIL` 只向 selector 返回匿名反例 ID，不返回 evaluator 分数、排序理由或审计上下文。下一轮
+selector 仍需用自己的 rubric 对这些照片补齐 high 和 AB/BA；确认仍为 eligible 后，反例 ID 会成为
+下一版 exact-K 的 active-set 约束。它们不能再被 family cap 或多样性奖励挤出，否则系统只会付费
+重新发现同一批反例。修复后的名单仍必须交给新的独立审计尝试推翻；active-set 修复不是 PASS 捷径。
+
 审计阶段：
 
 1. selected 全部 high；
@@ -338,23 +376,29 @@ family cap 是另一层硬约束：默认 `balanced` 选择满足 exact-K 所需
 6. 最强 promoted challengers 最多做 8 组 AB/BA，即 16 directional legs。
 
 同 family 挑战者优先对比该 family 中最弱的入选照片，否则对比全局最弱入选照片。挑战者如果在
-high baseline 上超过最弱入选项 3 分以上，或在严格 AB/BA 中稳定胜出，就构成反例并返回 FAIL。
+high baseline 上超过最弱入选项 4 分以上，或在严格 AB/BA 中稳定胜出，就构成反例并返回 FAIL。
 只有所有计划项完整覆盖且没有反例才能 PASS。
 
 ### 10. Receipt、oracle 与导出边界
 
-只有 audit v3 PASS 后，`propose` 才允许原样接受 selector 冻结的 exact-K 名单。Receipt 绑定：
+只有 audit v3 PASS 后，`propose` 才允许原样接受 selector 冻结的 exact-K 名单。Receipt v2 绑定：
 
 - dataset fingerprint 和候选范围；
-- selection hash 和 selected IDs；
+- selection hash、selected IDs 和匿名排序顺序；
 - rubric/prompt/protocol；
 - 实际 provider/model；
-- preference；
+- preference hash、排序策略版本、high/pairwise 预算算法版本和本地门禁版本；
 - audit PASS；
 - 排除策略和入选原图内容哈希。
 
 验收 oracle 只能在 receipt 生成后由另一个隔离评估进程读取。它只报告 selected/oracle/intersection、
 precision、recall、F1、Jaccard 和是否达到 90%，不能把 oracle 反馈给 selector 继续调参。
+
+“扫描时排除 oracle”不等于可以把人工 pick 从候选宇宙中拿走。若人工 pick 是移动产生的，付费运行
+前必须用隔离的本地预检确认：oracle 数量与 K 一致，并且每一份 oracle 图片内容仍存在于排除子树后
+的候选池。预检按内容 multiset 比对但只输出汇总计数，不暴露文件名、路径、哈希或命中身份，也不把
+任何 oracle 信息交给 selector。缺失任意一张时，本轮 overlap 验收无效，必须先重建非破坏性的候选
+视图。
 
 生成 receipt 不等于导出。普通用户导出仍需冻结目标和名单、返回一次性确认码，并在新消息中精确
 确认；之后只复制，不移动、不删除、不改名、不覆盖。
@@ -440,6 +484,100 @@ precision、recall、F1、Jaccard 和是否达到 90%，不能把 oracle 反馈�
 > 多保留不同地点和不同时段，减少同一机位的重复画面。
 
 这些风景偏好也必须使用有限调整预算，并在 receipt 中记录，不能成为绕过 baseline 的自由 prompt。
+
+---
+
+## 可选锚点：让“最好”从通用标准收敛到你的审美
+
+通用 rubric 能排除明显失败并形成一致的质量基线，但“哪一张脸型更自然”“什么样的眼神更有精神”
+往往具有明显的个人差异。PhotoFilterAgent 的候选方案不是把某个人的审美写死进默认 prompt，而是把
+评价拆成三层：
+
+1. **通用 baseline**：没有个人输入时使用，对技术可读性、人物瞬间、构图、光色、环境和完成度做
+   可复现判断；
+2. **个人文本 profile**：通过少量 A/B/都淘汰问答，把用户稳定表达的门槛沉淀成版本化规则；
+3. **视觉锚点**：只选 6–8 组最能表达边界的真实图片范例，让视觉模型在难以用文字完整描述的
+   眼神、五官、脸型和姿态上校准。
+
+完整问答集和运行时锚点不是同一件事。以当前个人实验为例，用户完成了 30 条判断，其中包含 2 组
+用于一致性复测的重复题，因此共有 28 个唯一 pair、56 张不同照片。这 30 条全部保留为离线金标准，
+用于检查规则覆盖和结果稳定性；运行时只从中冻结 7 组代表性边界、14 张照片。这样既能保持人脸
+可读，也不会在每一次 high / AB/BA 调用中重复发送 56 张无关范例。若 A/B/C 证明 7 组覆盖不足，
+再按实际错误类型增量补锚点，而不是未经验证就把完整题库塞进每次请求。
+
+这不是训练或微调模型。文本规则和匿名参考图只在本轮视觉请求中作为受限上下文，照片不会被发布到
+公网；视觉调用仍只走用户当前 DSH 会话选择的 provider/model。
+
+视觉锚点不会加入全池 low。原因有两个：第一，给数百张候选重复附带范例会显著增加成本；第二，
+单一人物、单一场景的范例容易让初筛过严。它只进入 high 与 AB/BA：
+
+```text
+全池 low：通用或个人文本 Rubric
+    ↓
+切线 high：文本 Rubric + 可选视觉锚点
+    ↓
+AB/BA：同一合同，交换 FIRST / SECOND 后再判断
+```
+
+### 为什么必须做 A/B/C，而不是直接上线锚点
+
+候选版本预注册三组完全相同的数据、模型、预算和随机种子：
+
+| 组别 | low | high / AB/BA | 回答的问题 |
+|---|---|---|---|
+| A | 旧冻结基线 | 旧冻结基线 | 改造前表现如何 |
+| B | 新文本 Rubric | 新文本 Rubric | 分层文字规则是否带来增益 |
+| C | 与 B 字节级相同 | 文本 + 视觉锚点 | 图片范例是否提供额外增益 |
+
+B/C 的 low 只有在请求合同逐字节相同时才可共享缓存；C 的 high、pairwise、selector 与 independent
+evaluator 都必须绑定视觉包、布局和 QA 收据哈希，不能借用 B 的结果。正式验收还要求视觉锚点与
+候选/人工盲测集没有任何精确图片重合，否则 C 只能算 in-sample 诊断，不能作为准确率结论。
+当前 14 张运行时锚点与冻结的 309 张候选已完成原图内容哈希预检，精确重合为 0；预检不打开图片，
+也不读取 oracle。
+
+当前 Harness 每条消息最多两张图。C 因此采用“锚点参考图版 + 目标图”的版本化协议；pairwise 的
+第二张是带 FIRST/SECOND 标签的双候选图版。参考图版只有在 14 张范例全部出现、13 张关键人脸都
+带显式放大区域、独立视觉复核逐格确认可读、标签清楚、保持比例、去元数据且不含路径/文件名后，
+才会生成不可变 PASS 收据。图版像素、布局或收据任一变化都会使缓存失效。
+
+实际候选不能依赖本机人脸检测“碰巧可用”。B/C 的每个 high 结果还必须在同一次视觉调用中返回并
+冻结主人物头脸 focus；C pairwise 用两个冻结 focus 生成放大图。双候选收据绑定 FIRST/SECOND 匿名
+顺序、两张 high JPEG、两个 focus、2/2 inset、图版像素和去元数据报告。focus 缺失、越界、错序或
+图版未出现两个人脸放大区时均在发送前停止，不能回退到无放大图版。
+
+这套锚点实验目前已经完成 Rubric、匿名视觉包、阶段级缓存身份、不可变实验 manifest、新 B/C 视觉
+客户端、真实参考图版本地渲染和真实双候选图版 2/2 focus inset 验证。4096×4096 参考图版的精确
+像素已由隔离复核者逐格通过：14/14 资产、13/13 关键人脸、标签、顺序、比例、同源对应与隐私门禁
+均为 PASS，并已生成同时绑定本地渲染证据和隔离视觉证据的 v2 收据。DSH A/B/C 付费运行和隔离
+overlap 仍未完成，因此它仍是候选实验，不是当前默认能力，也不能宣称已经提高准确率。
+
+第一次真实 A 组运行使用旧的 `dsh-llm-tool-call-v1`：模型在首个图片评分请求中没有调用复杂的嵌套
+评分工具，系统以 `STRUCTURED_OUTPUT_UNSUPPORTED` 阻止，未落入任何有效评分、未解析模型文本、
+未 fallback，也没有继续启动 B/C。该结果证明旧传输合同不适配当前所选路由，不证明评分 Rubric
+本身好坏。随后 v2 在真实 DSH 通过 A 的两类无图合同预检，但首张图片返回
+`INVALID_TOOL_ENVELOPE`，有效评分为 0，B/C 未启动。旧错误未区分外层解析与内层解析，不能据此
+断言具体失效层。v3 去除二次 JSON 转义，但无图预检暴露了 failureCodes、evidence 和 observableTags
+中的空数组类型不匹配。v4 将完整字段类型同时放回工具 schema，保留对象返回和不含 provider 内容的
+错误阶段诊断。真实 DSH A 组前 10 张评分成功，第 11 张因信封字段不匹配停止，尚未完成首批 16 张。
+因此只证明部分请求能够工作，不证明协议已稳定。协议变化会使旧缓存/状态失效，未知付费操作不能自动重新购买。
+
+### Codex 独立实验身份
+
+为避免与其他人或其他思路开发的 Agent 混在一起，这条候选线使用完全独立的运行身份：
+
+| 表面 | 固定身份 |
+|---|---|
+| DSH 中显示名 | `Photo Curator Anchor Lab (Codex)` |
+| preset / 技术 ID | `photo-anchor-lab-codex-v1` |
+| package | `@photo-filter-agent/dsh-photo-anchor-lab-codex-v1` |
+| 工具前缀 | `anchor_lab_codex_*` |
+| 独立 DSH_HOME | `~/.dsh-anchor-lab-codex-v1` |
+| 本地端口 | `3082` |
+
+它不会覆盖标准 `Photo Curator`、Claude 的实验 preset 或 3080 服务，也不会共享 Swift build、运行源码
+快照、状态目录和收据目录。安装时源码与分析引擎会各自冻结为内容快照；同一个状态 namespace 还会
+绑定首次创建它的 DSH 父会话，并在每次 checkpoint 写入时做跨进程锁和内容版本校验。这个验收
+preset 故意不注册导出工具。
 
 ---
 
@@ -535,6 +673,35 @@ pnpm dsh --profile web
 首张图片发送前会运行模型能力预检。如果当前模型不支持图片或结构化工具，任务会明确停止；请在
 DSH 会话里选择合适模型后重新开始，不需要也不应该修改 PhotoFilterAgent 去固定某个供应商。
 
+### 只安装 Codex 锚点实验（开发验收）
+
+普通用户不需要这一步。要并行验证 A/B/C 且不影响已有 DSH 时，显式提供本地锚点包、参考图版及其
+两份收据，再运行独立安装器：
+
+```bash
+PHOTO_ANCHOR_LAB_CODEX_DSH_HOME="$HOME/.dsh-anchor-lab-codex-v1" \
+PHOTO_ANCHOR_LAB_CODEX_ALLOWED_ROOTS='/absolute/path/to/test-photos' \
+PHOTO_ANCHOR_LAB_CODEX_EXCLUDED_RELATIVE_PATHS='relative/path/to/human-pick' \
+PHOTO_ANCHOR_LAB_CODEX_ANCHOR_PACK_PATH='/absolute/path/to/anchor-pack.json' \
+PHOTO_ANCHOR_LAB_CODEX_REFERENCE_SHEET_PATH='/absolute/path/to/reference-sheet.jpg' \
+PHOTO_ANCHOR_LAB_CODEX_REFERENCE_SHEET_RECEIPT_PATH='/absolute/path/to/reference-sheet-receipt.json' \
+PHOTO_ANCHOR_LAB_CODEX_ANCHOR_OVERLAP_RECEIPT_PATH='/absolute/path/to/anchor-overlap-receipt.json' \
+bash scripts/install-anchor-lab-codex-v1.sh /absolute/path/to/deepseek-harness
+```
+
+在这个独立 DSH_HOME 中单独配置供应商凭据与会话模型，然后启动：
+
+```bash
+cd /absolute/path/to/deepseek-harness
+DSH_TELEMETRY_DISABLED=1 \
+DSH_HOME="$HOME/.dsh-anchor-lab-codex-v1" \
+pnpm dsh --profile web --port 3082 --no-open
+```
+
+浏览器打开 `http://127.0.0.1:3082`，新建会话并选择 **Photo Curator Anchor Lab (Codex)**。A/B/C
+必须使用同一候选快照、exact-K、seed、预算和当前会话 provider/model；任何一项变化都创建新身份，
+不能复用旧结果。人工 pick 在三组都获得 exact-K 与终态独立审计之前保持不可见。
+
 ---
 
 ## 当前能力与限制
@@ -560,63 +727,103 @@ DSH 会话里选择合适模型后重新开始，不需要也不应该修改 Pho
 <details>
 <summary>查看当前未发布的真实运行证据、剩余问题和发布门槛</summary>
 
-以下是人像 v3 开发中的本地证据，不是风景结果，也不是已发布结论：
+以下是人像候选版本的本地证据，不是风景结果，也不是已发布结论：
 
-- 候选总数：289；视觉相似 families：12；目标人物：20。
-- 全池 low baseline：289/289 完成。
-- selector high：60/60 完成。
-- selector AB/BA：6 组、12 directional legs 完成。
-- selector 已冻结 exact-20 draft，但尚未获得有效 audit PASS，因此不是最终名单。
-- bounded audit 已完成 selected high 20、remaining low 269、promotion high 49、pairwise 16，
-  合计 338 个 score assets。
-- 模型对一张入选照片给出了自相矛盾的 `needs_review + 全部失败码`，同时又给出高可评估度、
-  68–82 的六维分和“清晰、曝光平衡、无灾难失败”的证据，因此该次 FAIL 无效。
-- 新增一致性校验后，在遗留 audit cache 中发现 9 条不一致记录：1 条 selected high、3 条 low、
-  5 条 promotion high；新版运行时会把它们当作 cache miss，而不是接受错误结论。
-- downstream plan 失效逻辑已经补上：low 修正后重新计算 promotion plan，promotion high 修正后重新
-  计算 pairwise plan，其他一致的单图 cache 保留。
-- 当前 DSH runtime 测试为 99/99 PASS。
+- 完整 309 张会话已经完成 selector baseline/high、旧版 AB/BA、独立 evaluator 全池审计和 exact-20
+  overlap。审计最终为有效 `FAIL`，存在更强挑战者；人工精选重合为 `3/20 = 15%`，Jaccard 约
+  `8.11%`，远低于 90% 门槛。因此旧算法已被明确判定为不合格，不能生成 PASS receipt 或发布。
+- 旧 checkpoint 中有 165 个 selector directional legs、82 组完整 AB/BA。模型声明的 winner 与六维
+  加权方向只在 `72/165 = 43.6%` legs 一致；82 组中只有 6 组的归一化 margin 同号，最终 82 组全部
+  聚合为无方向 TIE。旧结果实际主要由绝对分数与 family/diversity 决定，没有得到有效相对排序证据。
+- pairwise v2 已删除 provider 总 winner 字段，由本地从六维 delta 唯一计算方向；pairwise planner 已
+  改为 audit 优先、family 有界、切线连通 ladder。prompt hash 与算法版本变化会使旧双图 cache 失效，
+  但 309 张单图 audit baseline cache 保持可复用。
+- 本地 Q-ReAlign Mini 0.8B 只作为尚未进入生产的候选召回实验。在不读取 oracle 的固定样本上，MPS
+  `30×3` 重复评分最大漂移为 0、Top-20 自重合为 20/20，30 张分数均不同；但 K=20 切线 margin 只有
+  `0.00396`，稳定不代表准确，所以它不能直接决定最终 Top-20，也尚未通过人工精选信号检验。
+- Q-ReAlign MPS 实测 30×3 的本地分析约 28.8 秒、模型加载约 15.2 秒、每次评分约 8.1 秒；CPU 小样
+  每次约 77.6 秒。CPU/MPS 数值不共用 cache，设备能力在扫描照片前预检，不支持时明确阻止且不 fallback。
+- receipt 已升级为 v2，绑定偏好、selector 路由、baseline/pairwise prompt、排序与预算策略、本地门禁、
+  exact-K 内容集合和匿名顺序。任何决策输入变化都会使旧 selection hash 与授权失效。
+- 当前离线回归覆盖新 pairwise 结构、connected cutline ladder、receipt v2、审计停滞保护、错误账本、
+  数据集/oracle 隔离、Q-ReAlign 实验边界，以及锚点 A/B/C 合同、参考图版 QA 和新 B/C 视觉客户端；
+  当前 Agent 完整回归为 232/232，Swift 引擎回归为 31/31，Codex 独立 preset scaffold 与 DSH rc.8
+  真实 package import 为 6/6。
+- 真实本地图版已经生成：参考图版为 4096×4096、14/14 资产、13/13 显式 focus、无 APP1/APP13/COM；
+  双候选图版为 3072×1536、FIRST/SECOND 两侧 2/2 focus inset。两类收据都绑定实际 JPEG、顺序和
+  渲染证据，旧的自报哈希/布尔值接口会 fail-closed。参考图版精确哈希
+  `79a6d998…991eaf0` 已获得隔离逐格 PASS，最终质量收据为 `f2600da1…342d81f`。
 
-MiniMax 额度耗尽发生在一致性修复后的真实重跑之前。因此目前只能说“实现和无额度测试已完成”，
-不能说“方案已经通过最终验收”，也不能发布重合率。
+因此目前可以确认“旧版为什么失败已经被证据定位，新版修复已通过离线回归，候选召回实验具备重复
+稳定性”；仍不能确认新版已经选对最好的 20 张。下一步必须在 DSH 真实链路中用冻结的新 prompt 和
+planner 重建 exact-20，再完成独立审计与一次锁定 overlap。
+
+此外，v1 和 v2 均在 A 组首张真实图片上阻断，v2 的无图预检通过并不代表带图输出可靠。
+当前 v4 使用完整类型的对象信封并增加隐私安全诊断；真实图片批次为 11 次尝试、10 次成功，
+第 11 次 `INVALID_TOOL_ENVELOPE` 阻断，仍未闭环。工作区另已实现收到明确格式拒绝后的有限恢复：
+按原 cacheKey 记录 failed，跨 turn 最多两次总尝试，超过上限停止；真正未知的网络结果仍保留 reserved。
+恢复和重载测试通过，但此追加修复尚未安装到运行中的冻结快照。旧 reserved 不能直接推定为可重试。
 
 ### 已知仍需闭环的工程问题
 
-1. audit 报告里的 `cumulative_paid` 当前更接近“成功返回次数”，不是严格的 provider attempted
-   ledger；`cumulative_cached` 在多次恢复时还可能重复累计同一缓存命中。这不改变已保存的评分和
-   选择，但会让成本解释失真。正式发布前应改成持久化 attempted/succeeded/failed，并按唯一 cache
-   identity 统计节省量，再补回归测试。
+1. audit 账本已改为持久化 `attempted/succeeded/failed/unresolved`，调用前先写 checkpoint，并以当前
+   冻结计划内的唯一 score / pair-leg cache identity 报告 `unique_cached_assets`；恢复测试确认不会再
+   把同一缓存重复累计。旧 checkpoint 只保存了成功次数，首次恢复会明确标记
+   `accounting=legacy_success_lower_bound`，不会伪造未知的历史失败；最终验收仍需用 DSH session/网络
+   轨迹补充核对旧阶段。
 2. PhotoFilterAgent 在收到 provider 的 401/403/429 后会打开 circuit breaker；但错误返回插件之前，
-   DSH 主 Agent/adapter 仍可能对一次确定性 429 做内部多次重试。续跑控制必须保证一次 heartbeat
-   最多提交一个 turn，不能通过外层轮询进一步放大失败请求；是否需要在 Harness adapter 层减少
-   quota 错误重试，应在最终网络轨迹中验证。
+   旧 DSH 主 Agent/adapter 曾对一次确定性 2056 自动尝试 5 次。插件无法在工具尚未被调用时拦截。
+   本机 Harness 已把 MiniMax 中文 Token Plan 耗尽识别为 terminal `QUOTA`，真实验证只有一次请求。
+   正式发布仍需确保用户所依赖的 Harness 版本包含等价修复，并在最终网络轨迹中复核。
 3. family 仍来自 pHash、亮度和时间阈值，可能把很长的一段同场景照片归为一个大组；它不是相机
    Burst/拍摄序列的真实语义边界。当前“全池 baseline + family challengers + 最多两张”的设计已经
    避免整组被一个代表淘汰，但更精细的序列切分仍是后续质量优化节点。
-4. selector pairwise 是切线和 family 内的稀疏局部纠偏，不是全池锦标赛；多样性也仍依赖离散标签，
-   不是图像 embedding。这两项必须由最终 overlap 和反例审计证明当前精度是否足够。
+4. `dsh-llm-typed-envelope-v4` 只通过前 10 张真实评分，尚未稳定完成批次；pairwise v2 和 connected
+   ladder 也未完成真实验收；
+   本地单元测试只能证明完整合同预检、nonce/JSON 解码、方向计算、缓存失效和图结构正确，不能替代
+   真实图片评分、AB/BA 一致率与最终 overlap。真实运行若仍返回纯文本或错误工具结构，必须继续
+   fail-closed，不能降低验证标准来“跑通”。
+5. Q-ReAlign 当前只通过稳定性门槛，尚未证明与“最好照片”或人工 pick 有信号；在信号检验完成前，
+   不能把它接入生产 Top-K，也不能把它的分数写入正式产品宣传。
+6. 个人锚点方案已完成真实参考图版的本地结构验证、隔离逐格视觉 QA PASS 和双候选 2/2 人脸放大
+   验证，且锚点与 309 张候选的原图内容重合为 0；但仍没有完成 DSH A/B/C 与隔离 oracle overlap。
+   当前生产路径仍是 A 组旧客户端；B/C 不会通过
+   配置开关悄悄替换默认规则。
 
 ---
 
-## 额度恢复后的唯一闭环顺序
+## 新版冻结后的唯一闭环顺序
 
-1. 重启或确认 DSH Web 已加载最新 Photo Curator preset。
-2. 在同一真实 DSH 用户链路重新 `analyze_folder`，只做本地 rehydrate，确认 fingerprint、289 候选、
-   12 families 和 selector selection hash 没有漂移。
-3. 使用完全相同的五项输入只调用一次 `independent_evaluator`；新版会只补 9 条不一致缓存，并按
-   修正后的上游结果重新冻结 bounded promotion/pairwise plan。
-4. 后续 turn 只补 remaining，遇到 401/403/429 或 circuit breaker 立即停止，不在同一 turn 重试。
-5. 如果得到有效 PASS，调用 `propose` 生成 exact-20 receipt，不导出照片。
-6. 如果得到有效 FAIL，只依据 evaluator 反例重建 selector 名单并重新 audit；此时仍不能读取 oracle。
-7. Receipt 生成后，启动另一个隔离评估 Agent/进程读取人工 pick，计算重合指标。`pass_90` 必须为真；
+1. 重新安装内容寻址的 Codex runtime snapshot，重启 3082 并确认 DSH Web 已加载最新
+   `Photo Curator Anchor Lab (Codex)`；旧 v1/v2 会话只保留为失败证据，不能恢复或重试其 unknown
+   operation。
+2. 不联网的数据集预检必须得到 309 候选、20 oracle、20/20 内容覆盖、K=20 对齐和 `valid=true`。
+   这一步已经实测通过，重复运行仍不得向 selector 输出内容身份。
+3. 为 A/B/C 分别创建新的父会话，三组共用新的 v4 seed，使用当前 DSH 会话实际选择的同一 provider/model；先让
+   A 完成 2 个无图合同探针，B/C 各完成 3 个无图合同探针，再分别运行一次
+   `analyze_folder`：people target=20、scenery target=0、people_only、无 limit。确认 fingerprint 不漂移，
+   仅复用同协议、同完整身份的 baseline cache；旧协议结果不能复用于 v4。禁止插件固定或 fallback 到另一个模型。
+4. 使用 pairwise v2 prompt 与 connected ladder 重建 selector exact-20。每个 high 结果同时冻结主人物
+   头脸 focus；pairwise 只能使用与 FIRST/SECOND 高分辨率预览和两个 focus 同时绑定的 2/2 inset 图版。
+   只补因 prompt/算法身份变化而失效的 high/pairwise 资产，不重新支付仍有效的 baseline；记录新
+   selection hash 和 AB/BA 有效胜率。
+5. 使用新 draft 的五项冻结输入只调用一次 `independent_evaluator`；单图 baseline cache 继续复用，
+   只补新 audit 上下文真正 missing 的资产。遇到
+   401/403/429、quota 或 circuit breaker 立即停止外层续跑，且 Harness adapter 的确定性错误重试
+   必须纳入最终网络轨迹与修复验证。
+6. 如果得到有效 PASS，调用 `propose` 生成 exact-20 receipt v2，不导出照片。
+7. 如果得到有效 FAIL，只依据 evaluator 反例重建 selector 名单并重新 audit；此时仍不能读取 oracle。
+8. Receipt 生成后，启动另一个隔离评估 Agent/进程读取人工 pick，计算重合指标。`pass_90` 必须为真；
    若低于 90%，如实报告，不能用 oracle 反向调参伪造通过。
-8. 完成安全、缓存、模型路由和网络端点复核：全链路只能出现当前会话所选 provider endpoint，不能
+9. 完成安全、缓存、模型路由和网络端点复核：全链路只能出现当前会话所选 provider endpoint，不能
    出现隐藏 fallback。
-9. 修正并验证 audit attempted/succeeded/failed 与唯一缓存统计；核对最终报告能够解释真实调用量。
-10. 通过全部验收后，才把本候选稿中得到实证的内容同步到正式 `README.md`、规范、QA 记录和必要
+10. 核对 audit 新增 attempted/succeeded/failed/unresolved 与唯一缓存统计；对旧阶段，
+   用 DSH session/网络轨迹补足 checkpoint 无法重建的历史失败数，不得把 lower bound 写成精确总量。
+11. 通过全部验收后，才把本候选稿中得到实证的内容同步到正式 `README.md`、规范、QA 记录和必要
    代码/测试；删除或改写正式 README 中与当前 v3 冲突的旧营销表述。
-11. 运行完整测试、检查 git diff 不包含照片、oracle、凭据、本机绝对路径或其他私有内容，然后按
-    发布流程提交并推送 GitHub。
+12. 按用户最新要求，可先将原本实现提交到 Codex 独立分支并创建 draft PR，明确未完成的实验。
+    PR 不合并 main；继续独立 A/B/C 实验并更新实测结果，最终由用户对比决定是否合并。
+    所有提交仍须排除照片、oracle、凭据、本机私有路径和运行缓存。
 
 ---
 
@@ -624,7 +831,11 @@ MiniMax 额度耗尽发生在一致性修复后的真实重跑之前。因此目
 
 - [ ] 最新 DSH/Photo Curator preset 已真实加载。
 - [ ] 全链路实际 provider/model 与当前会话一致。
-- [ ] 视觉能力预检 PASS，且无 fallback endpoint。
+- [ ] A 的 2 类、B/C 的 3 类无图完整合同预检 PASS，且无 fallback endpoint。
+- [x] 真实参考图版本地结构门禁通过，14/14 资产、13/13 focus、无隐私 JPEG 段。
+- [x] exact 当前参考图版由隔离复核者逐格确认并生成 PASS 收据。
+- [x] 真实双候选图版已验证 FIRST/SECOND 2/2 focus inset 与 v2 来源回执。
+- [x] 309 候选 / 20 oracle 的本地数据集预检有效，oracle 内容覆盖 20/20，K=20 对齐。
 - [ ] 全池 baseline 完整覆盖。
 - [ ] selector high 和 AB/BA 冻结计划完整完成。
 - [ ] exact-K draft 的 selection hash 稳定。
@@ -634,7 +845,8 @@ MiniMax 额度耗尽发生在一致性修复后的真实重跑之前。因此目
 - [ ] 与人工 pick 的验收指标达到约定的 90% 门槛。
 - [ ] 原照片没有被移动、删除、覆盖或修改。
 - [ ] audit attempted/succeeded/failed 和唯一缓存统计与真实调用轨迹一致。
-- [ ] 测试全部通过，文档中的数字与真实 receipt/audit 一致。
+- [x] 当前离线实现的 Agent 232/232、Swift 31/31、独立 preset/DSH package import 6/6 回归通过。
+- [ ] 真实 DSH 验收完成后，文档中的数字与最终 receipt/audit 一致。
 - [ ] 待发布 diff 不含照片、凭据、用户路径、oracle 内容或缓存。
 - [ ] 正式 README、spec、QA 记录和实现保持一致。
 
