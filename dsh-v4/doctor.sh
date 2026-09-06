@@ -20,6 +20,8 @@ PHOTOS_ROOT="${PHOTOS_ROOT:-${PHOTOS:-$HOME/Desktop/照片}}"
 EXPORT_ROOT="${EXPORT_ROOT:-$HOME/Downloads}"
 SCRATCH="${SCRATCH:-/tmp/claude-501}"
 FAIL=0
+# 这一份带 PyYAML；系统 python3 不一定有。
+RANKER_PY="${RANKER_PY:-$DSH_HOME/ranker-venv/bin/python}"
 ok()   { printf '  ✅ %s\n' "$1"; }
 bad()  { printf '  ❌ %s\n' "$1"; FAIL=1; }
 warn() { printf '  ⚠️  %s\n' "$1"; }
@@ -97,6 +99,11 @@ for prof in photo-v4 photo-v4-ab photo-v4-eval photo-v4-eval-web photo-v4-headle
   done
 done
 [ "$PROF_BAD" -eq 0 ] && ok "五个 profile 与仓库模板一致"
+
+echo "═══ 3c. preset 与 profile 的同名键：profile 那份是不是死的 ═══"
+# 判据与踩坑经过写在 check_preset_shadow.py 的 docstring 里。
+# 只报**值不同**的覆盖 —— 值相同的覆盖没有后果，报出来只会淹掉真信号。
+if "$RANKER_PY" "$REPO/dsh-v4/check_preset_shadow.py" "$DSH_HOME"; then :; else FAIL=1; fi
 
 echo "═══ 4. 运行中的 DSH：启动之后代码有没有再改 ═══"
 # 不要用 $ 锚点 —— 实际命令行可能以 --no-open 结尾。
