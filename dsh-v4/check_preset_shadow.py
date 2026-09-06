@@ -76,10 +76,36 @@ def main() -> int:
             bad = True
             print(f"  ❌ {prof_dir.name}：这些键写了也不生效，preset 的值会赢")
             for k in sorted(shadowed):
-                print(f"       {k}: profile={_brief(prof[k])}  ←被覆盖为→  preset={_brief(preset[k])}")
+                for line in _explain(k, prof[k], preset[k]):
+                    print(f"       {line}")
     if not bad:
         print("  ✅ 没有被 preset 盖掉的 profile 键")
     return 1 if bad else 0
+
+
+def _explain(key: str, mine: object, wins: object) -> list[str]:
+    """说清楚差在哪。
+
+    第一版只是把两边各截 48 字。两个长列表如果**前缀相同**，截出来一模一样 ——
+    arm-* 三组真实差别是 13 条 vs 3 条，差异全在被截掉的尾巴里，
+    读的人（包括几小时后的自己）会判成误报然后忽略它。守卫就是这么失效的。
+    所以列表一律报**条数 + 差集**，不报前缀。
+    """
+    if isinstance(mine, list) and isinstance(wins, list):
+        only_mine = [x for x in mine if x not in wins]
+        only_wins = [x for x in wins if x not in mine]
+        out = [f"{key}: profile {len(mine)} 项  ←被覆盖为→  preset {len(wins)} 项"]
+        if only_mine:
+            out.append(f"    profile 独有（写了但丢掉的就是这些）：{_items(only_mine)}")
+        if only_wins:
+            out.append(f"    preset 独有（实际会生效的额外项）：{_items(only_wins)}")
+        return out
+    return [f"{key}: profile={_brief(mine)}  ←被覆盖为→  preset={_brief(wins)}"]
+
+
+def _items(xs: list) -> str:
+    head = ", ".join(str(x) for x in xs[:6])
+    return head if len(xs) <= 6 else f"{head} …（共 {len(xs)} 项）"
 
 
 def _brief(v: object) -> str:
