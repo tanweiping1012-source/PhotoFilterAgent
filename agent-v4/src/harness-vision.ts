@@ -185,8 +185,25 @@ function parseToolArguments(
 ): Record<string, unknown> {
   const calls = blocks.filter(block => block.type === 'tool-call')
   if (calls.length !== 1 || calls[0]?.name !== expectedTool) {
+    // 这三种失败要分得开，否则只能靠猜：
+    //   0 个 tool-call  → 模型改用散文作答（本层不设 toolChoice，模型有权不调）
+    //   ≥2 个           → 模型调了多次，不知道该采信哪一次
+    //   名字不对        → 调了别的工具
+    // 2026-09-06 实验组 2（每局 24 幅图）整轮触发这条，而 4 幅图的两组各 120/120 成功；
+    // 当时的报错三种合一，查不下去，所以把现场补进来。散文摘要只留头 200 字，
+    // 够判断「它在答什么」，又不至于把整段理由灌进日志。
+    const kinds = blocks.map(block => String(block.type))
+    const prose = blocks
+      .filter(block => block.type === 'text')
+      .map(block => String((block as { text?: unknown }).text ?? ''))
+      .join(' ')
+      .slice(0, 200)
     throw new HarnessVisionError(
-      `模型没有且仅调用结构化工具 ${expectedTool}；禁止解析纯文本或回退其他模型。`,
+      `模型没有且仅调用结构化工具 ${expectedTool}；禁止解析纯文本或回退其他模型。`
+      + ` 现场：tool-call ${calls.length} 个`
+      + (calls.length ? `（名字 ${calls.map(c => String(c.name)).join('/')}）` : '')
+      + `，返回块 [${kinds.join(',')}]`
+      + (prose ? `，散文开头「${prose}」` : ''),
       { code: 'STRUCTURED_OUTPUT_UNSUPPORTED' },
     )
   }
