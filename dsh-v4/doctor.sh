@@ -11,17 +11,47 @@
 # 用法：DSH_HOME=~/.dsh-v4 REPO=~/deepseek-harness/PhotoFilterAgent bash doctor.sh
 set -uo pipefail
 DSH_HOME="${DSH_HOME:-$HOME/.dsh-v4}"
+# 这一份带 PyYAML；系统 python3 不一定有。要在下面读 preset 之前就绪。
+RANKER_PY="${RANKER_PY:-$DSH_HOME/ranker-venv/bin/python}"
 REPO="${REPO:-$HOME/deepseek-harness/PhotoFilterAgent}"
 CACHE="${CACHE:-$HOME/.cache/photofilter-rank}"
 # 占位符替换用。词汇以 dsh-v4/README.md 的表为准，sync-config.sh 用的是同一套。
 # 以前这里把标注者的私人照片目录写死成默认值 —— 私人路径不该进公开仓库，
 # 而且换一台机器第 3 项就会假报「不一致」。
-PHOTOS_ROOT="${PHOTOS_ROOT:-${PHOTOS:-$HOME/Desktop/照片}}"
+#
+# 但改成通用默认值 `~/Desktop/照片` 之后又踩了第二个坑（2026-09-06）：
+# 真实目录是 `~/Desktop/照片测试`，而 `照片` 是它的**前缀** ——
+# sed 替换出 `@@PHOTOS@@测试`，于是第 3、3b 层六份文件全部假报不一致。
+# 假警报比漏报更坏：它会把人训练成忽略这个工具。
+#
+# 所以不猜，**从部署的 preset 里把 allowedRoots 读出来**。
+# 读不到才退回通用默认值，并明说这一层的结果不可信。
+_photos_from_preset() {
+  "$RANKER_PY" - "$DSH_HOME/.agent-presets/photo-filter-v4/agent.cordis.yml" <<'PY' 2>/dev/null
+import sys, yaml
+try:
+    doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+def walk(n):
+    if isinstance(n, dict):
+        yield n
+        for v in n.values(): yield from walk(v)
+    elif isinstance(n, list):
+        for v in n: yield from walk(v)
+for e in walk(doc):
+    if e.get("id") == "photo-filter-v4":
+        roots = (e.get("config") or {}).get("allowedRoots") or []
+        if roots:
+            print(roots[0]); raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+PHOTOS_ROOT="${PHOTOS_ROOT:-${PHOTOS:-$(_photos_from_preset)}}"
+PHOTOS_ROOT="${PHOTOS_ROOT:-$HOME/Desktop/照片}"
 EXPORT_ROOT="${EXPORT_ROOT:-$HOME/Downloads}"
 SCRATCH="${SCRATCH:-/tmp/claude-501}"
 FAIL=0
-# 这一份带 PyYAML；系统 python3 不一定有。
-RANKER_PY="${RANKER_PY:-$DSH_HOME/ranker-venv/bin/python}"
 ok()   { printf '  ✅ %s\n' "$1"; }
 bad()  { printf '  ❌ %s\n' "$1"; FAIL=1; }
 warn() { printf '  ⚠️  %s\n' "$1"; }
