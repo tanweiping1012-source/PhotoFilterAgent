@@ -372,7 +372,7 @@ CLIP 是 OpenAI 的一个开源模型（用的是 `ViT-L/14` 这一档），
 答案是一个人的选择，两个人挑同一批照片本来重合度就不高 ——
 除非再找一个人从同一批照片里挑 20 张，否则没有参照系。
 
-> **完整报告** → [rubric 与范例锚点对交付重合率的影响](dsh-v4/ab-experiment/REPORT-RUBRIC-ANCHORS.md)
+> **完整报告** → [第二步 A/B 实验报告](dsh-v4/ab-experiment/REPORT-RUBRIC-ANCHORS.md)
 >
 > 含全部原始数据、四次失败的执行记录、以及六条被我们自己推翻的判断。
 > 跑之前写死的判据在 [CRITERIA-RUBRIC-ANCHORS.md](dsh-v4/ab-experiment/CRITERIA-RUBRIC-ANCHORS.md)，跑完一个字没改。
@@ -595,7 +595,7 @@ python -m photofilter_rank.cli scan ~/Desktop/我的照片
 
 | 你想知道 | 去哪看 |
 | --- | --- |
-| 判据和例子那次 A/B 测试的全部数据 | [实验报告](dsh-v4/ab-experiment/REPORT-RUBRIC-ANCHORS.md) |
+| 第二步那次 A/B 测试的全部数据 | [第二步 A/B 实验报告](dsh-v4/ab-experiment/REPORT-RUBRIC-ANCHORS.md) |
 | 这个工具是怎么一步步做出来的 | [版本演进](docs/versions/README.md) |
 | 怎么判断一个选片程序好不好 | [测量方法](docs/MEASUREMENT.md) |
 | 命令行的全部用法 | [排序器说明](ranker/README.md) |
