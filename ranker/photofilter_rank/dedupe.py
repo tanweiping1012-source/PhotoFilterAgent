@@ -105,6 +105,17 @@ def select_with_cap(
         used_cap += 1
 
 
+def segment_of(idx: int, segments: int, n_photos: int) -> int:
+    """这张照片落在第几段。索引即文件名顺序，见 select_spread 的「一个前提」。
+
+    单拎成函数不是为了复用好看，是因为阶段 3 的对决表必须用**同一套**切法：
+    两边各写一遍这个表达式，迟早会漂，而漂了之后「对决架在哪个名额上」会
+    静默错位 —— 名单照样产出 20 张，没有任何测试会红。
+    """
+    n_seg = max(1, segments)
+    return min(idx * n_seg // max(n_photos, 1), n_seg - 1)
+
+
 def select_spread(
     order: list[int], families: list[int], n_photos: int, target: int,
     family_cap: int, segments: int,
@@ -146,7 +157,7 @@ def select_spread(
     seg_count: dict[int, int] = {}
     for idx in order:
         fam = families[idx]
-        seg = min(idx * n_seg // max(n_photos, 1), n_seg - 1)
+        seg = segment_of(idx, n_seg, n_photos)
         if fam_count.get(fam, 0) >= family_cap or seg_count.get(seg, 0) >= seg_cap:
             continue
         picked.append(idx)
