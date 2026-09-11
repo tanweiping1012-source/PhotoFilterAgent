@@ -1,0 +1,424 @@
+{
+  "fingerprint": "5e9947ea9eae8391",
+  "n_candidates": 299,
+  "baseline": 7,
+  "selected": [
+    "DSCF9452.JPG",
+    "DSCF9453.JPG",
+    "DSCF9256.JPG",
+    "DSCF9258.JPG",
+    "DSCF9529.JPG",
+    "DSCF9533.JPG",
+    "DSCF9420.JPG",
+    "DSCF9423.JPG",
+    "DSCF9390.JPG",
+    "DSCF9379.JPG",
+    "DSCF8887.JPG",
+    "DSCF8832.JPG",
+    "DSCF8899.JPG",
+    "DSCF9308.JPG",
+    "DSCF9325.JPG",
+    "DSCF9084.JPG",
+    "DSCF9081.JPG",
+    "DSCF8896.JPG",
+    "DSCF9121.JPG",
+    "DSCF9111.JPG"
+  ],
+  "gold_hits": [
+    "DSCF8896.JPG",
+    "DSCF9111.JPG",
+    "DSCF9325.JPG",
+    "DSCF9379.JPG",
+    "DSCF9452.JPG",
+    "DSCF9529.JPG",
+    "DSCF9533.JPG"
+  ],
+  "seg_cap": 2,
+  "family_cap": 2,
+  "duels": [
+    {
+      "seg": 0,
+      "picks": [
+        "DSCF8887.JPG",
+        "DSCF8832.JPG"
+      ],
+      "incumbent": "DSCF8832.JPG",
+      "inc_score": 0.1358,
+      "inc_fam": 11,
+      "inc_gold": false,
+      "inc_rank": 56,
+      "challenger": "DSCF8886.JPG",
+      "chal_score": 0.095,
+      "chal_fam": 16,
+      "chal_gold": false,
+      "chal_rank": 58,
+      "by_score": "DSCF8886.JPG",
+      "by_score_val": 0.095,
+      "n_legal": 22,
+      "n_eligible_in_seg": 24,
+      "gold_in_seg": [
+        "DSCF8880.JPG",
+        "DSCF8881.JPG",
+        "DSCF8888.JPG",
+        "DSCF8893.JPG"
+      ],
+      "gold_blocked_in_seg": []
+    },
+    {
+      "seg": 1,
+      "picks": [
+        "DSCF8899.JPG",
+        "DSCF8896.JPG"
+      ],
+      "incumbent": "DSCF8896.JPG",
+      "inc_score": -0.1493,
+      "inc_fam": 18,
+      "inc_gold": true,
+      "inc_rank": 72,
+      "challenger": "DSCF8898.JPG",
+      "chal_score": 0.0815,
+      "chal_fam": 21,
+      "chal_gold": false,
+      "chal_rank": 128,
+      "by_score": "DSCF8898.JPG",
+      "by_score_val": 0.0815,
+      "n_legal": 17,
+      "n_eligible_in_seg": 19,
+      "gold_in_seg": [
+        "DSCF8896.JPG"
+      ],
+      "gold_blocked_in_seg": []
+    },
+    {
+      "seg": 2,
+      "picks": [
+        "DSCF9084.JPG",
+        "DSCF9081.JPG"
+      ],
+      "incumbent": "DSCF9081.JPG",
+      "inc_score": 0.0,
+      "inc_fam": 31,
+      "inc_gold": false,
+      "inc_rank": 66,
+      "challenger": "DSCF9074.JPG",
+      "chal_score": 0.0,
+      "chal_fam": 30,
+      "chal_gold": false,
+      "chal_rank": 67,
+      "by_score": "DSCF9074.JPG",
+      "by_score_val": 0.0,
+      "n_legal": 24,
+      "n_eligible_in_seg": 26,
+      "gold_in_seg": [],
+      "gold_blocked_in_seg": []
+    },
+    {
+      "seg": 3,
+      "picks": [
+        "DSCF9121.JPG",
+        "DSCF9111.JPG"
+      ],
+      "incumbent": "DSCF9111.JPG",
+      "inc_score": -0.8553,
+      "inc_fam": 49,
+      "inc_gold": true,
+      "inc_rank": 88,
+      "challenger": "DSCF9097.JPG",
+      "chal_score": -0.9232,
+      "chal_fam": 40,
+      "chal_gold": false,
+      "chal_rank": 89,
+      "by_score": "DSCF9112.JPG",
+      "by_score_val": -0.706,
+      "n_legal": 22,
+      "n_eligible_in_seg": 24,
+      "gold_in_seg": [
+        "DSCF9102.JPG",
+        "DSCF9110.JPG",
+        "DSCF9111.JPG"
+      ],
+      "gold_blocked_in_seg": []
+    },
+    {
+      "seg": 4,
+      "picks": [
+        "DSCF9256.JPG",
+        "DSCF9258.JPG"
+      ],
+      "incumbent": "DSCF9258.JPG",
+      "inc_score": 1.6564,
+      "inc_fam": 55,
+      "inc_gold": false,
+      "inc_rank": 3,
+      "challenger": "DSCF9260.JPG",
+      "chal_score": 1.5613,
+      "chal_fam": 56,
+      "chal_gold": false,
+      "chal_rank": 7,
+      "by_score": "DSCF9257.JPG",
+      "by_score_val": 1.6428,
+      "n_legal": 20,
+      "n_eligible_in_seg": 22,
+      "gold_in_seg": [],
+      "gold_blocked_in_seg": []
+    },
+    {
+      "seg": 5,
+      "picks": [
+        "DSCF9308.JPG",
+        "DSCF9325.JPG"
+      ],
+      "incumbent": "DSCF9325.JPG",
+      "inc_score": 0.0136,
+      "inc_fam": 64,
+      "inc_gold": true,
+      "inc_rank": 61,
+      "challenger": "DSCF9337.JPG",
+      "chal_score": 0.0,
+      "chal_fam": 71,
+      "chal_gold": false,
+      "chal_rank": 63,
+      "by_score": "DSCF9337.JPG",
+      "by_score_val": 0.0,
+      "n_legal": 25,
+      "n_eligible_in_seg": 27,
+      "gold_in_seg": [
+        "DSCF9314.JPG",
+        "DSCF9325.JPG"
+      ],
+      "gold_blocked_in_seg": []
+    },
+    {
+      "seg": 6,
+      "picks": [
+        "DSCF9390.JPG",
+        "DSCF9379.JPG"
+      ],
+      "incumbent": "DSCF9379.JPG",
+      "inc_score": 0.3802,
+      "inc_fam": 73,
+      "inc_gold": true,
+      "inc_rank": 51,
+      "challenger": "DSCF9389.JPG",
+      "chal_score": 0.2987,
+      "chal_fam": 76,
+      "chal_gold": false,
+      "chal_rank": 52,
+      "by_score": "DSCF9386.JPG",
+      "by_score_val": 0.3666,
+      "n_legal": 24,
+      "n_eligible_in_seg": 26,
+      "gold_in_seg": [
+        "DSCF9345.JPG",
+        "DSCF9374.JPG",
+        "DSCF9379.JPG"
+      ],
+      "gold_blocked_in_seg": []
+    },
+    {
+      "seg": 7,
+      "picks": [
+        "DSCF9420.JPG",
+        "DSCF9423.JPG"
+      ],
+      "incumbent": "DSCF9423.JPG",
+      "inc_score": 1.0047,
+      "inc_fam": 89,
+      "inc_gold": false,
+      "inc_rank": 25,
+      "challenger": "DSCF9406.JPG",
+      "chal_score": 0.9911,
+      "chal_fam": 83,
+      "chal_gold": true,
+      "chal_rank": 26,
+      "by_score": "DSCF9424.JPG",
+      "by_score_val": 1.3713,
+      "n_legal": 25,
+      "n_eligible_in_seg": 27,
+      "gold_in_seg": [
+        "DSCF9406.JPG"
+      ],
+      "gold_blocked_in_seg": []
+    },
+    {
+      "seg": 8,
+      "picks": [
+        "DSCF9452.JPG",
+        "DSCF9453.JPG"
+      ],
+      "incumbent": "DSCF9453.JPG",
+      "inc_score": 1.7107,
+      "inc_fam": 98,
+      "inc_gold": false,
+      "inc_rank": 1,
+      "challenger": "DSCF9505.JPG",
+      "chal_score": 1.5478,
+      "chal_fam": 88,
+      "chal_gold": false,
+      "chal_rank": 8,
+      "by_score": "DSCF9449.JPG",
+      "by_score_val": 1.8057,
+      "n_legal": 23,
+      "n_eligible_in_seg": 25,
+      "gold_in_seg": [
+        "DSCF9435.JPG",
+        "DSCF9445.JPG",
+        "DSCF9452.JPG",
+        "DSCF9504.JPG"
+      ],
+      "gold_blocked_in_seg": []
+    },
+    {
+      "seg": 9,
+      "picks": [
+        "DSCF9529.JPG",
+        "DSCF9533.JPG"
+      ],
+      "incumbent": "DSCF9533.JPG",
+      "inc_score": 1.5885,
+      "inc_fam": 123,
+      "inc_gold": true,
+      "inc_rank": 5,
+      "challenger": "DSCF9511.JPG",
+      "chal_score": 1.5749,
+      "chal_fam": 86,
+      "chal_gold": false,
+      "chal_rank": 6,
+      "by_score": "DSCF9511.JPG",
+      "by_score_val": 1.5749,
+      "n_legal": 26,
+      "n_eligible_in_seg": 28,
+      "gold_in_seg": [
+        "DSCF9529.JPG",
+        "DSCF9533.JPG"
+      ],
+      "gold_blocked_in_seg": []
+    }
+  ],
+  "reach": {
+    "up": [
+      7
+    ],
+    "down": [
+      1,
+      3,
+      5,
+      6,
+      9
+    ],
+    "neutral": [
+      0,
+      2,
+      4,
+      8
+    ],
+    "lo": 2,
+    "hi": 8
+  },
+  "undelivered_gold": [
+    {
+      "name": "DSCF8880.JPG",
+      "seg": 0,
+      "fam": 12,
+      "score": 0.0543,
+      "blocked_closed_eyes": false,
+      "rank": 59
+    },
+    {
+      "name": "DSCF8881.JPG",
+      "seg": 0,
+      "fam": 13,
+      "score": -0.1629,
+      "blocked_closed_eyes": false,
+      "rank": 73
+    },
+    {
+      "name": "DSCF8888.JPG",
+      "seg": 0,
+      "fam": 18,
+      "score": -0.2037,
+      "blocked_closed_eyes": false,
+      "rank": 139
+    },
+    {
+      "name": "DSCF8893.JPG",
+      "seg": 0,
+      "fam": 17,
+      "score": -0.0272,
+      "blocked_closed_eyes": false,
+      "rank": 138
+    },
+    {
+      "name": "DSCF9102.JPG",
+      "seg": 3,
+      "fam": 40,
+      "score": -1.154,
+      "blocked_closed_eyes": false,
+      "rank": 185
+    },
+    {
+      "name": "DSCF9110.JPG",
+      "seg": 3,
+      "fam": 49,
+      "score": -0.8825,
+      "blocked_closed_eyes": false,
+      "rank": 150
+    },
+    {
+      "name": "DSCF9314.JPG",
+      "seg": 5,
+      "fam": 62,
+      "score": 0.0,
+      "blocked_closed_eyes": false,
+      "rank": 131
+    },
+    {
+      "name": "DSCF9345.JPG",
+      "seg": 6,
+      "fam": 72,
+      "score": 0.0,
+      "blocked_closed_eyes": false,
+      "rank": 171
+    },
+    {
+      "name": "DSCF9374.JPG",
+      "seg": 6,
+      "fam": 73,
+      "score": 0.2444,
+      "blocked_closed_eyes": false,
+      "rank": 237
+    },
+    {
+      "name": "DSCF9406.JPG",
+      "seg": 7,
+      "fam": 83,
+      "score": 0.9911,
+      "blocked_closed_eyes": false,
+      "rank": 26
+    },
+    {
+      "name": "DSCF9435.JPG",
+      "seg": 8,
+      "fam": 86,
+      "score": 1.1812,
+      "blocked_closed_eyes": false,
+      "rank": 163
+    },
+    {
+      "name": "DSCF9445.JPG",
+      "seg": 8,
+      "fam": 96,
+      "score": 1.7786,
+      "blocked_closed_eyes": false,
+      "rank": 189
+    },
+    {
+      "name": "DSCF9504.JPG",
+      "seg": 8,
+      "fam": 100,
+      "score": 1.4799,
+      "blocked_closed_eyes": false,
+      "rank": 12
+    }
+  ]
+}
