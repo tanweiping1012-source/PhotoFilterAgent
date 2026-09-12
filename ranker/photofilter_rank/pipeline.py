@@ -164,6 +164,55 @@ def load_verdicts(raw: dict) -> dict[tuple[str, str], Verdict]:
     return out
 
 
+def attach_local_fallback(judge: Judge, score: dict[str, float]) -> Judge:
+    """把分数补给回放裁判的兜底裁判。原样返回传进来的 judge。
+
+    为什么需要这一步：ReplayJudge 是在 cli.py 里建的，那时**分数还没算出来**
+    （分数是 rank_folder 里算的），所以兜底裁判只能先拿一张空表。
+    空表下两张都取默认 0.5、恒判 tie。
+
+    ⚠️ 这是**记账的正确性，不是结果的正确性**。实测 299 张：空表与真表的
+    交付逐张相同、各组冠军相同、整组淘汰相同、used/missing 相同 ——
+    差别只在 GroupOutcome.matches 里记的是 tie 还是 a（49/60 组都被记错）。
+    结构上也必然如此：擂台按分降序，擂主分恒高于其后挑战者，
+    真表判 a、空表判 tie，两者都是「擂主守擂」。见 test_空表兜底与真表兜底逐局等价。
+
+    已经有分数的兜底裁判不覆盖 —— 调用方显式给的优先。
+    """
+    if (isinstance(judge, ReplayJudge) and isinstance(judge.fallback, LocalJudge)
+            and not judge.fallback.score):
+        judge.fallback.score = score
+    return judge
+
+
+def verdict_accounting(judge: Judge) -> dict[str, int] | None:
+    """裁决账：买了多少条、用上了多少条、白买了多少条。
+
+    ━━ 为什么必须报出来 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    ReplayJudge.missing 从 v4 第一版就在计数，docstring 也写着「让调用方知道
+    有多少局没跑到」—— 但**从来没有任何地方读过它**。仪器造好了，接线没接，
+    于是「这一轮有多少局其实没花到钱」在任何输出里都看不见。
+
+    三个数要分开报。「没用上」有两种完全不同的成因，压成一个数就查不下去：
+
+        missing  擂台赛问了、但计划里没有这一对   ← 计划覆盖不到实际对局
+        unused   计划里有这一条、但一次没被问过   ← 真正白花的钱
+
+    典型来源也不同：missing 大多是 refine_max_matches 把计划截短了
+    （实测 162 局的运行只买了 60 局）；unused 则是擂主中途换了人，
+    之后的对全都偏离计划（见 tournament_plan 的「擂台赛是动态的」）。
+
+    不是回放裁判就返回 **None，不是 0**。0 的意思是「量过，结果是零」，
+    None 的意思是「这一轮压根没有裁决可言」—— 混同会让「一条都没用上」
+    这种失败读起来跟「本来就没买」一样正常。
+    """
+    if not isinstance(judge, ReplayJudge):
+        return None
+    return {"used": judge.calls, "missing": judge.missing,
+            "unused": len(judge.verdicts) - judge.calls}
+
+
 @dataclass
 class GroupOutcome:
     """一个连拍组打完之后的结果。"""

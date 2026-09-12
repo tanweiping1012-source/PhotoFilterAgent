@@ -17,7 +17,8 @@ from .config import RankConfig
 from .dedupe import group_by_similarity, select_spread, select_with_cap, suggest_threshold
 from .eligibility import EligibilityUnavailable, engine_facts
 from .embed import embed_photos
-from .pipeline import Judge, LocalJudge, ReplayJudge, stage2_reorder, tournament_plan
+from .pipeline import (Judge, LocalJudge, attach_local_fallback, stage2_reorder,
+                       tournament_plan, verdict_accounting)
 from .quality import cold_start_score, local_quality, zscore
 from .scan import build_cache, fingerprint, list_photos
 from .taste import TasteProbe, label_concentration
@@ -201,12 +202,17 @@ def rank_folder(cfg: RankConfig, verbose: bool = True, judge: Judge | None = Non
     within_rank: dict[str, int] = {}
     rejected_fams: set[int] = set()
     rejected_names: set[str] = set()
+    verdict_acct: dict[str, int] | None = None
     if cfg.stage2:
-        j: Judge = judge or LocalJudge({names[i]: float(final[i]) for i in range(len(names))})
+        local_score = {names[i]: float(final[i]) for i in range(len(names))}
+        j: Judge = judge or LocalJudge(local_score)
+        # 兜底裁判在 cli.py 里建的时候还没有分数，这里补上。只影响记账不影响结果，
+        # 理由写在 pipeline.attach_local_fallback 的 docstring 里。
+        j = attach_local_fallback(j, local_score)
         within_rank, outcomes, stage2_matches = stage2_reorder(
-            names, list(families), {names[i]: float(final[i]) for i in range(len(names))},
-            j, cfg.stage2_cap,
+            names, list(families), local_score, j, cfg.stage2_cap,
         )
+        verdict_acct = verdict_accounting(j)
         # 组内名次是**第一排序键**，全局分数退为第二键。
         # 这样「组内冠军」才真的比「组内第二但全局分高」优先。
         order = sorted(order, key=lambda i: (within_rank.get(names[i], 0), -float(final[i])))
@@ -256,6 +262,10 @@ def rank_folder(cfg: RankConfig, verbose: bool = True, judge: Judge | None = Non
         "label_concentration": round(concentration, 3) if concentration is not None else None,
         "n_families": len(set(families)),
         "stage2_matches": stage2_matches,
+        # 裁决账。不是回放裁判时是 None 而不是 0 —— 见 pipeline.verdict_accounting。
+        "stage2_verdicts_used": verdict_acct["used"] if verdict_acct else None,
+        "stage2_verdicts_missing": verdict_acct["missing"] if verdict_acct else None,
+        "stage2_verdicts_unused": verdict_acct["unused"] if verdict_acct else None,
         "stage2_judge": (judge.name if judge else ("local" if cfg.stage2 else "off")),
         "cold_strategy": cold_strategy,
         "unvalidated_domain": unvalidated_domain,

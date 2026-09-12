@@ -52,6 +52,31 @@ def _cfg(a) -> "RankConfig":
     )
 
 
+def check_verdicts_applied(judge, notes: dict) -> None:
+    """给了 --verdicts 就必须真的用上回放裁判，否则炸。
+
+    这道检查是冲着一个**真实发生过的** bug 来的：从 v4 第一个 commit 起，
+    cli 里建好的 judge 就没有传进 rank_folder（那一行是 `rank_folder(cfg, verbose)`），
+    于是裁决一条都没到达擂台赛。而 load_verdicts 仍在校验文件、文件坏了照样报错，
+    **所以这个开关看起来一直是工作的**，历史上每一次阶段 2 的付费调用都没影响过输出。
+
+    为什么计数器抓不到它：judge 没被用上时，ReplayJudge 实例根本不存在，
+    裁决账也就不存在，三个数全是 None —— 读起来跟「没给 --verdicts」一模一样。
+    只有从**结果**反查「排序器到底用了哪个裁判」才抓得到这种失败。
+    """
+    if judge is None:
+        return
+    got = notes.get("stage2_judge")
+    if got == judge.name:
+        return
+    raise RuntimeError(
+        f"给了 --verdicts，但排序器报告的裁判是 {got!r}，不是 {judge.name!r}。"
+        + ("阶段 2 是关的（stage2=off），裁决无处可用 —— 先打开阶段 2。"
+           if got == "off" else
+           "裁决没有到达擂台赛，这一轮的结果与不给 --verdicts 完全相同。")
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="photofilter-rank", description="本地优先的照片排序")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -345,7 +370,10 @@ def main(argv: list[str] | None = None) -> int:
 
             judge = ReplayJudge(vd, LocalJudge({}))
 
-        res = rank_folder(cfg, verbose)
+        res = rank_folder(cfg, verbose, judge)
+
+        check_verdicts_applied(judge, res.notes)
+
         print(f"\n模式 {res.mode}（{res.n_labels} 张标注）· {res.n_candidates} 张候选 "
               f"· {res.notes['n_families']} 个场景组 · {res.elapsed_sec}s")
         for w in res.notes.get("warnings", []):
