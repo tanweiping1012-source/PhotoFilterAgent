@@ -218,3 +218,71 @@ def test_rank_py_必须把配置接进去而不是写死常数():
             f"口径要从 cfg 来 —— 写死之后冻结件复现会「成功」地测着另一套参数。"
         )
     assert watched <= seen, f"rank.py 里找不到这些调用：{sorted(watched - seen)}，这条测试的前提没了"
+
+
+def test_打分与分组的配置没有漂():
+    """冻结件是在某一套配置下产出的。配置一变，交付就变，而上面那些断言全绿 ——
+    因为它们是从**冻结的分数**往下算的，不重新打分。
+
+    ━━ 断言的是「旋钮」，不是 notes 里的值 ━━━━━━━━━━━━━━━━━━━━━━━
+
+    notes 里那几个字段大多是**运行产出**而不是配置默认值，直接拿来比会立刻假红：
+
+        notes            冻结值      默认值      能不能直接断言
+        style            quality     quality     ✅ 就是旋钮本身
+        cold_strategy    face        auto        ❌ face 是 auto 在这批照片上**解析出来**的
+        probe_weight     0.0         （算出来） ❌ 但它由 use_probe=False 决定 → 断言那个
+        family_threshold 0.9733      （算出来） ❌ 从本批余弦分布取分位数，要 embedding
+                                                 → 断言它的两个入参
+        device           mps         auto        ❌ **绝不能断言** —— 见下
+
+    ⚠️ `device` 冻结值是 `mps`，那是这台 Mac 解析出来的。断言它等于 mps，
+    换一台机器（CI、Linux、别人的电脑）就必然红，而那不是任何人改错了东西。
+    **假警报会把人训练成忽略告警** —— 这个项目已经为它付过四次学费，
+    其中一次正是 doctor 猜错默认值、第 3/3b 层全部假报不一致。所以这里不碰 device。
+    """
+    from photofilter_rank.config import RankConfig
+
+    notes = _load(BASELINE)["notes"]
+    cfg = RankConfig(folder=Path("/tmp"))
+
+    # 直接就是旋钮的
+    assert cfg.style == notes["style"] == "quality"
+
+    # 决定 probe_weight 的旋钮。冻结件 probe_weight=0.0、labels_used=[]，
+    # 因为探针默认关闭；打开它交付就会变。
+    assert cfg.use_probe is False
+    assert notes["probe_weight"] == 0.0 and notes["labels_used"] == []
+
+    # 决定 family_threshold 的两个入参。阈值本身是从本批余弦分布取的分位数，
+    # 要 embedding 才能复算；入参一变，分组就变，交付跟着变。
+    assert (cfg.family_percentile, cfg.cosine_floor) == (98.0, 0.90)
+    assert notes["family_threshold"] == 0.9733, "冻结时算出来的阈值，改了入参就不会是它"
+
+    # 打分策略的旋钮是 auto；冻结件里的 face 是 auto 在这批人像上解析的结果。
+    # 把默认值改成别的（laion_aes / blend）会换一套分数，而上面的断言不会红。
+    assert cfg.cold_strategy == "auto"
+    assert notes["cold_strategy"] == "face"
+
+    # 选片口径
+    assert (cfg.target, cfg.family_cap, cfg.time_segments) == (TARGET, FAMILY_CAP, SEGMENTS)
+    assert cfg.stage2 is True and cfg.stage2_cap == STAGE2_CAP
+    # 计划只买 60 局而擂台赛实打 162 局 —— 63% 的对局本来就由免费本地分决定。
+    # 这是设计选择（见报告附录），改了它阶段 2 的成本与覆盖都会变。
+    assert cfg.refine_max_matches == 60
+
+
+def test_打分缺口必须写成显式条款而不是只写在注释里():
+    """自动化覆盖不到的东西，要转成**有责任方的流程前置条件**，并且写在判据里。
+
+    只写在 docstring 里等于只有改这个文件的人看得到；付费运行之前读判据的人看不到。
+    这条测试保证那一节不会被悄悄删掉 —— 用宽松的子串匹配，容得下重新措辞。
+    """
+    doc = (FROZEN / "CRITERIA-STAGE3.md")
+    assert doc.exists(), f"判据文件不见了：{doc}"
+    text = doc.read_text()
+    for need in ("9.4", "责任方", "fingerprint", "不覆盖打分逻辑"):
+        assert need in text, (
+            f"判据里找不到 {need!r} —— §9.4「付费运行之前必须重跑一次真实 pick」"
+            f"这条前置条件是自动化守卫补不上的那个缺口的唯一兜底，不能删。"
+        )

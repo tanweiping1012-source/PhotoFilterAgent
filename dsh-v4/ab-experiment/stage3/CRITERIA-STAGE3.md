@@ -336,6 +336,51 @@ cp ~/.dsh-v4/photo-filter-v4/ids-5e9947ea9eae8391.json \
 **DSH 加载的 `agent-v4` 是指向主检出的符号链接** —— 在 worktree 里改，DSH 不会加载。
 跑之前必须 `doctor.sh` 全绿（`photo-v4-ab` 那条已知缺陷除外）。
 
+### 9.4 付费运行之前必须重跑一次真实 pick —— 自动化**不覆盖打分逻辑**
+
+`ranker/tests/test_frozen_baseline.py` 守的是**选片与对决逻辑**
+（冻结分数 → 组内名次 → 交付 → 对局表 md5 与内容判据），它是从
+`pick-299-baseline.json` 里**已经冻结的分数**往下算的。
+
+**`scores` 本身没有被复算。** 复算它要真照片加 CLIP / pyiqa 模型，
+跑几分钟、要 2GB 权重，进不了这个几秒钟的测试套；而且照片是私人的，
+进不了任何 CI。一条「本地能跑、别人跑不了」的慢测试最后会变成没人跑的假守卫。
+
+后果很具体：
+
+```
+换模型权重 / 改 quality.py 的公式 / 改 embed.py 的预处理
+→ 测试全绿，而交付会变
+```
+
+所以这一条不是测试，是**流程前置条件**：
+
+> **责任方：执行。** 每一次付费运行之前，重跑一次真实 `pick`，
+> 比对 `fingerprint` 与 `selected` 是否与 `pick-299-baseline.json` 一致。
+> 不一致就停下报 owner，**不要直接开跑** —— 那一轮的结果与上一轮不可比。
+
+自动化能挡住的那一半已经挡住了：`test_打分与分组的配置没有漂` 钉住
+`style` / `cold_strategy` / `use_probe` / `family_percentile` / `cosine_floor` /
+`target` / `family_cap` / `time_segments` / `stage2_cap` / `refine_max_matches`
+这些**旋钮**的默认值。
+
+**挡不住的部分如实记在这里，没有被补上**：
+
+```
+模型权重换了            测试不会红
+quality.py 的公式改了   测试不会红
+embed.py 的预处理改了   测试不会红
+```
+
+另有一条已知的**数据侧**盲区：这份冻结件的交付 20 张分属 20 个不同家族、
+单家族最多 1 张，所以 `family_cap` 这条约束在它上面**从来没顶到过** ——
+任何建立在这份冻结件上的测试都抓不到同组上限的改动。
+那条路径由 `ranker/tests/test_stage3.py` 里构造出来的用例守
+（跨段抢同一家族名额那两条），不要因为冻结件全绿就以为同组上限也被守住了。
+
+> ⚠️ `device` 冻结值是 `mps`，那是产出机器解析出来的，**不作为断言** ——
+> 换一台机器就必然红，而那不是任何人改错了东西。
+
 ---
 
 ## 10. 成本
@@ -383,6 +428,17 @@ photo-v4-ab 的 excludedRelativePaths 被 preset 覆盖   已知缺陷，本轮�
 因新事实而改必须满足三条，缺一条就不许动：① 原文一个字不删，改动写成本节的一条修订；
 ② 注明发现时间，并说明为什么不是「看到结果之后的调整」；③ 给出可独立复算的脚本或证据。
 
+**判别标准（owner 2026-09-14 定）：改的是「怎么跑」还是「怎么算分」。**
+
+```
+怎么跑   流程前置条件、归档规矩、异常处置、谁负责做什么
+         → 开跑前可以加，留痕即可（仍须满足上面三条）
+怎么算分 指标、阈值、口径、对局表、分组与选片参数、判决规则
+         → 开跑前也不能动。要动就是新的一轮，重新冻结
+```
+
+这条标准的用处是省掉每次的争论：先问这一句，答案是前者就写修订，是后者就停下。
+
 ### 修订 1 · 2026-09-14 · 冻结之后
 
 ```
@@ -403,4 +459,34 @@ photo-v4-ab 的 excludedRelativePaths 被 preset 覆盖   已知缺陷，本轮�
 
 复算   dsh-v4/ab-experiment/stage3/duel_table_sensitivity.py
 证据   dsh-v4/ab-experiment/ADDENDUM-ROUND2.md §6
+```
+
+### 修订 2 · 2026-09-14 · 冻结之后
+
+```
+新增   §9.4（付费运行之前必须重跑一次真实 pick）
+
+性质   流程前置条件。**未改动任何指标、阈值、口径、对局表、分组与选片参数。**
+       按本节判别标准，属于「怎么跑」那一侧。
+
+发现   把「动了 dedupe/rank/pipeline 就重跑复现」这条规矩做成测试
+       （ranker/tests/test_frozen_baseline.py）时查明：该守卫是从
+       pick-299-baseline.json 里**已经冻结的分数**往下算的，
+       `scores` 本身没有被复算 —— 换模型权重、改 quality.py 的公式、
+       改 embed.py 的预处理，测试全绿而交付会变。
+       同一轮变异测试还查出一个数据侧盲区：冻结件交付 20 张分属 20 个
+       不同家族、单家族最多 1 张，`family_cap` 在它上面从来没顶到过，
+       任何建立在这份冻结件上的测试都抓不到同组上限的改动。
+
+为什么不算违反冻结   ① 这是冻结时**未查明**的事实，不是看到结果之后的调整
+                     —— 当时没人查过那个守卫覆盖到哪为止；
+                     ② 一次付费调用都还没发；
+                     ③ 原文一个字未删，只在第 9 节末尾新增一小节。
+
+复算   同组上限从没顶到过（0 次调用，不需要照片和模型）：
+       python -c "import json;d=json.load(open('dsh-v4/ab-experiment/stage3/pick-299-baseline.json'));\
+       f=d['families'];print(max(sum(1 for n in d['selected'] if f[n]==f[m]) for m in d['selected']))"
+       → 1（cap 是 2，从没顶到）
+证据   ranker/tests/test_frozen_baseline.py 的模块 docstring 与
+       test_打分与分组的配置没有漂 / test_打分缺口必须写成显式条款而不是只写在注释里
 ```
