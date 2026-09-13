@@ -428,6 +428,17 @@ photo-v4-ab 的 excludedRelativePaths 被 preset 覆盖   已知缺陷，本轮�
 因新事实而改必须满足三条，缺一条就不许动：① 原文一个字不删，改动写成本节的一条修订；
 ② 注明发现时间，并说明为什么不是「看到结果之后的调整」；③ 给出可独立复算的脚本或证据。
 
+**判别标准（owner 2026-09-14 定）：改的是「怎么跑」还是「怎么算分」。**
+
+```
+怎么跑   流程前置条件、归档规矩、异常处置、谁负责做什么
+         → 开跑前可以加，留痕即可（仍须满足上面三条）
+怎么算分 指标、阈值、口径、对局表、分组与选片参数、判决规则
+         → 开跑前也不能动。要动就是新的一轮，重新冻结
+```
+
+这条标准的用处是省掉每次的争论：先问这一句，答案是前者就写修订，是后者就停下。
+
 ### 修订 1 · 2026-09-14 · 冻结之后
 
 ```
@@ -448,4 +459,34 @@ photo-v4-ab 的 excludedRelativePaths 被 preset 覆盖   已知缺陷，本轮�
 
 复算   dsh-v4/ab-experiment/stage3/duel_table_sensitivity.py
 证据   dsh-v4/ab-experiment/ADDENDUM-ROUND2.md §6
+```
+
+### 修订 2 · 2026-09-14 · 冻结之后
+
+```
+新增   §9.4（付费运行之前必须重跑一次真实 pick）
+
+性质   流程前置条件。**未改动任何指标、阈值、口径、对局表、分组与选片参数。**
+       按本节判别标准，属于「怎么跑」那一侧。
+
+发现   把「动了 dedupe/rank/pipeline 就重跑复现」这条规矩做成测试
+       （ranker/tests/test_frozen_baseline.py）时查明：该守卫是从
+       pick-299-baseline.json 里**已经冻结的分数**往下算的，
+       `scores` 本身没有被复算 —— 换模型权重、改 quality.py 的公式、
+       改 embed.py 的预处理，测试全绿而交付会变。
+       同一轮变异测试还查出一个数据侧盲区：冻结件交付 20 张分属 20 个
+       不同家族、单家族最多 1 张，`family_cap` 在它上面从来没顶到过，
+       任何建立在这份冻结件上的测试都抓不到同组上限的改动。
+
+为什么不算违反冻结   ① 这是冻结时**未查明**的事实，不是看到结果之后的调整
+                     —— 当时没人查过那个守卫覆盖到哪为止；
+                     ② 一次付费调用都还没发；
+                     ③ 原文一个字未删，只在第 9 节末尾新增一小节。
+
+复算   同组上限从没顶到过（0 次调用，不需要照片和模型）：
+       python -c "import json;d=json.load(open('dsh-v4/ab-experiment/stage3/pick-299-baseline.json'));\
+       f=d['families'];print(max(sum(1 for n in d['selected'] if f[n]==f[m]) for m in d['selected']))"
+       → 1（cap 是 2，从没顶到）
+证据   ranker/tests/test_frozen_baseline.py 的模块 docstring 与
+       test_打分与分组的配置没有漂 / test_打分缺口必须写成显式条款而不是只写在注释里
 ```
