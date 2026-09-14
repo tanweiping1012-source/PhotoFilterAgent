@@ -1,0 +1,41 @@
+# 冻结件守卫 —— 只守预登记产物与纯 Python 逻辑。
+#
+# ⚠️ 这条 CI **不守打分逻辑**。看到绿勾不等于「全测过了」：
+#     守得住   select_spread 的段配额/同组上限、stage3 的对决构造、
+#              擂台赛与回放裁判、冻结的对局表与交付名单还对不对得上
+#     守不住   CLIP 特征、topiq/laion 打分、Apple Vision 的人脸事实
+#              —— 那些要 4GB 模型权重和标注者的私人照片，进不了 CI
+#
+# 冻结件测试自己带一条「不许用 skip 绕过」的断言（test_frozen_baseline.py:92），
+# 所以它不会因为文件缺失而静默跳过。其余测试里仍有几处 pytest.skip，
+# 下面用 -rs 把跳过原因打出来，别让它们无声无息。
+name: frozen
+
+on: [push, pull_request]
+
+jobs:
+  frozen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 显式装最小依赖，**不装 requirements.txt** ——
+      # 那里有未 pin commit 的 git+CLIP 依赖，会让 CI 变慢且不可复现。
+      #
+      # 为什么是三个而不是两个：`photofilter_rank/__init__.py` 会 eager import
+      # `rank` → `scan` → `PIL`，所以只装 numpy+pytest 会在 import 阶段就炸。
+      # （实测：只装 numpy+pytest → ModuleNotFoundError: No module named 'PIL'）
+      - run: pip install numpy Pillow pytest
+
+      # 主目标：冻结件。这一步红了就说明预登记产物与代码对不上了。
+      - name: 冻结件
+        run: pytest ranker/tests/test_frozen_baseline.py -q -rs
+
+      # 全套。原本按「全套要 4GB 依赖」排除掉，实测不成立 ——
+      # torch/clip/pyiqa 都是函数内延迟 import，全套 208 条在上面这三个依赖下
+      # 约 12 秒跑完。留着是因为它免费；要退回只守冻结件，删掉这一步即可。
+      - name: 全套（同样的最小依赖）
+        run: pytest ranker/tests -q -rs
