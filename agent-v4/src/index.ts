@@ -246,7 +246,7 @@ export function apply(ctx: Context, config: Config): void {
         properties: {
           n_photos: { type: 'number' },
           fingerprint: { type: 'string' },
-          summary: { type: 'string' },
+          summary: { type: 'string', required: true },
         },
       },
       render: (_a, v) => [{ type: 'text', text: v.summary }],
@@ -305,7 +305,7 @@ export function apply(ctx: Context, config: Config): void {
           selected_ids: { type: 'array', items: { type: 'string' } },
           mode: { type: 'string' },
           n_candidates: { type: 'number' },
-          summary: { type: 'string' },
+          summary: { type: 'string', required: true },
         },
       },
       render: (_a, v) => [{ type: 'text', text: v.summary }],
@@ -333,7 +333,7 @@ export function apply(ctx: Context, config: Config): void {
         // 所以是「出计划 → 这里跑 → 裁决回传 → 排序器重放」三步。
         let refineNote = ''
         let vlmCalls = 0
-        const plan = (res.notes.tournament_plan ?? []) as Array<[string, string]>
+        const plan = res.notes.tournament_plan ?? []
         if (config.stage2Vlm && plan.length) {
           try {
             const names = [...new Set(plan.flat())]
@@ -460,7 +460,7 @@ export function apply(ctx: Context, config: Config): void {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        properties: { summary: { type: 'string' } },
+        properties: { summary: { type: 'string', required: true } },
       },
       render: (_a, v) => [{ type: 'text', text: v.summary }],
     },
@@ -525,7 +525,7 @@ export function apply(ctx: Context, config: Config): void {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        properties: { n_labels: { type: 'number' }, summary: { type: 'string' } },
+        properties: { n_labels: { type: 'number' }, summary: { type: 'string', required: true } },
       },
       render: (_a, v) => [{ type: 'text', text: v.summary }],
     },
@@ -566,7 +566,7 @@ export function apply(ctx: Context, config: Config): void {
         type: 'object', additionalProperties: false,
         properties: {
           auc: { type: 'number' }, hits: { type: 'number' },
-          p_value: { type: 'number' }, summary: { type: 'string' },
+          p_value: { type: 'number' }, summary: { type: 'string', required: true },
         },
       },
       render: (_a, v) => [{ type: 'text', text: v.summary }],
@@ -634,7 +634,7 @@ export function apply(ctx: Context, config: Config): void {
         properties: {
           pairs_compared: { type: 'number' },
           calls_spent: { type: 'number' },
-          summary: { type: 'string' },
+          summary: { type: 'string', required: true },
         },
       },
       render: (_a, v) => [{ type: 'text', text: v.summary }],
@@ -768,7 +768,7 @@ export function apply(ctx: Context, config: Config): void {
     output: {
       schema: {
         type: 'object', additionalProperties: false,
-        properties: { copied: { type: 'number' }, summary: { type: 'string' } },
+        properties: { copied: { type: 'number' }, summary: { type: 'string', required: true } },
       },
       render: (_a, v) => [{ type: 'text', text: v.summary }],
     },
@@ -891,7 +891,7 @@ export function apply(ctx: Context, config: Config): void {
       output: {
         schema: {
           type: 'object', additionalProperties: false,
-          properties: { summary: { type: 'string' }, calls_spent: { type: 'number' } },
+          properties: { summary: { type: 'string', required: true }, calls_spent: { type: 'number' } },
         },
         render: (_a, v) => [{ type: 'text', text: v.summary }],
       },
@@ -1027,7 +1027,7 @@ export function apply(ctx: Context, config: Config): void {
       output: {
         schema: {
           type: 'object', additionalProperties: false,
-          properties: { summary: { type: 'string' }, calls_spent: { type: 'number' } },
+          properties: { summary: { type: 'string', required: true }, calls_spent: { type: 'number' } },
         },
         render: (_a, v) => [{ type: 'text', text: v.summary }],
       },

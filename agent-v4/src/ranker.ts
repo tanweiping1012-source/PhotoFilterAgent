@@ -31,7 +31,39 @@ export interface RankNotes {
   blocked_closed_eyes?: string[]
   n_blocked?: number
   device?: string
+
+  // ── 阶段 2 ────────────────────────────────────────────────
+  /**
+   * 擂台赛的对局计划：`[[甲, 乙], ...]`。
+   *
+   * 以前这里没有声明，index.ts 用 `as Array<[string, string]>` 强转绕过去。
+   * 而**同一个绕法**让 `res.notes.families` 这种「读一个根本不存在的字段」
+   * 也通过了编译 —— families 在 RankResult 顶层，notes 里没有，
+   * 于是那段导出功能静默返回空、一个文件夹从来没被填过（2026-09-14 修）。
+   * 所以这里宁可声明得啰嗦一点，也不要再用强转。
+   */
+  tournament_plan?: Array<[string, string]>
+  stage2_matches?: number
+  /** 实际用的裁判：local / replay / oracle / off。 */
+  stage2_judge?: string
+  /**
+   * 裁决账。**不是回放裁判时是 null 而不是 0** ——
+   * 0 的意思是「量过，结果是零」，null 是「这一轮压根没有裁决可言」。
+   * 见 ranker/photofilter_rank/pipeline.py 的 verdict_accounting。
+   */
+  stage2_verdicts_used?: number | null
+  stage2_verdicts_missing?: number | null
+  stage2_verdicts_unused?: number | null
+
+  // ── 阶段 3（段配额）────────────────────────────────────────
+  segment_cap?: number
+  segments_relaxed?: number
 }
+
+// ⚠️ 上面这些是**按需声明**的，不是 notes 的全集。
+// 真正的全集由 ranker/photofilter_rank/rank.py 的 notes 字典决定，
+// Python 那边是唯一事实来源。这里只声明 TS 会读、或需要写文档的那些。
+// 加字段时两边一起加，别再用 as 绕。
 
 export interface RankResult {
   selected: string[]
