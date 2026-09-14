@@ -27,13 +27,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { assertAnchorImagesComplete } from './anchors.ts'
 import { IdentityMap } from './identity.ts'
 import { comparePairs, type AnchorBlock } from './compare.ts'
-import { assignCodes } from './codes.ts'
-
-/**
- * 生产阶段 2 烧码用的种子。**固定值**：同一批照片每次跑拿到同一批码，
- * 断点续跑、复现问题时码不会变。码本身不参与判断，只用来指认照片。
- */
-const STAGE2_CODE_SEED = 20260904
+import { STAGE2_CODE_SEED, assignCodes } from './codes.ts'
+import { runPairEval, type PairEvalSpec } from './pairEval.ts'
 import {
   appendRow, askPair, makeCode, mulberry32, newTransport, probeGrounding,
   type CallRow, type Slots,
@@ -907,18 +902,7 @@ export function apply(ctx: Context, config: Config): void {
           pairsFile = join(config.evalPairsDir, args.pairs)
           if (!existsSync(pairsFile)) throw new Error(`考题文件不存在：${pairsFile}`)
         }
-        const spec = JSON.parse(readFileSync(pairsFile, 'utf8')) as {
-          folder?: string
-          pairs: Array<{ a: string; b: string; answer: string; kind: string; local_correct: boolean; group: number }>
-          /** 锚点：文本 + 范例照片文件名。由 Python 侧切分好，这里只负责取图。
-           *  folder 可以和考题不同（锚点通常来自另一个数据集，也必须如此 ——
-           *  锚点和考题同源就是泄题）。 */
-          anchors?: { folder?: string; text: string; photos: string[]; labels?: Record<string, string> }
-          /** 判据文本。缺省时回落到 config.rubricFile —— AB 实验靠它区分「无提示 / 仅规则」两臂。 */
-          rubric?: string
-          /** 这份考题是否允许「都不要」。缺省回落到 config.allowNeither。 */
-          allow_neither?: boolean
-        }
+        const spec = JSON.parse(readFileSync(pairsFile, 'utf8')) as PairEvalSpec
         // 考题文件里的 folder **也必须过 allowedRoots**。
         //
         // 这一条原来漏了：其他工具都校验（scan_folder 等），只有它直接用
@@ -931,53 +915,22 @@ export function apply(ctx: Context, config: Config): void {
         const all = spec.pairs
         const use = args.limit ? all.slice(0, args.limit) : all
 
-        const names = [...new Set(use.flatMap((p) => [p.a, p.b]))]
-        const { previews, faces, missing } = await ranker.preview(
-          folder, names, config.excludedRelativePaths, 512, exec.signal, true,
-        )
-        if (missing.length) throw new Error(`${missing.length} 张缺少缓存预览，评测中止`)
-
-        const services: HarnessVisionServices = {
-          llm: ctx.get('llm') as unknown as HarnessVisionServices['llm'],
-          attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
-        }
-        // 锚点图另外取一次预览。**它们必须不在考题里** —— Python 侧切分时保证，
-        // 这里再断言一次：泄题是静默的，跑完看数字看不出来。
-        let anchorBlock: AnchorBlock | null = null
-        if (spec.anchors?.photos?.length) {
-          const testNames = new Set(use.flatMap((p) => [p.a, p.b]))
-          const leaked = spec.anchors.photos.filter((n) => testNames.has(n))
-          if (leaked.length) {
-            throw new Error(`锚点和考题重叠 ${leaked.length} 张，这是泄题：${leaked.slice(0, 3).join(' ')}`)
-          }
-          // 和生产路径共用同一个 builder —— 不要在这里就地取图，
-          // 那正是历史上三次分叉的写法。
-          anchorBlock = await buildAnchorBlock({
-            folder: spec.anchors.folder || folder,
-            text: spec.anchors.text,
-            photos: spec.anchors.photos,
-            labels: spec.anchors.labels ?? {},
-          }, exec.signal)
-        }
-
-        const { verdicts, route } = await comparePairs(
-          use.map((p) => [p.a, p.b] as const), previews, faces, anchorBlock,
-          spec.rubric ?? loadRubric(), spec.allow_neither ?? config.allowNeither,
-          // 评测路径**故意不烧码**：烧了就换了被测对象，与 R2/R3 不可直接比。
-          // 要测烧码条件下的表现，走 run_instrument_check。
-          undefined, services,
-          exec as unknown as HarnessVisionExecution,
-        )
-
-        // 判分。tie 一律算**没答对** —— 平局不能算赢，否则模型全答平局就 100% 了。
-        const rows = use.map((p, i) => {
-          const v = verdicts[i]!
-          return { ...p, winner: v.winner, consistent: v.consistent, ab: v.ab, ba: v.ba,
-                   reason: v.reason,
-                   // 双向原话都落盘 —— 不一致的对上 reason 是模板句，
-                   // 模型真正说了什么只在这两个字段里。
-                   reason_ab: v.reasonAb, reason_ba: v.reasonBa,
-                   model_correct: v.winner === p.answer }
+        // 主体在 pairEval.ts —— 抽出去是为了能测到 comparePairs 的调用点本身。
+        const { route, rows, outPath, callsPath, withAnchors } = await runPairEval({
+          spec, use, folder,
+          exclude: config.excludedRelativePaths,
+          rubric: spec.rubric ?? loadRubric(),
+          allowNeither: spec.allow_neither ?? config.allowNeither,
+          outPath: args.out || `${pairsFile}.result.json`,
+          services: {
+            llm: ctx.get('llm') as unknown as HarnessVisionServices['llm'],
+            attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
+          },
+          exec: exec as unknown as HarnessVisionExecution,
+        }, {
+          // 取图走同一个 ranker、锚点走同一个 builder —— 与生产阶段 2 共用，不另写一份。
+          preview: ranker.preview.bind(ranker),
+          buildAnchorBlock,
         })
         const n = rows.length
         const pct = (x: number) => `${((x / Math.max(n, 1)) * 100).toFixed(1)}%`
@@ -988,20 +941,17 @@ export function apply(ctx: Context, config: Config): void {
         const hit = (rs: typeof rows) =>
           rs.length ? `${rs.filter((r) => r.model_correct).length}/${rs.length}` : '—'
 
-        const outPath = args.out || `${pairsFile}.result.json`
-        writeFileSync(outPath, JSON.stringify({ route, rows }, null, 2))
-
         return {
           calls_spent: n * 2,
           summary:
             `阶段 2 成对评测完成 · 模型 ${route} · ${n} 对 / ${n * 2} 次调用\n` +
-            `考题 ${pairsFile}${anchorBlock ? ' · 带锚点' : ' · 不带锚点'}\n` +
+            `考题 ${pairsFile}${withAnchors ? ' · 带锚点' : ' · 不带锚点'}${spec.burn_codes === true ? ' · 烧码' : ''}\n` +
             `T0 机制 · AB/BA 双向一致率  ${pct(rows.filter((r) => r.consistent).length)}\n` +
             `T1 体检 · 睁眼 vs 闭眼      ${hit(eyes)}\n` +
             `T2 增量 · 金标 vs 非金标    ${hit(gold)}（本地分 ${gold.filter((r) => r.local_correct).length}/${gold.length}）\n` +
             `  └ 本地分判错的           ${hit(wrong)}  ← 救回来的\n` +
             `  └ 本地分判对的           ${hit(right)}  ← 别毁掉的\n` +
-            `明细写入 ${outPath}`,
+            `明细写入 ${outPath} · 逐次调用记录 ${callsPath}`,
         }
       },
     }))

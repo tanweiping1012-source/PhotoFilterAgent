@@ -95,6 +95,33 @@ export interface HarnessVisionPreflight {
   dynamicRouteProbe: true
 }
 
+/**
+ * 一次结构化比较调用的记录。由 transport 在调用前后发出 —— **失败的也发**；预检不算。
+ *
+ * 为什么记在这一层、不从裁决反推：判据要求「调用数从日志数」，而 DSH 会话日志
+ * 不记工具内部发出的视觉调用。从裁决反推数不到失败的那次（失败的调用没有裁决），
+ * 又回到拿「对数 × 2」算出来的数。
+ */
+export interface VisionCallRecord {
+  /** 开始调用的时刻（ms since epoch）。 */
+  startedAt: number
+  /** 从开始到成功返回、或抛错的耗时（ms）。 */
+  elapsedMs: number
+  /** provider/model */
+  route: string
+  tool: string
+  jpegs: number
+  /**
+   * 请求是否真的交给了模型（已进入 stream）。false = 在发出之前就被本地拦下
+   * （图片数不合法、附件超限、adapter 准备失败……），这一次没有花钱。
+   */
+  sent: boolean
+  ok: boolean
+  error?: string
+  /** 调用方附带的上下文，原样带出（run_pair_eval 带的是考题下标与方向）。 */
+  meta?: Readonly<Record<string, unknown>>
+}
+
 export class HarnessVisionError extends Error {
   readonly code?: string
   readonly status?: number
@@ -259,16 +286,20 @@ export class HarnessVisionTransport {
   readonly route: HarnessModelRoute
   private readonly services: HarnessVisionServices
   private readonly sessionId?: string
+  private readonly onCall?: (record: VisionCallRecord) => void
   private preflightPassed = false
 
   constructor(
     services: HarnessVisionServices,
     route: HarnessModelRoute,
     sessionId?: string,
+    /** 每一次结构化比较调用（含失败，不含预检）回调一次，见 VisionCallRecord。 */
+    onCall?: (record: VisionCallRecord) => void,
   ) {
     this.services = services
     this.route = route
     this.sessionId = sessionId
+    this.onCall = onCall
   }
 
   private requireServices(): { llm: HarnessLlmService; attachments: HarnessAttachmentStore } {
@@ -365,6 +396,44 @@ export class HarnessVisionTransport {
   async invokeStructured(
     request: StructuredVisionRequest,
     signal?: AbortSignal,
+    /** 调用方的上下文，原样进调用记录。 */
+    meta?: Readonly<Record<string, unknown>>,
+  ): Promise<Record<string, unknown>> {
+    const startedAt = Date.now()
+    const probe = { sent: false }
+    let out: Record<string, unknown>
+    try {
+      out = await this.invokeChecked(request, signal, probe)
+    } catch (error) {
+      this.record(request, startedAt, probe.sent, meta, error)
+      throw error
+    }
+    // 成功的记录写在 try 外面：写记录本身出错时，不能把一次成功的调用记成失败。
+    this.record(request, startedAt, probe.sent, meta)
+    return out
+  }
+
+  private record(
+    request: StructuredVisionRequest, startedAt: number, sent: boolean,
+    meta: Readonly<Record<string, unknown>> | undefined, error?: unknown,
+  ): void {
+    this.onCall?.({
+      startedAt,
+      elapsedMs: Date.now() - startedAt,
+      route: `${this.route.provider}/${this.route.model}`,
+      tool: request.tool.name,
+      jpegs: request.jpegs.length,
+      sent,
+      ok: error === undefined,
+      ...(error === undefined ? {} : { error: error instanceof Error ? error.message : String(error) }),
+      ...(meta ? { meta } : {}),
+    })
+  }
+
+  private async invokeChecked(
+    request: StructuredVisionRequest,
+    signal: AbortSignal | undefined,
+    probe: { sent: boolean },
   ): Promise<Record<string, unknown>> {
     if (!this.preflightPassed) {
       throw new HarnessVisionError('动态路由/tool-call 预检尚未 PASS；图片请求已阻止。', {
@@ -387,12 +456,13 @@ export class HarnessVisionTransport {
         { code: 'INVALID_IMAGE_COUNT' },
       )
     }
-    return this.callTool(request, signal)
+    return this.callTool(request, signal, probe)
   }
 
   private async callTool(
     request: StructuredVisionRequest,
     signal?: AbortSignal,
+    probe?: { sent: boolean },
   ): Promise<Record<string, unknown>> {
     const { llm, attachments } = this.requireServices()
     const encoded = request.jpegs.map((jpeg) => {
@@ -452,6 +522,8 @@ export class HarnessVisionTransport {
     }
     const blocks: Record<string, unknown>[] = []
     let finish: unknown
+    // 从这一刻起请求交给了模型：之后再失败，这一次也是真的发出去了。
+    if (probe) probe.sent = true
     for await (const chunk of prepared.stream(options)) {
       if (chunk.type === 'block-end' && chunk.block && typeof chunk.block === 'object') {
         blocks.push(chunk.block as Record<string, unknown>)

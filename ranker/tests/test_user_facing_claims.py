@@ -28,6 +28,9 @@ ROOT = Path(__file__).resolve().parents[2]
 # agent 会直接说给用户听的地方
 USER_FACING = [
     ROOT / "agent-v4" / "src" / "index.ts",
+    # run_pair_eval 的主体 2026-09-14 从 index.ts 抽到这里。它抛给用户的报错（落盘文件已存在、
+    # 锚点泄题、缺预览……）原来在 index.ts 里、受这批检查覆盖 —— 跟着搬过来，别让它们漏出去。
+    ROOT / "agent-v4" / "src" / "pairEval.ts",
     ROOT / "dsh-v4" / "preset-photo-filter-v4" / "agent.cordis.yml",
 ]
 
@@ -56,7 +59,11 @@ def test_45percent必须带出处(path):
         pytest.skip(f"{path} 不存在")
     t = path.read_text(encoding="utf-8")
     if "45%" not in t:
-        pytest.skip("这个文件里没有 45%")
+        # 没有 45% 就没有要带出处的东西 —— 这是通过，不是跳过。
+        # 以前写成 skip：当时名单里的文件都含 45%，从没触发过。而 CI 要求 skip 数为 0
+        # （静默 skip 的守卫等于没有守卫），名单里加进一个不含 45% 的文件就会把 CI 打红。
+        # 文件不存在那条仍然是 skip —— 那是真的缺了东西，该被看见。
+        return
     # 出处的关键要素：47 对 / 评测路径 / 18 幅 —— 至少要能指认另一条路径
     for line_no, line in enumerate(t.splitlines(), 1):
         if "45%" not in line:

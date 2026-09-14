@@ -53,3 +53,14 @@ export function assignCodes(names: readonly string[], seed: number): Record<stri
   }
   return out
 }
+
+/**
+ * 生产阶段 2 烧码用的种子。**固定值**：同一批照片每次跑拿到同一批码，
+ * 断点续跑、复现问题时码不会变。码本身不参与判断，只用来指认照片。
+ *
+ * 放在这里而不是 index.ts：run_pair_eval 标定阶段 3 的生产裁判时必须用**同一个**
+ * 种子（pairEval.ts）。两处各写一个常量，哪天改了一处，标定就不再对应生产 ——
+ * 这正是本模块开头说的那类 bug。
+ */
+export const STAGE2_CODE_SEED = 20260904
+
