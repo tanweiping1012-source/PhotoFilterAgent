@@ -1,0 +1,170 @@
+{
+  "_meta": {
+    "arm": "calib-arm2-rubric",
+    "sources": {
+      "pairs": "calib-guarded-other.json md5 6e5fbbdbfce4b96e672a1c270cf93f61",
+      "rubric_general": "rubric-crossscene-general.txt md5 16ba06b9a984baa2e72f8b8ad8c3b14c",
+      "rubric_personal": "rubric-crossscene-personal-example.txt md5 d5e64ac3a74240e52f3b8ed8da444573",
+      "anchors": "anchors-crossscene.json md5 f5b5c49f576afa717dda3857e8d939d7",
+      "slot_rule": "按金标文件名排序，偶数位金标放 a、奇数位放 b"
+    }
+  },
+  "folder": "@@PHOTOS@@/eval-people-309-acceptance",
+  "pairs": [
+    {
+      "a": "DSCF8880.JPG",
+      "b": "DSCF9383.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 0
+    },
+    {
+      "a": "DSCF9516.JPG",
+      "b": "DSCF8881.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 1
+    },
+    {
+      "a": "DSCF8888.JPG",
+      "b": "DSCF9521.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 2
+    },
+    {
+      "a": "DSCF9497.JPG",
+      "b": "DSCF8893.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 3
+    },
+    {
+      "a": "DSCF8896.JPG",
+      "b": "DSCF8889.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 4
+    },
+    {
+      "a": "DSCF8819.JPG",
+      "b": "DSCF9102.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 5
+    },
+    {
+      "a": "DSCF9110.JPG",
+      "b": "DSCF9129.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 6
+    },
+    {
+      "a": "DSCF9330.JPG",
+      "b": "DSCF9111.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 7
+    },
+    {
+      "a": "DSCF9314.JPG",
+      "b": "DSCF8832.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 8
+    },
+    {
+      "a": "DSCF9389.JPG",
+      "b": "DSCF9325.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 9
+    },
+    {
+      "a": "DSCF9374.JPG",
+      "b": "DSCF9515.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 10
+    },
+    {
+      "a": "DSCF9393.JPG",
+      "b": "DSCF9379.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 11
+    },
+    {
+      "a": "DSCF9406.JPG",
+      "b": "DSCF9513.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 12
+    },
+    {
+      "a": "DSCF9519.JPG",
+      "b": "DSCF9435.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 13
+    },
+    {
+      "a": "DSCF9445.JPG",
+      "b": "DSCF9524.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 14
+    },
+    {
+      "a": "DSCF9408.JPG",
+      "b": "DSCF9452.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 15
+    },
+    {
+      "a": "DSCF9504.JPG",
+      "b": "DSCF9423.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 16
+    },
+    {
+      "a": "DSCF9257.JPG",
+      "b": "DSCF9529.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 17
+    },
+    {
+      "a": "DSCF9533.JPG",
+      "b": "DSCF9260.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 18
+    }
+  ],
+  "allow_neither": true,
+  "burn_codes": true,
+  "rubric": "比较两张**来自不同场景**的照片，判断哪一张更值得占用最终精选名额里的一个位置。\n\n这和「同一组连拍里挑最好的那张」不是同一个问题：那时两张几乎一样，比的是谁睁眼、\n谁表情好；这里两张完全不同，比的是**这个瞬间值不值得留下来**。\n\n【标准是相对的 —— 这条管着下面所有条】\n缺点致不致命，取决于有没有更好的替代。\n一个真实的例子：「凌乱的头发其实不是很大的问题，毕竟这也可以是一种氛围感，\n只是如果有更好的，那么很凌乱的头发就会成为扣分项。」\n\n【一票否决 —— 没有任何优点能救回来】\n· 闭眼\n  例外：低头闭眼且整体有氛围的，不算否决\n· 脸部曝光严重不足，几乎全黑\n· 张嘴说话的瞬间被拍进去，表情不自然\n\n【第 1 优先 · 眼睛与表情】\n眼神自然、有神         优于   眼神奇怪、似乎没睁开\n眼白露出适度           优于   眼白露出太多\n表情舒展               优于   表情狰狞、瞪着人的感觉\n\n【第 2 优先 · 脸型与光】\n· 45 度角光源、把脸型修饰得好看\n· 脸型流畅、五官舒展自然\n· 脸部曝光充足；曝光稍弱是扣分项，全黑是否决项\n\n【第 3 优先 · 画面与姿态】\n· 背景内容丰富的，优于单调的\n  例：一边有雪山、雪地、森林／流冰、大海、公路，另一边只有逆光的天空\n· 身体姿态自然，优于呆板\n· 人物在画面中占比小的时候，脸部的缺点会被弱化 —— 同样的毛病，特写里更致命\n\n【不要做的判断】\n· 不要判断「这张是不是和别的照片重复」。你只看到两张，看不到已经选了什么，\n  判不了重复。重复由程序在别处处理。\n· 两张都不够格时，如实说两张都不够格，不要硬凑一个赢家。\n· 分不出高下时，如实说分不出。这批照片里确实有大量接近平局的对。\n\n下面是**这一位照片主人自己的偏好**。\n\n它们不是照片的缺陷，是这个人的口味 —— 换一个人可能完全相反。\n**凡是与上面通用判据冲突的，以这一段为准。**\n\n【他个人不喜欢的】\n· 自己张嘴笑的照片\n  他的原话：「两张照片没有胜负之分，只是看用户对自己的笑的照片喜好度。\n  恰好我自己不太喜欢自己张嘴笑的照片而已。」\n· 低头看路的\n  「脸部曝光足够，低头看路也有氛围，只是我个人不喜欢低头看路的。」\n· 抬头俯视镜头的\n  「有一些嚣张的感觉，我个人不太喜欢。」\n\n【怎么用这一段】\n· 这三条**只表达不喜欢**，不表达「一票否决」。\n  如果另一张有更严重的问题（闭眼、全黑），仍然按通用判据先排除它。\n· 这一段没提到的方面，回到通用判据。\n· 如果这一段与通用判据直接冲突（例如通用说加分、这里说不喜欢），**以这一段为准**，\n  并在理由里说明你是按个人偏好判的。"
+}

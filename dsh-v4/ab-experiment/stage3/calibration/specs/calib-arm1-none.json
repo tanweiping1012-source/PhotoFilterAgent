@@ -1,0 +1,170 @@
+{
+  "_meta": {
+    "arm": "calib-arm1-none",
+    "sources": {
+      "pairs": "calib-guarded-other.json md5 6e5fbbdbfce4b96e672a1c270cf93f61",
+      "rubric_general": "rubric-crossscene-general.txt md5 16ba06b9a984baa2e72f8b8ad8c3b14c",
+      "rubric_personal": "rubric-crossscene-personal-example.txt md5 d5e64ac3a74240e52f3b8ed8da444573",
+      "anchors": "anchors-crossscene.json md5 f5b5c49f576afa717dda3857e8d939d7",
+      "slot_rule": "按金标文件名排序，偶数位金标放 a、奇数位放 b"
+    }
+  },
+  "folder": "@@PHOTOS@@/eval-people-309-acceptance",
+  "pairs": [
+    {
+      "a": "DSCF8880.JPG",
+      "b": "DSCF9383.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 0
+    },
+    {
+      "a": "DSCF9516.JPG",
+      "b": "DSCF8881.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 1
+    },
+    {
+      "a": "DSCF8888.JPG",
+      "b": "DSCF9521.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 2
+    },
+    {
+      "a": "DSCF9497.JPG",
+      "b": "DSCF8893.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 3
+    },
+    {
+      "a": "DSCF8896.JPG",
+      "b": "DSCF8889.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 4
+    },
+    {
+      "a": "DSCF8819.JPG",
+      "b": "DSCF9102.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 5
+    },
+    {
+      "a": "DSCF9110.JPG",
+      "b": "DSCF9129.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 6
+    },
+    {
+      "a": "DSCF9330.JPG",
+      "b": "DSCF9111.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 7
+    },
+    {
+      "a": "DSCF9314.JPG",
+      "b": "DSCF8832.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 8
+    },
+    {
+      "a": "DSCF9389.JPG",
+      "b": "DSCF9325.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 9
+    },
+    {
+      "a": "DSCF9374.JPG",
+      "b": "DSCF9515.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 10
+    },
+    {
+      "a": "DSCF9393.JPG",
+      "b": "DSCF9379.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 11
+    },
+    {
+      "a": "DSCF9406.JPG",
+      "b": "DSCF9513.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 12
+    },
+    {
+      "a": "DSCF9519.JPG",
+      "b": "DSCF9435.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 13
+    },
+    {
+      "a": "DSCF9445.JPG",
+      "b": "DSCF9524.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 14
+    },
+    {
+      "a": "DSCF9408.JPG",
+      "b": "DSCF9452.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 15
+    },
+    {
+      "a": "DSCF9504.JPG",
+      "b": "DSCF9423.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 16
+    },
+    {
+      "a": "DSCF9257.JPG",
+      "b": "DSCF9529.JPG",
+      "answer": "b",
+      "kind": "gold",
+      "local_correct": false,
+      "group": 17
+    },
+    {
+      "a": "DSCF9533.JPG",
+      "b": "DSCF9260.JPG",
+      "answer": "a",
+      "kind": "gold",
+      "local_correct": true,
+      "group": 18
+    }
+  ],
+  "allow_neither": true,
+  "burn_codes": true,
+  "rubric": ""
+}
