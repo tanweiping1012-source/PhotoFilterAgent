@@ -35,7 +35,22 @@ jobs:
         run: pytest ranker/tests/test_frozen_baseline.py -q -rs
 
       # 全套。原本按「全套要 4GB 依赖」排除掉，实测不成立 ——
-      # torch/clip/pyiqa 都是函数内延迟 import，全套 208 条在上面这三个依赖下
-      # 约 12 秒跑完。留着是因为它免费；要退回只守冻结件，删掉这一步即可。
-      - name: 全套（同样的最小依赖）
-        run: pytest ranker/tests -q -rs
+      # torch/clip/pyiqa 都是函数内延迟 import，全套 207 条在上面这三个依赖下
+      # 十几秒跑完。留着是因为它免费；要退回只守冻结件，删掉这一步即可。
+      #
+      # 顺带把 **skip 数断言成 0**。理由是这个项目自己的教训：
+      # 静默 skip 的守卫等于没有守卫，而且它让测试数看起来更大。
+      # 现存的两处 pytest.skip（test_instrument_scoring.py:23 /
+      # test_user_facing_claims.py:56,59）都只在**仓库内文件缺失**时触发 ——
+      # 真发生了就该红，不该悄悄放过。所以上限是 0，不是「别涨」。
+      - name: 全套 + skip 必须为 0
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest ranker/tests -q -rs 2>&1 | tee pytest.log
+          n=$(grep -c '^SKIPPED' pytest.log || true)
+          echo "skip 数 = $n（上限 0）"
+          if [ "$n" -gt 0 ]; then
+            echo "::error::有测试被跳过 —— 静默 skip 的守卫等于没有守卫。原因见上面的 SKIPPED 行。"
+            exit 1
+          fi
