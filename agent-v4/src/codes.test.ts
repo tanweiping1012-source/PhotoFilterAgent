@@ -8,9 +8,12 @@ import assert from 'node:assert/strict'
 import { assignCodes } from './codes.ts'
 import { resolvePick, type RawVerdict } from './compare.ts'
 
+// 分号不能省：下面用裸块 `{ ... }` 做作用域，而 `})` 后面直接跟 `{`
+// 会让 tsc 把它当成箭头函数的参数列表继续解析 —— 实测 TS 5.9 和 6.0.3 都报
+// TS1003/TS1005，而 node --experimental-strip-types 照常跑过，所以一直没被发现。
 const V = (o: Partial<RawVerdict>): RawVerdict => ({
   w: 'first', reason: '', readJia: '', readYi: '', winnerCode: '', ...o,
-})
+});
 
 // ── 码必须唯一且确定 ────────────────────────────────────────────
 {

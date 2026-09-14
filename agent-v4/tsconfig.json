@@ -1,0 +1,48 @@
+{
+  // 本仓库嵌在 harness monorepo 里（~/deepseek-harness/）。
+  //
+  // **没有这份文件，`npx tsc --noEmit` 会向上解析到 `~/deepseek-harness/tsconfig.json`**
+  // —— 那是 harness 自己的配置，不覆盖 agent-v4。于是 tsc 报零错误，
+  // 而它的真实含义是「检查了零个文件」。线索是 TS5112：
+  // 「tsconfig.json is present but will not be loaded if files are specified
+  //   on commandline」—— 显式指定文件时才会看见它。
+  //
+  // 2026-09-14 实测：在 anchors.ts 里插一个 `const x: number = "nope"`，
+  // `npx tsc --noEmit` 报 0 条；加上这份 tsconfig 之后才报出来。
+  //
+  // ━━ 第一次真检查抓到的（12 条，全在 index.ts）━━━━━━━━━━━━━━━━━━
+  //
+  // 两条是**运行时真 bug**，不是类型洁癖：
+  //
+  //   index.ts:688  comparePairs 只传了 6 个参数，签名要 9-10 个。
+  //                 按位置对下来：services 落在 rubric 上、exec 落在 allowNeither 上，
+  //                 codes/services/exec 三个全缺。这是**生产比较路径**。
+  //
+  //   index.ts:788  `res.notes.families` 不存在（families 在 RankResult 顶层，
+  //                 不在 notes 里）。代码写的是 `if (!fam) return []` ——
+  //                 所以 runnerUps 这个功能**一直静默返回空**，从没工作过。
+  //
+  // 一条是类型声明缺口：index.ts:336 读 `notes.tournament_plan`，
+  // 而 RankNotes 没声明它（运行时是有的，代码用 as 强转绕过去了）。
+  // 同一个缺口现在多了三个：stage2_verdicts_used / missing / unused。
+  //
+  // 九条是同一个写法：`render: (_a, v) => [{ type: 'text', text: v.summary }]`，
+  // v.summary 是 string | undefined 而 text 要 string。
+  //
+  // 修不修、什么时候修由 owner 排 —— 不要为了让 CI 绿而放宽 strict，
+  // 那是把守卫调松来迁就被守的东西。
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    // 仓库惯例是带 .ts 后缀导入（`from './codes.ts'`），
+    // 靠 node --experimental-strip-types 直接跑，不经过打包器。
+    "allowImportingTsExtensions": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}
