@@ -24,6 +24,7 @@ import { randomBytes } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { assertAnchorImagesComplete } from './anchors.ts'
 import { IdentityMap } from './identity.ts'
 import { comparePairs, type AnchorBlock } from './compare.ts'
 import { assignCodes } from './codes.ts'
@@ -194,16 +195,14 @@ export function apply(ctx: Context, config: Config): void {
       anchors.folder, anchors.photos, [], 512, signal, true,
       anchors.labels,
     )
+    // 宁可整轮失败，也不要「文字说有范例、实际没附上」那种静默残废 ——
+    // 那种状态下测出来的「锚点没用」是假的，而指标一切正常。
+    //
+    // 断言的是**准确幅数**，不只是「非空」：少取到一部分同样会让提示词
+    // 引用不存在的范例图，而旧的 `!jpegs.length` 放它过去。见 anchors.ts。
+    assertAnchorImagesComplete(anchors.photos, ap, anchors.folder)
     const jpegs = anchors.photos.flatMap((x) =>
       [ap.previews[x], ap.faces[x]].filter(Boolean) as string[])
-    // 宁可整轮失败，也不要「文字说有范例、实际一张没附」那种静默残废 ——
-    // 那种状态下测出来的「锚点没用」是假的，而指标一切正常。
-    if (!jpegs.length) {
-      throw new Error(
-        `锚点一张图都没取到（${anchors.photos.length} 张全缺）。`
-        + `检查 anchorsFile 的 folder 是否指向真实目录：${anchors.folder}`,
-      )
-    }
     return { text: anchors.text, jpegs }
   }
 
