@@ -54,3 +54,53 @@ jobs:
             echo "::error::有测试被跳过 —— 静默 skip 的守卫等于没有守卫。原因见上面的 SKIPPED 行。"
             exit 1
           fi
+
+  # ── TypeScript 类型检查 ──────────────────────────────────────
+  #
+  # 为什么单独立一个 job：agent-v4 是**产品代码**，每一次付费调用都从它发出去，
+  # 而在这之前它**从来没有被真正类型检查过**。
+  #
+  # 2026-09-14 查明：本仓库原先没有 tsconfig.json，`npx tsc --noEmit` 会向上
+  # 解析到 `~/deepseek-harness/tsconfig.json`（harness monorepo 自己的配置，
+  # 不覆盖 agent-v4）。于是它报「零错误」，而真实含义是**检查了零个文件** ——
+  # 在 anchors.ts 里插一个 `const x: number = "nope"`，它照样报 0 条。
+  # 线索是 TS5112（显式指定文件时才会看见）。
+  #
+  # 第一次真检查就抓到两个**运行时真 bug**（见 agent-v4/tsconfig.json 的注释）。
+  #
+  # ⚠️ 这一步现在是**红的**，12 条，全在 index.ts。这是刻意的：
+  # owner 要先拿到清单再决定哪些必须修、哪些挂起。
+  # **不要用 continue-on-error 把它变绿** —— 那就又造了一个看起来在跑的假守卫。
+  # 要让 main 绿，只有两条诚实的路：修掉它们，或把 include 暂时缩到已干净的文件。
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # 三个 @deepseek-ai 包在 npm 上是公开的（实测 cordis 4.0.2 /
+      # dsh-tools 0.0.1-rc.1 / schemastery 3.18.2）。不装它们的话
+      # index.ts 会多出 3 条 TS2307 和 33 条连带的 TS7006，
+      # 把真正的问题淹掉 —— 那比不检查更糟。
+      #
+      # 不写 package-lock：本仓库没有锁文件，`--no-save` 保持工作区干净。
+      # typescript 钉版本，避免哪天升级换了诊断又说不清是谁变了。
+      - name: 装类型检查依赖
+        working-directory: agent-v4
+        run: |
+          npm install --no-save --no-package-lock \
+            typescript@5.9 @types/node \
+            @deepseek-ai/cordis @deepseek-ai/dsh-tools @deepseek-ai/schemastery
+
+      - name: tsc --noEmit
+        working-directory: agent-v4
+        run: npx tsc --noEmit
+
+      # 类型检查不跑代码。这两个测试跑真逻辑，几毫秒，顺手带上。
+      - name: TS 行为测试
+        working-directory: agent-v4
+        run: |
+          node --experimental-strip-types src/codes.test.ts
+          node --experimental-strip-types src/anchors.test.ts
