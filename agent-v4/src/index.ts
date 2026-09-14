@@ -686,9 +686,16 @@ export function apply(ctx: Context, config: Config): void {
           attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
         }
         const { verdicts, route } = await comparePairs(
+          use, previews, faces,
           // 生产路径不用锚点：锚点需要一批已标注的范例，而普通用户没有。
           // 它只在评测里用（run_pair_eval 那条路径）。
-          use, previews, faces, null, services, exec as unknown as HarnessVisionExecution,
+          null,
+          loadRubric(), config.allowNeither,
+          // codes 必须是 undefined：上面那次 preview **没有传 code-map**，
+          // 图上没有烧码。传了码就是要模型去读它看不见的东西。
+          // （生产排序那一路 line 360 会烧码，所以它传 codes。）
+          undefined,
+          services, exec as unknown as HarnessVisionExecution,
         )
 
         const swaps: string[] = []
@@ -784,10 +791,20 @@ export function apply(ctx: Context, config: Config): void {
       //
       // 被砍的多数不是因为差，是因为「这个时间段已经满了」。
       // 只交付 20 张等于把阶段2 的结构（每个时刻的最好一张）压平后扔掉。
+      //
+      // ⚠️ **这个功能到 2026-09-14 为止一次都没有真正工作过。**
+      // 原来这里读的是 `res.notes.families` —— 而 families 在 RankResult 的
+      // **顶层**，notes 里没有这个键。于是 fam 恒为 undefined、提前 return []，
+      // `其余每组最好的` 子目录永远是空的，上面那段提示也从来没出现过。
+      // 上面那几个数字（56 个冠军 / 砍掉 37 张 / 金标 6 张）出自离线分析，
+      // **不是**这条导出路径产出的 —— 它当时什么都没导出。
+      //
+      // 它一直没被发现，是因为 `as ... | undefined` 强转把「读了个不存在的字段」
+      // 变成了编译期合法，而运行时只是安静地少了一个文件夹。
+      // 第一次真正的 tsc 类型检查（TS2551）才把它翻出来。
       const runnerUps = (() => {
-        const fam = res.notes.families as Record<string, number> | undefined
+        const fam = res.families
         const sc = res.scores as Record<string, number>
-        if (!fam) return []
         const best = new Map<number, string>()
         for (const [n, g] of Object.entries(fam)) {
           const cur = best.get(g)
