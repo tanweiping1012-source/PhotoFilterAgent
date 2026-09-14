@@ -92,7 +92,11 @@ def test_camelCase码字段一律判无效_只认snake_case():
     rows = _rows(s, [_gold(p) for p in s["pairs"]], codes=False)
     for r in rows:
         r.pop("code_read_ok")
-        r.update(codeA="ABCD", codeB="EFGH", codeReadOk=True, contradiction=False)
+        # 五个码键的 camelCase 版**一个不少**。少给一个（比如没有 codesRead），
+        # 这条测试会因为「缺 codes_read」而通过 —— 通过的理由对不上，
+        # 「把 camelCase 当 snake_case 收」的变异就活下来了（这一版变异时实测过）。
+        r.update(codeA="ABCD", codeB="EFGH", codeReadOk=True, contradiction=False,
+                 codesRead={"abJia": "ABCD", "abYi": "EFGH", "baJia": "EFGH", "baYi": "ABCD"})
     body, problems = sc.score(s, rows)
     assert any("camelCase" in x for x in problems), problems
     text = "\n".join(body)
@@ -107,6 +111,46 @@ def test_理由字段名不对就红_不许让个人偏好一栏静默变零():
         r["reasonAb"] = r.pop("reason_ab")
     _, problems = sc.score(s, rows)
     assert any("reason_ab" in x for x in problems), problems
+
+
+def test_18行带码1行不带_判无效_钉住all不是any():
+    """owner 在 1817dc2 上做的变异：守卫② all→any，9 条测试全绿。
+
+    19 行里 18 行带码、1 行不带时，旧脚本照样报出一个读码率 —— 不是假的 100%，
+    但同样是个静默算出来、不许引用的数。这条钉住「每一行都要带」。
+    """
+    s = _spec()
+    rows = _rows(s, [_gold(p) for p in s["pairs"]])
+    for k in ("code_a", "code_b", "code_read_ok", "contradiction", "codes_read"):
+        rows[7].pop(k)
+    body, problems = sc.score(s, rows)
+    assert any("第 7 行" in x for x in problems), problems
+    assert "读码率          无效" in "\n".join(body)
+
+
+def test_一行缺contradiction_判无效_不许静默少算():
+    """contradiction 在必需码键里，但旧守卫只查 code_a/code_b/code_read_ok ——
+    缺了它，`is True` 为 False，那一栏静默少算，不报问题。"""
+    s = _spec()
+    rows = _rows(s, [_gold(p) for p in s["pairs"]])
+    rows[5].pop("contradiction")
+    body, problems = sc.score(s, rows)
+    assert any("第 5 行" in x and "contradiction" in x for x in problems), problems
+    assert "读码率          无效" in "\n".join(body)
+
+
+def test_结果文件里没有winner的行要报出来_不许静默丢掉(tmp_path):
+    s = _spec()
+    sp, rp = tmp_path / "s.json", tmp_path / "r.jsonl"
+    sp.write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
+    rows = _rows(s, [_gold(p) for p in s["pairs"]])
+    del rows[3]["winner"]
+    rp.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8")
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = sc.main(["--spec", str(sp), str(rp)])
+    assert rc == 1
+    assert "1 行不是结果行" in buf.getvalue()
 
 
 def test_结果与spec对不上就拒绝():
