@@ -104,3 +104,6 @@ jobs:
         run: |
           node --experimental-strip-types src/codes.test.ts
           node --experimental-strip-types src/anchors.test.ts
+          # ranker.ts 的 RankerError 用了参数属性（readonly detail），strip-only 模式拒绝加载
+          # （ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX），所以只有这一个文件要用 transform-types。
+          node --experimental-transform-types src/ranker.test.ts

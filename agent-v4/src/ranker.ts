@@ -113,6 +113,27 @@ export class RankerError extends Error {
   }
 }
 
+/**
+ * 把排序器失败说成人话：退出码之外，再带上 stderr 的**最后一行非空**。
+ *
+ * 为什么不只报 e.message：它只有「排序器退出码 N」。阶段 2 的回落提示原来就是
+ * 这么写的 ——「视觉模型复核未执行：排序器退出码 1」—— 看不出是没配引擎、
+ * 引擎崩了还是别的，只能去翻日志。stderr 其实就在 detail 里，只是被丢了。
+ *
+ * 为什么是最后一行、不是整段 detail：CLI 主动报的错（比如 --with-face 没给引擎）
+ * 只打一行，正好是最后一行；Python 未处理的异常，最后一行是「XxxError: 原因」，
+ * 也正好是最有用的那行。整段栈塞进给用户的报告，等于没说。
+ */
+export function describeRankerFailure(e: unknown): string {
+  if (e instanceof RankerError) {
+    // 句末标点要去掉：调用方会在整句后面自己加「。」，不去掉报告里就是「。。」
+    // （2026-09-14 端到端实测出来的，单元测试一开始没抓到）。
+    const last = e.detail.split('\n').map((x) => x.trim()).filter(Boolean).pop()?.replace(/[。．.]+$/, '')
+    return last ? `${e.message}：${last}` : e.message
+  }
+  return e instanceof Error ? e.message : String(e)
+}
+
 export class Ranker {
   constructor(
     private readonly python: string,

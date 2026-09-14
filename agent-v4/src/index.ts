@@ -39,7 +39,7 @@ import {
   type CallRow, type Slots,
 } from './instrument.ts'
 import type { HarnessVisionExecution, HarnessVisionServices } from './harness-vision.ts'
-import { Ranker, RankerError, type RankResult } from './ranker.ts'
+import { Ranker, RankerError, type RankResult, describeRankerFailure } from './ranker.ts'
 
 export const name = 'photo-filter-v4'
 // llm/attachments 只被 compare_within_groups 用到 —— 那是整条链路里唯一花钱的工具。
@@ -385,7 +385,7 @@ export function apply(ctx: Context, config: Config): void {
               `另外实测：同一对重复问一遍，62.8% 会改口 —— ` +
               `所以改判不一定是改对，其中相当一部分是噪声。`
           } catch (e) {
-            refineNote = `\n\n**阶段 2 · 视觉模型复核未执行**：${e instanceof Error ? e.message : String(e)}。` +
+            refineNote = `\n\n**阶段 2 · 视觉模型复核未执行**：${describeRankerFailure(e)}。` +
               `已回落到本地分排序（0 次调用、结果确定）。`
           }
         }
