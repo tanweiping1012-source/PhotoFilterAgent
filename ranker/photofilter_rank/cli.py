@@ -52,6 +52,37 @@ def _cfg(a) -> "RankConfig":
     )
 
 
+def check_face_engine(engine) -> "str | None":
+    """--with-face 必须带一个**存在的**引擎；不满足返回一句人话，满足返回 None。
+
+    ━━ 为什么开头就查，而不是等拿不到人脸框再说 ━━━━━━━━━━━━━━━━━━━━━
+
+    人脸框只有本地分析引擎给得出，但 engine_facts 会**先查 facts 缓存**，
+    命中就直接返回、根本不碰引擎。于是不给引擎、或引擎路径写错时（2026-09-14 复现）：
+
+        不给 --engine，facts 缓存冷      exit 1   AttributeError（None.exists()）
+        --engine 路径不存在，缓存冷      exit 0   零张人脸，没有任何警告
+        不给 --engine，facts 缓存热      exit 0   人脸照常出来
+
+    同一条命令在一台机器上成功、换一台就失败，差别是一个看不见的缓存状态。
+    缓存热不热是**解析出来的状态**，不该让它决定一条命令成不成功 ——
+    跟「断言旋钮，不断言解析值」是同一个道理。所以只看旋钮：给没给、存不存在。
+
+    代价是认的：引擎路径写错、缓存恰好热着的调用方，从「碰巧成功」变成「明确失败」。
+    碰巧成功才是最危险的状态 —— 它让一条错的配置在这台机器上看起来是对的。
+
+    TS 侧 ranker.ts 的 preview() 从 92a68ef 起就带着 gate()：配置了 engineBinary
+    就会传 --engine；没配置时，现在会在这里明确失败，而不是看缓存脸色。
+    """
+    if engine is None:
+        return ("要了人脸（--with-face），但没给 --engine。人脸框只有本地分析引擎给得出；"
+                "不给引擎时能不能出人脸，取决于缓存里恰好有没有留下的 facts。"
+                "请加 --engine <photofilter 引擎路径>。")
+    if not Path(engine).exists():
+        return f"要了人脸（--with-face），但 --engine 指向的引擎不存在：{engine}"
+    return None
+
+
 def check_verdicts_applied(judge, notes: dict) -> None:
     """给了 --verdicts 就必须真的用上回放裁判，否则炸。
 
@@ -180,6 +211,11 @@ def main(argv: list[str] | None = None) -> int:
         from PIL import Image, ImageOps
 
         from .scan import list_photos, thumb_key
+        if getattr(a, "with_face", False):
+            problem = check_face_engine(cfg.engine_binary)
+            if problem:
+                print(problem, file=sys.stderr)
+                return 2
         photos = {p.name: p for p in list_photos(cfg.folder, cfg.exclude)}
         out: dict[str, str] = {}
         faces: dict[str, str] = {}
@@ -200,8 +236,13 @@ def main(argv: list[str] | None = None) -> int:
                 fp = fingerprint(list_photos(cfg.folder, cfg.exclude), cfg.folder)
                 boxes = engine_facts(cfg.folder, cfg.engine_binary,
                                      cfg.cache_dir / 'engine', cache_key=fp).face_box
-            except (EligibilityUnavailable, TypeError):
-                boxes = {}
+            except (EligibilityUnavailable, TypeError) as e:
+                # 以前这里是 `boxes = {}`：要了人脸、零张人脸、exit 0、没有任何警告 ——
+                # 2026-09-14 复现里那条才是真正的「退出码 0 却没做成」。
+                # 「拿不到人脸框」必须和「拿到了、这张确实没有脸」分开：后者是风景照的
+                # 正常结果（face_box 为空、不抛异常），不会走到这里，照常 exit 0。
+                print(f"要了人脸（--with-face），但没能从引擎拿到人脸框：{e}", file=sys.stderr)
+                return 2
         for name in a.names:
             src = photos.get(name)
             if src is None:

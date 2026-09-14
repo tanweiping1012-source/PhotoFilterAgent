@@ -30,6 +30,20 @@ jobs:
       # （实测：只装 numpy+pytest → ModuleNotFoundError: No module named 'PIL'）
       - run: pip install numpy Pillow pytest
 
+      # ubuntu-latest 默认没有中文字体。label_image 找不到中文字体就抛错（对的设计：
+      # 默认字体会把中文画成方块，比不标更糟），于是全套会红 5 条 —— 从加入全套那一步起就红着。
+      # 这不只是 CI 的问题：烧码是阶段 2/3 生产路径要用的，Linux 机器上一样会失败。
+      - name: 装中文字体
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk
+
+      # 实际装上的路径以这里为准。label_image.py 的 Linux 候选取自 Ubuntu 包文件清单，
+      # 两边对不上就改代码，不要改这一步去迁就代码。顺带打印最后选中的是哪个字体。
+      - name: 中文字体实际路径（label_image 候选的依据）
+        working-directory: ranker
+        run: |
+          fc-list :lang=zh file
+          python -c "from photofilter_rank.label_image import load_cjk_font; f = load_cjk_font(20); print('选中：', f.path, f.getname())"
+
       # 主目标：冻结件。这一步红了就说明预登记产物与代码对不上了。
       - name: 冻结件
         run: pytest ranker/tests/test_frozen_baseline.py -q -rs
@@ -104,3 +118,6 @@ jobs:
         run: |
           node --experimental-strip-types src/codes.test.ts
           node --experimental-strip-types src/anchors.test.ts
+          # ranker.ts 的 RankerError 用了参数属性（readonly detail），strip-only 模式拒绝加载
+          # （ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX），所以只有这一个文件要用 transform-types。
+          node --experimental-transform-types src/ranker.test.ts

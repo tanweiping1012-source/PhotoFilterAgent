@@ -23,11 +23,24 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-# macOS 自带的中文字体，按优先级试
+# 按优先级试。前三条是 macOS 自带；后两条是 Linux 上 fonts-noto-cjk 装的。
+#
+# 为什么要有 Linux 那两条：远端 CI 跑在 ubuntu-latest，原来只有 macOS 路径 →
+# load_cjk_font 抛错 → 全套红 5 条（4 条烧码 + 1 条中文标签）。那不只是 CI 的事：
+# 烧码是阶段 2/3 生产路径要用的，任何 Linux 机器上视觉比较都会同样失败、
+# 被 catch 接住、回落本地分 —— CI 只是替用户先撞上了这堵墙。
+#
+# 路径不凭记忆写：取自 packages.ubuntu.com 上 fonts-noto-cjk/noble 的文件清单
+# （2026-09-14）。CI 里另有一步打印 `fc-list :lang=zh file` 作为最终依据，
+# 两边对不上以 fc-list 为准、改这里，不要改那一步去迁就代码。
+#
+# 找不到仍然抛错、不退回默认字体 —— 那条设计不变，见模块开头。
 _FONT_CANDIDATES = [
     "/System/Library/Fonts/STHeiti Medium.ttc",
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
     "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
 ]
 _font_cache: dict[int, ImageFont.FreeTypeFont] = {}
 
