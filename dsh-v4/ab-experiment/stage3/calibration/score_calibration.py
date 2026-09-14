@@ -28,6 +28,14 @@ from pathlib import Path
 
 N_EXPECTED = 19
 HUMAN_CEILING = (9, 10)            # 抽查那 10 组里标注者与自己的精选一致 9/10
+
+# 字段名**只认一种写法**（修订 2 / §11：snake_case，与现有 rows 的 reason_ab、model_correct 一致）。
+#
+# 不要两种都接受 —— 那样「实现」写成 camelCase 时这里照样读得到数，
+# 写错的那一边就永远不会红。读不到就判无效，并把原因说清楚。
+REQUIRED_KEYS = ("a", "b", "winner", "consistent", "reason_ab", "reason_ba")
+CODE_KEYS = ("code_a", "code_b", "code_read_ok", "contradiction", "codes_read")
+CAMEL_CODE_KEYS = ("codeA", "codeB", "codeReadOk", "codesRead", "reasonAb", "reasonBa")
 FORBIDDEN = re.compile(r"显著|p\s*值|p\s*[=<>]|优于|强于|更好地|打败")
 PERSONAL_MARK = "个人偏好"
 
@@ -75,6 +83,11 @@ def score(spec: dict, rows: list[dict]) -> tuple[list[str], list[str]]:
     answer = {(p["a"], p["b"]): p["answer"] for p in spec["pairs"]}
     local_ok = {(p["a"], p["b"]): bool(p["local_correct"]) for p in spec["pairs"]}
 
+    # ── 守卫 1b：每一行都得有这些键，名字写错就红 ──
+    missing = sorted({k for r in rows for k in REQUIRED_KEYS if k not in r})
+    if missing:
+        problems.append(f"结果行缺字段 {missing} —— 字段名对不上时统计会静默变成 0，这里直接判无效")
+
     n = len(rows)
     cat = {"gold": 0, "other": 0, "neither": 0, "tie": 0, "inconsistent": 0}
     personal = {"gold": 0, "dir": 0, "n": 0}
@@ -89,7 +102,7 @@ def score(spec: dict, rows: list[dict]) -> tuple[list[str], list[str]]:
             cat[w] += 1
         else:
             unknown.append(w)
-        txt = f"{r.get('reason_ab') or r.get('reasonAb') or ''} {r.get('reason_ba') or r.get('reasonBa') or ''}"
+        txt = f"{r.get('reason_ab') or ''} {r.get('reason_ba') or ''}"
         if PERSONAL_MARK in txt:
             personal["n"] += 1
             if w in ("a", "b"):
@@ -108,16 +121,22 @@ def score(spec: dict, rows: list[dict]) -> tuple[list[str], list[str]]:
     out.append(f"表态率（含都不够格）{fmt(directional + cat['neither'], n)}")
     out.append(f"双向一致率      {fmt(sum(1 for r in rows if r.get('consistent')), n)}")
 
-    # ── 守卫 2：没烧码时读码率一律无效 ──
-    # compare.ts:367 `codeReadOk = !withCodes || …` —— 不烧码时每一对都是 true。
-    has_codes = n > 0 and all(r.get("codeA") and r.get("codeB") for r in rows)
+    # ── 守卫 2：没烧码、或码字段名不对，读码率一律无效 ──
+    # compare.ts:367 `codeReadOk = !withCodes || …` —— 不烧码时每一对都是 true，
+    # 照抄就是假的 100%。所以必须先确认这一遍真的带着码。
+    has_codes = n > 0 and all(r.get("code_a") and r.get("code_b") and "code_read_ok" in r for r in rows)
+    camel = sorted({k for r in rows for k in CAMEL_CODE_KEYS if k in r})
     if has_codes:
-        ok = sum(1 for r in rows if r.get("codeReadOk") is True)
+        ok = sum(1 for r in rows if r.get("code_read_ok") is True)
         out.append(f"读码率          {fmt(ok, n)}")
-        out.append(f"contradiction   {sum(1 for r in rows if r.get('contradiction'))}/{n}")
+        out.append(f"contradiction   {sum(1 for r in rows if r.get('contradiction') is True)}/{n}")
+    elif camel:
+        problems.append(f"结果行用的是 camelCase 字段 {camel}，本脚本只认 snake_case {list(CODE_KEYS)}"
+                        "（修订 2 §11）—— 读码率与 contradiction 无效，先把字段名对齐")
+        out.append("读码率          无效：字段名不是 snake_case")
     else:
-        problems.append("结果行里没有 codeA/codeB —— 这一遍**没烧码**，读码率与 contradiction 无效"
-                        "（不烧码时 codeReadOk 恒为 true，照抄会得到假的 100%）")
+        problems.append("结果行里没有 code_a/code_b —— 这一遍**没烧码**，读码率与 contradiction 无效"
+                        "（不烧码时 code_read_ok 恒为 true，照抄会得到假的 100%）")
         out.append("读码率          无效：未烧码")
 
     out.append(f"按个人偏好判的  {personal['n']} 局（其中有方向 {personal['dir']}，选中金标 {personal['gold']}）")

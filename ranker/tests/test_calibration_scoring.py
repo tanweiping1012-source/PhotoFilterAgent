@@ -47,9 +47,10 @@ def _rows(spec, winners, codes=True, reasons=None):
              "consistent": w in ("a", "b", "neither"),
              "reason_ab": (reasons or {}).get(i, ""), "reason_ba": ""}
         if codes:
-            r.update(codeA="ABCD", codeB="EFGH", codeReadOk=True, contradiction=False)
+            r.update(code_a="ABCD", code_b="EFGH", code_read_ok=True, contradiction=False,
+                     codes_read={"ab_jia": "ABCD", "ab_yi": "EFGH", "ba_jia": "EFGH", "ba_yi": "ABCD"})
         else:
-            r.update(codeReadOk=True)          # compare.ts:367 在不烧码时恒为 true
+            r.update(code_read_ok=True)        # compare.ts:367 在不烧码时恒为 true
         rows.append(r)
     return rows
 
@@ -79,6 +80,33 @@ def test_未烧码时读码率无效_不许报出假的100():
     text = "\n".join(body)
     assert "读码率          无效" in text
     assert "19/19" not in text.split("读码率")[1].split("\n")[0], "不烧码时照抄 codeReadOk 会得到假的 19/19"
+
+
+def test_camelCase码字段一律判无效_只认snake_case():
+    """修订 2 §11：码字段只认 snake_case。
+
+    「实现」要是写成 codeA/codeReadOk，这里必须红 —— 两种都接受的话，
+    写错的那一边永远不会被发现。
+    """
+    s = _spec()
+    rows = _rows(s, [_gold(p) for p in s["pairs"]], codes=False)
+    for r in rows:
+        r.pop("code_read_ok")
+        r.update(codeA="ABCD", codeB="EFGH", codeReadOk=True, contradiction=False)
+    body, problems = sc.score(s, rows)
+    assert any("camelCase" in x for x in problems), problems
+    text = "\n".join(body)
+    assert "读码率          无效" in text
+    assert "19/19" not in text.split("读码率")[1].split("\n")[0]
+
+
+def test_理由字段名不对就红_不许让个人偏好一栏静默变零():
+    s = _spec()
+    rows = _rows(s, [_gold(p) for p in s["pairs"]], reasons={0: "按个人偏好判的"})
+    for r in rows:
+        r["reasonAb"] = r.pop("reason_ab")
+    _, problems = sc.score(s, rows)
+    assert any("reason_ab" in x for x in problems), problems
 
 
 def test_结果与spec对不上就拒绝():
