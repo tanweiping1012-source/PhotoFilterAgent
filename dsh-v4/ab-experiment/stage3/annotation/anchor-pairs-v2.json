@@ -1,0 +1,82 @@
+[
+  {
+    "i": 1,
+    "kept": "DSCF8242.JPG",
+    "dropped": "DSCF8038.JPG",
+    "score_kept": -1.351,
+    "score_dropped": 1.745,
+    "max_sim_to_gold": 0.935
+  },
+  {
+    "i": 2,
+    "kept": "DSCF7995.JPG",
+    "dropped": "DSCF8034.JPG",
+    "score_kept": -1.215,
+    "score_dropped": 1.609,
+    "max_sim_to_gold": 0.948
+  },
+  {
+    "i": 3,
+    "kept": "DSCF7543.JPG",
+    "dropped": "DSCF8029.JPG",
+    "score_kept": -0.944,
+    "score_dropped": 1.69,
+    "max_sim_to_gold": 0.939
+  },
+  {
+    "i": 4,
+    "kept": "DSCF7992.JPG",
+    "dropped": "DSCF8411.JPG",
+    "score_kept": -1.12,
+    "score_dropped": 1.188,
+    "max_sim_to_gold": 0.932
+  },
+  {
+    "i": 5,
+    "kept": "DSCF8614.JPG",
+    "dropped": "DSCF8410.JPG",
+    "score_kept": -0.808,
+    "score_dropped": 1.079,
+    "max_sim_to_gold": 0.947
+  },
+  {
+    "i": 6,
+    "kept": "DSCF8721.JPG",
+    "dropped": "DSCF7828.JPG",
+    "score_kept": -0.713,
+    "score_dropped": 1.052,
+    "max_sim_to_gold": 0.908
+  },
+  {
+    "i": 7,
+    "kept": "DSCF7951.JPG",
+    "dropped": "DSCF8302.JPG",
+    "score_kept": -0.604,
+    "score_dropped": 1.025,
+    "max_sim_to_gold": 0.931
+  },
+  {
+    "i": 8,
+    "kept": "DSCF7668.JPG",
+    "dropped": "DSCF8042.JPG",
+    "score_kept": 0.061,
+    "score_dropped": 0.957,
+    "max_sim_to_gold": 0.949
+  },
+  {
+    "i": 9,
+    "kept": "DSCF8251.JPG",
+    "dropped": "DSCF8303.JPG",
+    "score_kept": 0.156,
+    "score_dropped": 0.944,
+    "max_sim_to_gold": 0.947
+  },
+  {
+    "i": 10,
+    "kept": "DSCF8265.JPG",
+    "dropped": "DSCF7968.JPG",
+    "score_kept": 0.482,
+    "score_dropped": 0.686,
+    "max_sim_to_gold": 0.938
+  }
+]
