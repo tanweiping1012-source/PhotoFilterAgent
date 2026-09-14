@@ -153,6 +153,21 @@ def test_结果文件里没有winner的行要报出来_不许静默丢掉(tmp_pa
     assert "1 行不是结果行" in buf.getvalue()
 
 
+def test_码键齐全但code_a为空_判无效并点名那一行():
+    """owner 在 2aa5741 上做的变异 M-a：删掉 _code_gaps 里「code_a/code_b 为空」那行，12 条全绿。
+
+    文件头和注释都写着 code_a / code_b 不能为空，却没有一条测试造过空码。
+    「实现」要是把拿不到码写成 `code_a: ""`，五个键是齐的，读码率会照常算出来。
+    """
+    s = _spec()
+    rows = _rows(s, [_gold(p) for p in s["pairs"]])
+    rows[11]["code_a"] = ""
+    assert all(k in rows[11] for k in sc.CODE_KEYS), "这条用例的前提是五个键都在"
+    body, problems = sc.score(s, rows)
+    assert any("第 11 行" in x and "code_a(空)" in x for x in problems), problems
+    assert "读码率          无效" in "\n".join(body)
+
+
 def test_结果与spec对不上就拒绝():
     s = _spec()
     rows = _rows(s, [_gold(p) for p in s["pairs"]])
