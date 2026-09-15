@@ -44,7 +44,7 @@ const LEGACY_KEYS = ['a', 'b', 'answer', 'kind', 'local_correct', 'group',
  */
 const CODE_KEYS = ['code_a', 'code_b', 'code_read_ok', 'contradiction', 'codes_read']
 
-function mockHarness(opts: { throwAt?: number } = {}) {
+function mockHarness(opts: { throwAt?: number; preflightFail?: 'local' | 'sent' } = {}) {
   const store = new Map<string, string>()
   const perCallImages: number[] = []
   let seq = 0
@@ -62,7 +62,8 @@ function mockHarness(opts: { throwAt?: number } = {}) {
     },
     llm: {
       async resolveModelInfo(provider: string, model: string) {
-        return { provider, id: model, inputModalities: ['text', 'image'] }
+        // preflightFail='local'：不声明 image input → 预检的本地能力校验没过，还没发出
+        return { provider, id: model, inputModalities: opts.preflightFail === 'local' ? ['text'] : ['text', 'image'] }
       },
       async prepareCall(config: Record<string, unknown> & { provider: string; model: string }) {
         return {
@@ -71,6 +72,8 @@ function mockHarness(opts: { throwAt?: number } = {}) {
             const tool = (options.tools as Array<{ name: string; parameters: any }>)[0]!
             let args: Record<string, unknown>
             if (tool.name === 'photo_filter_model_preflight') {
+              // preflightFail='sent'：预检请求已经交给模型之后才失败
+              if (opts.preflightFail === 'sent') throw new Error('mock：预检调用失败')
               args = { ok: true, nonce: tool.parameters.properties.nonce.enum[0] }
             } else {
               submits++
@@ -140,8 +143,18 @@ function setup(spec: Partial<PairEvalSpec>, harness: ReturnType<typeof mockHarne
   return { dir, outPath, seen, deps, input }
 }
 
+/**
+ * 读 jsonl。**文件不存在时返回空数组**，不抛 ENOENT。
+ *
+ * 为什么：「该写的那一行没写」这类变异（例如预检失败不记、去掉逐对追加），原来是被
+ * readFileSync 的 ENOENT 崩红的 —— 红是红了，却红在读文件那一步，而不是红在
+ * 「应当正好 N 行」的断言上，分不清是断言抓到的还是崩出来的。返回空数组之后，
+ * 缺文件由断言自己报出来。每个调用方都断言了具体行数或内容，所以这不会放过任何东西。
+ */
 const readJsonl = (f: string) =>
-  readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, any>)
+  existsSync(f)
+    ? readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, any>)
+    : []
 const readRows = (outPath: string) => JSON.parse(readFileSync(outPath, 'utf8')).rows as Array<Record<string, unknown>>
 const DIRS_4 = PAIRS.flatMap((_, i) => [[i, 'AB'], [i, 'BA']])
 
@@ -163,8 +176,16 @@ const DIRS_4 = PAIRS.flatMap((_, i) => [[i, 'AB'], [i, 'BA']])
     }
     assert.ok(!existsSync(partialPathOf(s.outPath)), '跑完之后逐对落盘文件应当已删除')
     const calls = readJsonl(callsPathOf(s.outPath))
-    assert.deepEqual(calls.map((c) => [c.i, c.dir]), DIRS_4, '跑完之后逐次调用记录保留：每对 AB、BA 各一行')
+    assert.deepEqual(calls.map((c) => c.kind), ['preflight', ...DIRS_4.map(() => 'compare')],
+      '跑完之后逐次调用记录保留：开头 1 行预检，之后每对 AB、BA 各一行')
+    const pre = calls[0]!
+    assert.deepEqual([pre.i, pre.dir, pre.a, pre.b, pre.jpegs], [null, null, null, null, 0],
+      '预检那一行没有考题下标与方向，也不带图')
+    assert.deepEqual(calls.slice(1).map((c) => [c.i, c.dir]), DIRS_4)
     assert.ok(calls.every((c) => c.ok === true && c.sent === true && c.route === 'mock/mock-vision'))
+    // 核算口径（owner 定）：比较调用数 kind == compare && sent；预检每次运行正好 1 行
+    assert.equal(calls.filter((c) => c.kind === 'compare' && c.sent).length, PAIRS.length * 2)
+    assert.equal(calls.filter((c) => c.kind === 'preflight').length, 1)
   } finally { rmSync(s.dir, { recursive: true, force: true }) }
 }
 
@@ -210,10 +231,14 @@ for (const burn of [false, true]) {
     }
 
     const calls = readJsonl(callsPathOf(s.outPath))
-    assert.equal(calls.length, 6, `逐次调用应当正好 6 行（前两对 4 行 + 第 3 对 AB 成功 + BA 失败），实际 ${calls.length}`)
-    assert.deepEqual(calls.map((c) => [c.i, c.dir]), DIRS_4.slice(0, 6))
-    assert.ok(calls.slice(0, 5).every((c) => c.ok === true && c.error === undefined))
-    const bad = calls[5]!
+    assert.equal(calls.length, 7,
+      `逐次调用应当正好 7 行（1 预检 + 前两对 4 行 + 第 3 对 AB 成功 + BA 失败），实际 ${calls.length}`)
+    assert.equal(calls[0]!.kind, 'preflight', '第一行是预检')
+    const cmp = calls.slice(1)
+    assert.ok(cmp.every((c) => c.kind === 'compare'), '之后全是比较调用')
+    assert.deepEqual(cmp.map((c) => [c.i, c.dir]), DIRS_4.slice(0, 6))
+    assert.ok(calls.slice(0, 6).every((c) => c.ok === true && c.error === undefined))
+    const bad = calls[6]!
     assert.equal(bad.ok, false, '失败的调用也要写，并且标明失败')
     assert.match(bad.error, /第 6 次比较调用失败/, '失败那行要带错误信息')
     assert.equal(bad.sent, true, '这次已经交给了模型才失败 —— 算一次真实发出的调用')
@@ -279,7 +304,7 @@ for (const which of ['partial', 'calls'] as const) {
   assert.deepEqual(counts[1], counts[0], `烧码与否每次调用的幅数必须相等：${counts[1]} vs ${counts[0]}`)
 }
 
-// ── 7. transport 层：被本地拦下的那次也记（sent=false），真发出的记 sent=true，预检不记 ──
+// ── 7. transport 层：被本地拦下的那次也记（sent=false），真发出的记 sent=true，预检也记（kind=preflight）──
 {
   const h = mockHarness()
   const recs: VisionCallRecord[] = []
@@ -291,9 +316,33 @@ for (const which of ['partial', 'calls'] as const) {
     /JPEG/,
   )
   await t.invokeStructured({ system: 's', user: 'u', jpegs: [img('full::x.JPG')], tool, maxTokens: 10 }, undefined, { pair: 0, dir: 'BA' })
-  assert.equal(recs.length, 2, '预检不记；两次比较调用各记一行（被拦下的那次也记）')
-  assert.deepEqual(recs.map((r) => [r.ok, r.sent, r.meta?.dir]), [[false, false, 'AB'], [true, true, 'BA']])
-  assert.match(recs[0]!.error ?? '', /JPEG/, '被拦下的那次带着拦下它的原因')
+  assert.equal(recs.length, 3, '预检一行 + 两次比较调用各一行（被拦下的那次也记）')
+  assert.deepEqual(recs.map((r) => [r.kind, r.ok, r.sent, r.meta?.dir]), [
+    ['preflight', true, true, undefined],
+    ['structured', false, false, 'AB'],
+    ['structured', true, true, 'BA'],
+  ])
+  assert.match(recs[1]!.error ?? '', /JPEG/, '被拦下的那次带着拦下它的原因')
+}
+
+// ── 8. 预检失败：calls 正好 1 行（kind=preflight、ok=false，带错误），错误照常抛，一次比较都没发 ──
+for (const how of ['sent', 'local'] as const) {
+  const h = mockHarness({ preflightFail: how })
+  const s = setup({}, h)
+  try {
+    await assert.rejects(() => runPairEval(s.input, s.deps),
+      how === 'sent' ? /mock：预检调用失败/ : /image input/, '预检失败必须照常抛出，整轮停下')
+    const calls = readJsonl(callsPathOf(s.outPath))
+    assert.equal(calls.length, 1, `预检失败时逐次调用应当正好 1 行，实际 ${calls.length}`)
+    const c = calls[0]!
+    assert.equal(c.kind, 'preflight')
+    assert.equal(c.ok, false)
+    assert.ok(typeof c.error === 'string' && c.error.length > 0, '预检失败那行要带错误 —— 它说明整轮停在哪')
+    // sent 与比较调用同一个判法：进了 stream 才失败是 true；本地能力校验没过、还没发出是 false
+    assert.equal(c.sent, how === 'sent', `预检「${how}」失败时 sent 应为 ${how === 'sent'}`)
+    assert.equal(h.perCallImages.length, 0, '预检失败时一次比较调用都不能发')
+    assert.ok(!existsSync(partialPathOf(s.outPath)) && !existsSync(s.outPath), '没有逐对行，也没有结果文件')
+  } finally { rmSync(s.dir, { recursive: true, force: true }) }
 }
 
 console.log('pairEval.test.ts: 全部通过')

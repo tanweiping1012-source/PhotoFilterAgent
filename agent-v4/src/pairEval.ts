@@ -82,12 +82,16 @@ export interface PairEvalDeps {
 export const partialPathOf = (outPath: string): string => `${outPath}.partial.jsonl`
 
 /**
- * 逐次调用记录：每一次真实发出的比较调用一行，AB、BA 分开，**失败的也写**。跑完**不删**。
+ * 逐次调用记录：每一次模型调用一行 —— 比较调用 AB、BA 分开，**预检也写**（kind 区分），
+ * **失败的也写**。跑完**不删**。
  *
  * 判据要求「调用数从日志数」，而 DSH 会话日志不记工具内部发出的视觉调用。
  * 记录由 transport 在调用前后发出（harness-vision.ts 的 VisionCallRecord），不从裁决反推 ——
  * 反推数不到失败的那次，又回到拿「对数 × 2」算出来的数。
  * 跑完不删：它就是那份「日志」，最终结果文件里没有它的内容（失败的调用、耗时、是否真的发出）。
+ *
+ * 核算口径（owner 2026-09-15 定）：对批准的调用数，数 `kind == "compare" && sent`；
+ * 预检单独数，每次运行正好 1 行。sent=false 的是发出前被本地拦下的，没有花钱。
  *
  * 为什么不复用 instrument.ts 的 CallRow / appendRow：CallRow 的 phase 是仪器标定四个阶段的
  * 封闭枚举，也没有路由、错误、考题下标、「是否真的发出」这几个字段；appendRow 的 ts 是
@@ -101,6 +105,8 @@ function toCallRow(r: VisionCallRecord) {
     ts: r.startedAt,
     elapsed_ms: r.elapsedMs,
     route: r.route,
+    // transport 的 structured 在这条路径上都是比较调用；预检原样写 preflight
+    kind: r.kind === 'structured' ? 'compare' : r.kind,
     i: typeof r.meta?.pair === 'number' ? r.meta.pair : null,
     dir: typeof r.meta?.dir === 'string' ? r.meta.dir : null,
     a: typeof r.meta?.a === 'string' ? r.meta.a : null,
