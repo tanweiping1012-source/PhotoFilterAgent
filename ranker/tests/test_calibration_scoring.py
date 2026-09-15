@@ -168,6 +168,45 @@ def test_码键齐全但code_a为空_判无效并点名那一行():
     assert "读码率          无效" in "\n".join(body)
 
 
+def _writer_row(p, w):
+    """照 agent-v4/src/pairEval.ts 的 toEvalRow（burn=true）逐键造一行，连算分用不到的键也带上。
+
+    这是写结果的一边和算分的一边之间的契约测试：写的那边多一个、少一个、改一个名，
+    这里要么红、要么不红，都得是有意为之。改 toEvalRow 时同步改这里。
+    """
+    return {**p, "winner": w, "consistent": w in ("a", "b", "neither"), "ab": "first", "ba": "second",
+            "reason": "甲的眼神更自然", "reason_ab": "甲的眼神更自然", "reason_ba": "乙眼神略僵",
+            "model_correct": w == p["answer"],
+            "code_a": "K7QX", "code_b": "M2PD", "code_read_ok": True, "contradiction": False,
+            "codes_read": {"abJia": "K7QX", "abYi": "M2PD", "baJia": "M2PD", "baYi": "K7QX"}}
+
+
+def test_照pairEval写出来的行_算分脚本认得():
+    s = _spec()
+    rows = [_writer_row(p, _gold(p)) for p in s["pairs"]]
+    body, problems = sc.score(s, rows)
+    assert not problems, problems
+    assert "读码率          19/19" in "\n".join(body)
+
+
+def test_没问模型的那一对单独报_不许算成翻覆():
+    """compare.ts 缺预览图时 emit {winner: 'inconsistent', skipped: true}，不带 reason_ab 与码字段。
+
+    必须点名是 skipped —— 只报「缺 reason_ab」看不出真正原因（守卫 1b 也会红，
+    所以这里断言的是 skipped 那一条自己的问题文字，不是随便哪条问题）。
+    """
+    s = _spec()
+    rows = [_writer_row(p, _gold(p)) for p in s["pairs"]]
+    p4 = s["pairs"][4]
+    rows[4] = {**p4, "winner": "inconsistent", "consistent": False, "ab": "tie", "ba": "tie",
+               "reason": "缺少预览图，跳过", "model_correct": False, "skipped": True,
+               "code_a": None, "code_b": None, "code_read_ok": None, "contradiction": None, "codes_read": None}
+    body, problems = sc.score(s, rows)
+    assert any("第 4 行没问模型" in x and "skipped" in x for x in problems), problems
+    text = "\n".join(body)
+    assert "翻覆 0" in text and "没问模型 1" in text, "skipped 那一对不许被算进翻覆"
+
+
 def test_结果与spec对不上就拒绝():
     s = _spec()
     rows = _rows(s, [_gold(p) for p in s["pairs"]])

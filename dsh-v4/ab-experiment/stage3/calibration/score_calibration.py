@@ -113,11 +113,22 @@ def score(spec: dict, rows: list[dict]) -> tuple[list[str], list[str]]:
     if missing:
         problems.append(f"结果行缺字段 {missing} —— 字段名对不上时统计会静默变成 0，这里直接判无效")
 
+    # ── 守卫 1c：没问模型的那一对 ──
+    # compare.ts 缺预览图时 emit `{winner: 'inconsistent', skipped: true}`，而且不带 reason_ab 与码字段。
+    # pairEval.ts 的约定是「没问模型的那一对必须显式标出，绝不能长得像一局平局」——
+    # 不单独查的话，它会被算进「翻覆」，报出来的问题也只会是「缺 reason_ab」，看不出真正的原因。
+    skipped_idx = [i for i, r in enumerate(rows) if r.get("skipped") is True]
+    if skipped_idx:
+        problems.append(f"第 {'、'.join(map(str, skipped_idx[:5]))} 行没问模型（skipped，缺预览图）"
+                        f"共 {len(skipped_idx)} 对 —— 这一遍不完整，数字不许引用")
+
     n = len(rows)
     cat = {"gold": 0, "other": 0, "neither": 0, "tie": 0, "inconsistent": 0}
     personal = {"gold": 0, "dir": 0, "n": 0}
     unknown = []
     for r in rows:
+        if r.get("skipped") is True:          # 没问模型的不进任何一类，单独报数
+            continue
         w = r["winner"]
         key = (r.get("a"), r.get("b"))
         if w in ("a", "b"):
@@ -142,7 +153,7 @@ def score(spec: dict, rows: list[dict]) -> tuple[list[str], list[str]]:
     out.append(f"有方向率        {fmt(directional, n)}    ← 本轮真正要的产出")
     out.append(f"答对率          {fmt(cat['gold'], directional)}（+ 未表态 {abstain} 局，+ 都不够格 {cat['neither']} 局）")
     out.append(f"  明细          金标赢 {cat['gold']} · 非金标赢 {cat['other']} · 都不够格 {cat['neither']}"
-               f" · 主动平局 {cat['tie']} · 翻覆 {cat['inconsistent']}")
+               f" · 主动平局 {cat['tie']} · 翻覆 {cat['inconsistent']} · 没问模型 {len(skipped_idx)}")
     out.append(f"表态率（含都不够格）{fmt(directional + cat['neither'], n)}")
     out.append(f"双向一致率      {fmt(sum(1 for r in rows if r.get('consistent') is True), n)}")
 

@@ -28,7 +28,7 @@ PAIRS = STAGE3 / "calib-guarded-other.json"                    # 决定甲：19 
 RUBRIC_GENERAL = REPO / "dsh-v4/rubric/rubric-crossscene-general.txt"
 RUBRIC_PERSONAL = REPO / "dsh-v4/rubric/rubric-crossscene-personal-example.txt"
 ANCHORS = REPO / "dsh-v4/anchors-crossscene.json"
-INDEX_TS = REPO / "agent-v4/src/index.ts"
+PAIR_EVAL_TS = REPO / "agent-v4/src/pairEval.ts"
 PHOTOS = HOME / "Desktop/照片测试"
 ARCHIVE = HOME / ".dsh-v4/photo-filter-v4/archive/round3-calibration"
 ALLOW_NEITHER = True     # 三遍一致；通用 rubric 里要求「两张都不够格时如实说」，工具得给这个选项
@@ -39,17 +39,25 @@ md5 = lambda b: hashlib.md5(b).hexdigest()
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", action="store_true", help="写到仓库，照片目录保留 @@PHOTOS@@")
-    ap.add_argument("--dry-run", action="store_true", help="不检查「实现」是否已合入 burn_codes")
+    ap.add_argument("--dry-run", action="store_true", help="不检查 pairEval.ts 是否真的读了 burn_codes")
     ap.add_argument("--out", type=Path, default=None)
     a = ap.parse_args()
 
-    # ── 守卫：spec 里的 burn_codes 字段必须真的有人读 ────────────────────
-    # 字段名写错或「实现」还没合入时，run_pair_eval 会**静默忽略**它 —— 三遍全不烧码，
+    # ── 守卫：spec 里的 burn_codes 字段必须真的有人读，而且读了真的去烧码 ─────────
+    # 字段名写错或读的那行被删掉时，run_pair_eval 会**静默忽略**它 —— 三遍全不烧码，
     # 而 compare.ts 在不烧码时把 codeReadOk 一律记成 true，读码率显示 100%。
-    reads_it = bool(re.search(r"\bburn_codes\b", INDEX_TS.read_text(encoding="utf-8")))
+    #
+    # ⚠️ 这道守卫原来 grep 的是 index.ts 里的字面词 burn_codes。978f78e 把 run_pair_eval
+    # 抽进 pairEval.ts 之后，index.ts 里只剩汇总文字 `spec.burn_codes === true ? ' · 烧码' : ''`
+    # 这一处 —— 守卫从「有人读它」静默变成了「有人把它印在摘要里」。真正的读法删掉，它照样绿。
+    # 所以现在查的是 pairEval.ts 里**决定烧不烧码**的那两行，两行都得在。
+    src = PAIR_EVAL_TS.read_text(encoding="utf-8") if PAIR_EVAL_TS.exists() else ""
+    reads_it = bool(re.search(r"const burn = spec\.burn_codes === true", src)) \
+        and bool(re.search(r"burn \? assignCodes\(", src))
     if not reads_it and not a.dry_run:
-        raise SystemExit("❌ agent-v4/src/index.ts 里没有 burn_codes —— 「实现」的烧码开关还没合入，"
-                         "现在生成的 spec 跑起来不会烧码。停手；只想看产物就加 --dry-run")
+        raise SystemExit("❌ agent-v4/src/pairEval.ts 里找不到「const burn = spec.burn_codes === true」"
+                         "加「burn ? assignCodes(」—— 烧码开关没接上，现在生成的 spec 跑起来不会烧码。"
+                         "停手；只想看产物就加 --dry-run")
 
     placeholder = "@@PHOTOS@@"
     root = placeholder if a.repo else str(PHOTOS)
@@ -122,7 +130,7 @@ def main() -> int:
     print(f"   自检：三遍只在处理变量上不同 ✓ · 锚点与考题零重名 ✓ · 第一遍 rubric 显式空 ✓")
     print(f"   rubric 拼接 md5 {md5(rubric.encode())}（{len(rubric)} 字）")
     if not reads_it:
-        print("   ⚠️ --dry-run：index.ts 还没有 burn_codes，这批 spec 现在跑不会烧码")
+        print("   ⚠️ --dry-run：pairEval.ts 里没找到烧码开关的读法，这批 spec 现在跑不会烧码")
     return 0
 
 
