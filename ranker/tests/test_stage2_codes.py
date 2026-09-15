@@ -19,6 +19,9 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPARE = (ROOT / "agent-v4" / "src" / "compare.ts").read_text(encoding="utf-8")
 INDEX = (ROOT / "agent-v4" / "src" / "index.ts").read_text(encoding="utf-8")
 INSTRUMENT = (ROOT / "agent-v4" / "src" / "instrument.ts").read_text(encoding="utf-8")
+CODES = (ROOT / "agent-v4" / "src" / "codes.ts").read_text(encoding="utf-8")
+#: run_pair_eval 的主体（2026-09-14 从 index.ts 抽出）
+PAIREVAL = (ROOT / "agent-v4" / "src" / "pairEval.ts").read_text(encoding="utf-8")
 
 
 def test_ts侧行为测试必须通过():
@@ -63,23 +66,47 @@ def test_烧码时工具必须要求抄回三个码():
         assert f in need, f"烧码时 {f} 必须是必填 —— 选填等于形同虚设"
 
 
-def test_生产阶段2烧码而评测路径不烧():
-    """评测那条路要与 R2/R3 可比，答案空间和输入都不能变。
+def test_生产阶段2烧码而评测路径缺省不烧():
+    """评测那条路**缺省**要与 R2/R3 可比，答案空间和输入都不能变。
 
-    烧码换了被测对象：要测烧码条件下的表现，走 run_instrument_check。
+    2026-09-14 起考题 spec 里可以写 burn_codes=true —— 标定的是阶段 3 的生产裁判，
+    生产比较路径烧码（判据 §10.1）。但**缺省**必须仍然不烧：缺省一变，历史出口就静默不可比。
+    行为层面由 agent-v4/src/pairEval.test.ts 真跑钉住；这里守文本上的每个调用点。
     """
+    # 生产阶段 2
     assert "assignCodes(names, STAGE2_CODE_SEED)" in INDEX, "生产阶段 2 没有烧码"
     assert re.search(r"undefined,\s*codes,", INDEX), "预览没有把 codeMap 传下去"
     assert re.search(r"config\.allowNeither,\s*codes,\s*services", INDEX), \
         "生产的 comparePairs 没有收到 codes"
-    assert re.search(r"undefined,\s*services", INDEX), \
-        "评测路径必须显式传 undefined（不烧码）"
+    # 评测路径（主体在 pairEval.ts）：只有显式 true 才烧；缺省是 undefined，不是 {}
+    assert "const burn = spec.burn_codes === true" in PAIREVAL, "burn_codes 必须严格等于 true 才烧码"
+    assert "const codes = burn ? assignCodes(names, STAGE2_CODE_SEED) : undefined" in PAIREVAL, \
+        "评测路径缺省必须不烧码，而且是 undefined 不是 {}"
+    assert re.search(r"undefined,\s*codes,", PAIREVAL), "评测路径烧码时没把 codeMap 交给 preview"
+    assert re.search(r"input\.allowNeither,\s*codes,\s*services", PAIREVAL), \
+        "评测路径的 comparePairs 没有收到 codes"
+    # compare_within_groups 的预览没有烧码，所以它必须显式传 undefined。
+    #
+    # 原来这里是 `re.search(r"undefined,\s*services", INDEX)`，本意守评测路径。评测主体搬走之后，
+    # 它仍然能在 compare_within_groups 那一处匹配上 —— **守卫还绿着，守的已经不是它说的那件事**。
+    # 改成用那一处旁边的注释定位，钉住它本身。
+    assert re.search(r"codes 必须是 undefined[\s\S]{0,300}?undefined,\s*services", INDEX), \
+        "compare_within_groups 必须显式传 undefined —— 它的预览没有烧码"
 
 
 def test_种子是固定值():
-    """同一批照片每次跑要拿到同一批码 —— 断点续跑、复现问题时码不能变。"""
-    m = re.search(r"const STAGE2_CODE_SEED = (\d+)", INDEX)
-    assert m, "找不到固定种子"
+    """同一批照片每次跑要拿到同一批码 —— 断点续跑、复现问题时码不能变。
+
+    2026-09-14 种子从 index.ts 搬到 codes.ts：run_pair_eval（pairEval.ts）标定阶段 3 的生产裁判时
+    必须用**同一个**种子。所以不只找定义，还钉住「只有一份」—— 两处各写一个常量，
+    哪天改了一处，标定就不再对应生产，而没有任何东西会报错。
+    """
+    m = re.search(r"export const STAGE2_CODE_SEED = (\d+)", CODES)
+    assert m, "codes.ts 里找不到固定种子"
+    for name, text in (("index.ts", INDEX), ("pairEval.ts", PAIREVAL)):
+        assert not re.search(r"\bconst STAGE2_CODE_SEED\b", text), f"{name} 里又定义了一份种子"
+        assert re.search(r"import \{[^}]*\bSTAGE2_CODE_SEED\b[^}]*\} from './codes\.ts'", text), \
+            f"{name} 没有从 codes.ts 取种子"
 
 
 def test_幻觉码不许被当成正常答案():

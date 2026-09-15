@@ -581,19 +581,34 @@ def test_锚点只能由一个函数构造():
     测出来的「锚点没用」就是假的 —— 这是最贵的一类 bug：
     它不报错，只是让结论反过来。
     """
+    import re
     from pathlib import Path
-    src = Path(__file__).resolve().parents[2] / 'agent-v4' / 'src' / 'index.ts'
-    ts = src.read_text(encoding='utf-8')
+    src_dir = Path(__file__).resolve().parents[2] / 'agent-v4' / 'src'
+    ts = (src_dir / 'index.ts').read_text(encoding='utf-8')
+    pe = (src_dir / 'pairEval.ts').read_text(encoding='utf-8')
 
-    assert 'async function buildAnchorBlock(' in ts, \
-        'buildAnchorBlock 不见了 —— 锚点构造又散回各个调用点了'
-    assert ts.count('buildAnchorBlock(') >= 3, \
-        '至少要有 1 处定义 + 2 处调用（生产 rank_photos、评测 run_pair_eval）'
-    assert 'anchorBlock = {' not in ts, \
-        '有人在 buildAnchorBlock 之外就地拼 AnchorBlock —— 分叉从这里开始'
+    assert ts.count('async function buildAnchorBlock(') == 1, \
+        'buildAnchorBlock 不见了（或定义了两份）—— 锚点构造又散回各个调用点了'
+    # 生产 rank_photos 直接调它
+    assert 'buildAnchorBlock(loadAnchors()' in ts, '生产路径没有走 buildAnchorBlock'
+    # 评测 run_pair_eval 的主体 2026-09-14 抽到了 pairEval.ts：index.ts 把同一个函数交进去，
+    # pairEval.ts 只能经由它构造锚点。
+    #
+    # 原来这里是 `ts.count('buildAnchorBlock(') >= 3`。主体搬走之后评测那一处变成了
+    # 传函数引用，计数只剩 2。改成分别钉住「交进去」与「只经由它」两头，而不是把 3 放宽成 2 ——
+    # 放宽之后，评测那一路自己构造锚点也照样是绿的。
+    assert re.search(r"runPairEval\([\s\S]*?\bbuildAnchorBlock,\s*\}", ts), \
+        'run_pair_eval 没有把 buildAnchorBlock 交给 runPairEval —— 评测那一路又自己构造锚点了'
+    assert pe.count('deps.buildAnchorBlock(') == 1, \
+        'pairEval.ts 必须且只能经由 deps.buildAnchorBlock 构造锚点'
+    for name, text in (('index.ts', ts), ('pairEval.ts', pe)):
+        assert 'anchorBlock = {' not in text, \
+            f'{name} 里有人在 buildAnchorBlock 之外就地拼 AnchorBlock —— 分叉从这里开始'
     # 取锚点图必须带人脸和标签，而这两个参数只在 buildAnchorBlock 里出现一次
     assert ts.count('anchors.labels,') == 1, \
         'anchors.labels 应当只在 buildAnchorBlock 里传一次'
+    # pairEval.ts 里唯一的取图是待判照片那一次 —— 就地给锚点取图正是历史上分叉的写法
+    assert pe.count('deps.preview(') == 1, 'pairEval.ts 里不许再为锚点单独取图'
 
 
 def test_实验臂不能用字母命名():
@@ -629,14 +644,24 @@ def test_三臂必须真的不一样():
     src = Path(__file__).resolve().parents[2] / 'agent-v4' / 'src'
     cmp_ts = (src / 'compare.ts').read_text(encoding='utf-8')
     idx_ts = (src / 'index.ts').read_text(encoding='utf-8')
+    pe_ts = (src / 'pairEval.ts').read_text(encoding='utf-8')
 
     assert 'rubric: string | null' in cmp_ts, 'comparePairs 没有 rubric 参数'
     # rubric 必须真的进 system，而不是收下就丢
     assert 'rubric' in cmp_ts.split('system:')[1][:200], \
         'rubric 没有拼进 system —— 「仅规则」臂会静默退化成「无提示」'
-    # 两个调用点都要传
-    assert idx_ts.count('loadRubric()') >= 2, \
-        '生产路径和评测路径都要传 rubric，否则两边又分叉'
+    # 两个调用点都要传，按调用点分别钉住。
+    #
+    # 原来是 `idx_ts.count('loadRubric()') >= 2`。2026-09-14 修 compare_within_groups 的参数错位
+    # 时那里也补上了 loadRubric()，计数从 2 变成 3 —— 评测路径就算漏传 rubric，计数仍然 ≥ 2，
+    # **这条悄悄变成了恒真**。之后评测主体又搬到 pairEval.ts，计数更说明不了什么。
+    import re
+    assert re.search(r"loadRubric\(\),\s*config\.allowNeither,\s*codes,\s*services", idx_ts), \
+        '生产阶段 2 没有把 rubric 传给 comparePairs'
+    assert 'rubric: spec.rubric ?? loadRubric(),' in idx_ts, \
+        'run_pair_eval 没有把考题的 rubric（缺省回落 config）交给 runPairEval'
+    assert re.search(r"input\.rubric,\s*input\.allowNeither,", pe_ts), \
+        'runPairEval 收下了 rubric 却没传给 comparePairs —— 「仅规则」臂会静默退化成「无提示」'
 
 
 def _fake_ab_results(tmpdir, scenes, n_per_scene=15):
@@ -814,10 +839,11 @@ def test_双向原话必须都落盘():
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
     cmp_ts = (root / 'agent-v4' / 'src' / 'compare.ts').read_text(encoding='utf-8')
-    idx_ts = (root / 'agent-v4' / 'src' / 'index.ts').read_text(encoding='utf-8')
+    # 判分行 2026-09-14 从 index.ts 搬到了 pairEval.ts 的 toEvalRow —— 守着它现在所在的地方
+    pe_ts = (root / 'agent-v4' / 'src' / 'pairEval.ts').read_text(encoding='utf-8')
     assert 'reasonAb: ab.reason' in cmp_ts and 'reasonBa: ba.reason' in cmp_ts, \
         'comparePairs 没有保留两个方向的原话'
-    assert 'reason_ab: v.reasonAb' in idx_ts and 'reason_ba: v.reasonBa' in idx_ts, \
+    assert 'reason_ab: v.reasonAb' in pe_ts and 'reason_ba: v.reasonBa' in pe_ts, \
         '结果行没有落盘双向原话'
 
 

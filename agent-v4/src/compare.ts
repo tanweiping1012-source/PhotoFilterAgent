@@ -25,7 +25,7 @@
  * 3. **模型路由继承当前会话**，不允许静默回落到别的模型。
  */
 
-import type { HarnessVisionExecution, HarnessVisionServices } from './harness-vision.ts'
+import type { HarnessVisionExecution, HarnessVisionServices, VisionCallRecord } from './harness-vision.ts'
 import { HarnessVisionTransport, resolveHarnessModelRoute } from './harness-vision.ts'
 
 const SYSTEM_TMPL = `你在帮一个人从自己的旅行照片里挑出值得留下的几张。
@@ -126,6 +126,11 @@ export interface PairVerdict {
   codesRead?: { abJia: string; abYi: string; baJia: string; baYi: string }
   /** 模型的槽位答案与它给的码互相矛盾（说甲却给乙的码）。 */
   contradiction?: boolean
+  /**
+   * 这一对**根本没问模型**（缺预览图）。它的 ab/ba 写着 tie 只是占位 ——
+   * 不是平局，落盘时必须显式标出来，绝不能长得像一局平局。
+   */
+  skipped?: boolean
 }
 
 const makeTool = (allowNeither: boolean, withCodes: boolean) => ({
@@ -278,26 +283,52 @@ export async function comparePairs(
    * 照片名 → 烧在图上的 4 位码。**给了才启用内容寻址的答案通道。**
    *
    * 不给（undefined 或空）时行为与以前逐字节相同 —— 提示词不提码、
-   * 工具不要码、按槽位解析。评测路径（run_pair_eval）保持不给，
-   * 这样它与历史轮次仍然可比；生产阶段 2 给。
+   * 工具不要码、按槽位解析。评测路径（run_pair_eval）**缺省**不给，与历史轮次可比；
+   * 考题里写 burn_codes=true 时给（标定阶段 3 的生产裁判，见 pairEval.ts）；生产阶段 2 给。
    */
   codes: Record<string, string> | undefined,
   services: HarnessVisionServices,
   exec: HarnessVisionExecution,
-  onProgress?: (done: number, total: number) => void,
+  /**
+   * 两个可选回调，收成一个对象而不是再加位置参数 ——
+   * 位置参数错位正是 2026-09-14 index.ts:688 那个 bug 的形状。
+   */
+  hooks?: {
+    /**
+     * 每产出一对的裁决回调一次（原来的 onProgress，多带了裁决本身）。
+     * 顺序与 pairs 一致（本函数是顺序的），第 done 次回调对应 pairs[done - 1]。
+     * run_pair_eval 靠它逐对落盘：崩在第 k 对时前 k−1 对已经在盘上。
+     */
+    onPair?: (done: number, total: number, verdict: PairVerdict) => void
+    /**
+     * 每一次真实发出的比较调用回调一次：AB、BA 各一次，失败的也回调，预检不算。
+     * 由 transport 在调用前后发出（见 harness-vision.ts 的 VisionCallRecord），
+     * meta 里带 pair（在 pairs 里的下标）、dir（AB/BA）、a、b。
+     */
+    onCall?: (record: VisionCallRecord) => void
+  },
 ): Promise<{ verdicts: PairVerdict[]; route: string }> {
   const withCodes = !!codes && Object.keys(codes).length > 0
   const route = resolveHarnessModelRoute(exec)
-  const transport = new HarnessVisionTransport(services, route, exec.agent?.session?.id)
+  const transport = new HarnessVisionTransport(services, route, exec.agent?.session?.id, hooks?.onCall)
   // 预检不通过就整轮停下 —— 不允许静默回落到别的模型。
   await transport.preflight(exec.signal)
 
   const out: PairVerdict[] = []
-  for (const [a, b] of pairs) {
+  // 每条裁决都必须经过这里：先入列，再回调。
+  //
+  // 以前三条分支各自 out.push，其中「缺少预览图，跳过」那条**忘了回调** ——
+  // 调用方若按回调逐对落盘，被跳过的那对就不落盘，后面的下标整体错位，
+  // 而落进盘里的数据看不出错位。收成一个函数，新加的分支就不可能再忘。
+  const emit = (v: PairVerdict) => {
+    out.push(v)
+    hooks?.onPair?.(out.length, pairs.length, v)
+  }
+  for (const [k, [a, b]] of pairs.entries()) {
     const ja = previews[a]
     const jb = previews[b]
     if (!ja || !jb) {
-      out.push({ a, b, winner: 'inconsistent', consistent: false, ab: 'tie', ba: 'tie', reason: '缺少预览图，跳过' })
+      emit({ a, b, winner: 'inconsistent', consistent: false, ab: 'tie', ba: 'tie', reason: '缺少预览图，跳过', skipped: true })
       continue
     }
     const fa = faces[a]
@@ -306,6 +337,7 @@ export async function comparePairs(
     const bundle = (full: string, face: string | undefined) =>
       face ? [full, face] : [full]
     const ask = async (
+      dir: 'AB' | 'BA',
       firstFull: string, firstFace: string | undefined,
       secondFull: string, secondFace: string | undefined,
     ) => readVerdict(
@@ -335,10 +367,10 @@ export async function comparePairs(
         // 实测：47 对的那轮 400 勉强够（没中断），换成体检题就撞上了。
         // 边界这么近说明本来就该放宽，不是运气问题。
         maxTokens: 2000,
-      }, exec.signal),
+      }, exec.signal, { pair: k, dir, a, b }),
     )
-    const ab = await ask(ja, fa, jb, fb)
-    const ba = await ask(jb, fb, ja, fa)
+    const ab = await ask('AB', ja, fa, jb, fb)
+    const ba = await ask('BA', jb, fb, ja, fa)
     const ca = codes?.[a]
     const cb = codes?.[b]
     // AB 这次排前的是 a；BA 这次排前的是 b。码要按**这次调用的排法**去对。
@@ -346,7 +378,7 @@ export async function comparePairs(
     const baR = resolvePick(ba, cb, ca)
     // 幻觉码：模型给的码两张都不是。这一次调用没有可信答案。
     if (abR.pick === 'bad-code' || baR.pick === 'bad-code') {
-      out.push({
+      emit({
         a, b, winner: 'inconsistent', consistent: false,
         ab: ab.w, ba: ba.w, reasonAb: ab.reason, reasonBa: ba.reason,
         codeA: ca, codeB: cb, codeReadOk: false, contradiction: false,
@@ -354,7 +386,6 @@ export async function comparePairs(
         reason: `模型给的编码对不上任何一张（AB=${ab.winnerCode || '空'} / `
           + `BA=${ba.winnerCode || '空'}，实际 ${ca}/${cb}），本对作废`,
       })
-      onProgress?.(out.length, pairs.length)
       continue
     }
     // BA 的 first 指的是 b，所以要翻回 a/b 语义再比。
@@ -375,7 +406,7 @@ export async function comparePairs(
     const consistent = abPick === baPick && abPick !== 'tie'
     // 两次都**主动**答平局。它和「翻覆」是完全不同的事，不能记成同一个值。
     const bothTie = abPick === 'tie' && baPick === 'tie'
-    out.push({
+    emit({
       a, b,
       // 翻覆必须有自己的值，不能记成 'tie'。
       //
@@ -411,7 +442,6 @@ export async function comparePairs(
       // 要看原文一律去 reasonAb / reasonBa。
       reason: consistent ? (ab.reason || ba.reason) : `两个方向不一致（AB=${ab.w} / BA=${ba.w}），判平局`,
     })
-    onProgress?.(out.length, pairs.length)
   }
   return { verdicts: out, route: `${route.provider}/${route.model}` }
 }
