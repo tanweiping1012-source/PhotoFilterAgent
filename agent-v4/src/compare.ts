@@ -301,9 +301,9 @@ export async function comparePairs(
      */
     onPair?: (done: number, total: number, verdict: PairVerdict) => void
     /**
-     * 每一次真实发出的比较调用回调一次：AB、BA 各一次，失败的也回调，预检不算。
-     * 由 transport 在调用前后发出（见 harness-vision.ts 的 VisionCallRecord），
-     * meta 里带 pair（在 pairs 里的下标）、dir（AB/BA）、a、b。
+     * 每一次模型调用回调一次：AB、BA 各一次，失败的也回调，**预检也回调**（kind=preflight，
+     * 没有 meta）。由 transport 在调用前后发出（见 harness-vision.ts 的 VisionCallRecord），
+     * 比较调用的 meta 里带 pair（在 pairs 里的下标）、dir（AB/BA）、a、b。
      */
     onCall?: (record: VisionCallRecord) => void
   },

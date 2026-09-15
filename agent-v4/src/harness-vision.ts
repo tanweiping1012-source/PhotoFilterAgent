@@ -96,13 +96,19 @@ export interface HarnessVisionPreflight {
 }
 
 /**
- * 一次结构化比较调用的记录。由 transport 在调用前后发出 —— **失败的也发**；预检不算。
+ * 一次模型调用的记录。由 transport 在调用前后发出 —— **失败的也发，预检也发**。
  *
  * 为什么记在这一层、不从裁决反推：判据要求「调用数从日志数」，而 DSH 会话日志
  * 不记工具内部发出的视觉调用。从裁决反推数不到失败的那次（失败的调用没有裁决），
  * 又回到拿「对数 × 2」算出来的数。
+ *
+ * 为什么预检也记：preflight 走 callTool，**真发一次请求**给模型（不带图、maxTokens 80），
+ * 每次 comparePairs 一次。原先不记，于是每一遍、每次冒烟都多花 1 次而日志里看不见 ——
+ * 违背「花了什么，日志里就要有什么」（owner 2026-09-15 定）。用 kind 分开，核算时各数各的。
  */
 export interface VisionCallRecord {
+  /** structured = invokeStructured 发出的调用；preflight = 文字预检。 */
+  kind: 'structured' | 'preflight'
   /** 开始调用的时刻（ms since epoch）。 */
   startedAt: number
   /** 从开始到成功返回、或抛错的耗时（ms）。 */
@@ -113,7 +119,7 @@ export interface VisionCallRecord {
   jpegs: number
   /**
    * 请求是否真的交给了模型（已进入 stream）。false = 在发出之前就被本地拦下
-   * （图片数不合法、附件超限、adapter 准备失败……），这一次没有花钱。
+   * （图片数不合法、附件超限、adapter 准备失败、预检的本地能力校验没过……），这一次没有花钱。
    */
   sent: boolean
   ok: boolean
@@ -293,7 +299,7 @@ export class HarnessVisionTransport {
     services: HarnessVisionServices,
     route: HarnessModelRoute,
     sessionId?: string,
-    /** 每一次结构化比较调用（含失败，不含预检）回调一次，见 VisionCallRecord。 */
+    /** 每一次模型调用（含失败、含预检）回调一次，见 VisionCallRecord。 */
     onCall?: (record: VisionCallRecord) => void,
   ) {
     this.services = services
@@ -358,9 +364,13 @@ export class HarnessVisionTransport {
    * silent text-JSON fallback: scoring accepts the same tool-call protocol.
    */
   async preflight(signal?: AbortSignal): Promise<HarnessVisionPreflight> {
-    await this.assertLocalCapabilities(signal)
+    // 预检也是一次真调用（不带图、maxTokens 80），同样记进调用记录（kind=preflight），
+    // 失败的也记 —— 预检失败会整轮停下，这一行正好说明停在哪。sent 与比较调用同一个判法：
+    // 本地能力校验没过、还没发出是 false；进了 stream 之后才失败（含 nonce 对不上）是 true。
+    const startedAt = Date.now()
+    const probe = { sent: false }
     const nonce = randomUUID()
-    const payload = await this.callTool({
+    const request: StructuredVisionRequest = {
       system: 'You are a capability probe. Call the supplied tool exactly once. Do not answer with text.',
       user: `Call photo_filter_model_preflight with ok=true and nonce=${nonce}. No image is attached.`,
       jpegs: [],
@@ -378,12 +388,21 @@ export class HarnessVisionTransport {
         },
       },
       maxTokens: 80,
-    }, signal)
-    if (payload.ok !== true || payload.nonce !== nonce) {
-      throw new HarnessVisionError('模型预检工具返回值不匹配；图片尚未发送。', {
-        code: 'MODEL_PREFLIGHT_MISMATCH',
-      })
     }
+    try {
+      await this.assertLocalCapabilities(signal)
+      const payload = await this.callTool(request, signal, probe)
+      if (payload.ok !== true || payload.nonce !== nonce) {
+        throw new HarnessVisionError('模型预检工具返回值不匹配；图片尚未发送。', {
+          code: 'MODEL_PREFLIGHT_MISMATCH',
+        })
+      }
+    } catch (error) {
+      this.record('preflight', request, startedAt, probe.sent, undefined, error)
+      throw error
+    }
+    // 成功的记录写在 try 外面：写记录本身出错时，不能把一次成功的预检记成失败。
+    this.record('preflight', request, startedAt, probe.sent, undefined)
     this.preflightPassed = true
     return Object.freeze({
       route: this.route,
@@ -405,19 +424,21 @@ export class HarnessVisionTransport {
     try {
       out = await this.invokeChecked(request, signal, probe)
     } catch (error) {
-      this.record(request, startedAt, probe.sent, meta, error)
+      this.record('structured', request, startedAt, probe.sent, meta, error)
       throw error
     }
     // 成功的记录写在 try 外面：写记录本身出错时，不能把一次成功的调用记成失败。
-    this.record(request, startedAt, probe.sent, meta)
+    this.record('structured', request, startedAt, probe.sent, meta)
     return out
   }
 
   private record(
+    kind: VisionCallRecord['kind'],
     request: StructuredVisionRequest, startedAt: number, sent: boolean,
     meta: Readonly<Record<string, unknown>> | undefined, error?: unknown,
   ): void {
     this.onCall?.({
+      kind,
       startedAt,
       elapsedMs: Date.now() - startedAt,
       route: `${this.route.provider}/${this.route.model}`,
