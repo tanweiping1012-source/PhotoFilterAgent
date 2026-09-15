@@ -51,13 +51,21 @@ def main() -> int:
     # 抽进 pairEval.ts 之后，index.ts 里只剩汇总文字 `spec.burn_codes === true ? ' · 烧码' : ''`
     # 这一处 —— 守卫从「有人读它」静默变成了「有人把它印在摘要里」。真正的读法删掉，它照样绿。
     # 所以现在查的是 pairEval.ts 里**决定烧不烧码**的那两行，两行都得在。
+    #
+    # 两行都**按整行锚定**（re.M，行尾只许跟空白或 // 注释）。只匹配前缀的话，
+    # `const burn = spec.burn_codes === true && false` 也会被认成「在读」—— owner 审 a2f5c10 时
+    # 做的变异就活在这里。锚定之后，这两行一有改动守卫就拒绝生成，得有人回来重核：
+    # 这正是「被测代码一改，旧验证作废」要的效果。
+    # 行为另有纵深兜底：pairEval.test.ts（burn=true 时 codes 非空）、算分守卫②、冒烟核 code_a 非空。
     src = PAIR_EVAL_TS.read_text(encoding="utf-8") if PAIR_EVAL_TS.exists() else ""
-    reads_it = bool(re.search(r"const burn = spec\.burn_codes === true", src)) \
-        and bool(re.search(r"burn \? assignCodes\(", src))
+    burn_line = re.search(r"^\s*const burn = spec\.burn_codes === true\s*(?://.*)?$", src, re.M)
+    codes_line = re.search(r"^\s*const codes = burn \? assignCodes\([^)]*\) : undefined\s*(?://.*)?$", src, re.M)
+    reads_it = bool(burn_line) and bool(codes_line)
     if not reads_it and not a.dry_run:
-        raise SystemExit("❌ agent-v4/src/pairEval.ts 里找不到「const burn = spec.burn_codes === true」"
-                         "加「burn ? assignCodes(」—— 烧码开关没接上，现在生成的 spec 跑起来不会烧码。"
-                         "停手；只想看产物就加 --dry-run")
+        raise SystemExit("❌ agent-v4/src/pairEval.ts 里找不到这两整行："
+                         "「const burn = spec.burn_codes === true」与「const codes = burn ? assignCodes(…) : undefined」"
+                         "（行尾只许跟空白或注释）—— 烧码开关可能没接上，或这两行被改过。"
+                         "停手，回去核 pairEval.ts；只想看产物就加 --dry-run")
 
     placeholder = "@@PHOTOS@@"
     root = placeholder if a.repo else str(PHOTOS)
