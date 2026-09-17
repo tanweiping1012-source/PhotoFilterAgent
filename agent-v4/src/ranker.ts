@@ -58,6 +58,36 @@ export interface RankNotes {
   // ── 阶段 3（段配额）────────────────────────────────────────
   segment_cap?: number
   segments_relaxed?: number
+  /** 阶段 3 段内边缘对局计划。每次 pick 都出（0 次调用）；没有段配额时为空。 */
+  stage3_plan?: Stage3PlanRow[]
+  /** 计划 md5：紧凑 JSON 的 [[甲, 乙], ...] 取 md5。应用裁决时排序器重算比对，对不上就拒绝。 */
+  stage3_plan_md5?: string | null
+  /** 换人计数；没给阶段 3 裁决时为 null（不是全 0 —— 0 的意思是「判过、没换」）。 */
+  stage3?: Stage3Note | null
+  /** replay = 用了阶段 3 裁决；off = 只出了计划。 */
+  stage3_judge?: string
+}
+
+/** 阶段 3 的一局：段、在位（边缘名额）、挑战者、本地分差。 */
+export interface Stage3PlanRow {
+  segment: number
+  a: string
+  b: string
+  margin: number
+}
+
+/** ranker/photofilter_rank/stage3.py apply_stage3_verdicts 的计数（另加 unused）。 */
+export interface Stage3Note {
+  contests: number
+  swapped: number
+  missing: number
+  refused_family_cap: number
+  kept_a: number
+  kept_tie: number
+  kept_neither: number
+  kept_inconsistent: number
+  kept: number
+  unused: number
 }
 
 // ⚠️ 上面这些是**按需声明**的，不是 notes 的全集。
@@ -262,6 +292,8 @@ export class Ranker {
      * 所以流程是「排序器出复核计划 → 这里跑模型 → 裁决写文件 → 排序器重放」。
      */
     verdictsFile?: string,
+    /** 阶段 3 的裁决文件（须带 plan_md5）。与 verdictsFile 同时给：阶段 3 的计划建立在阶段 2 回放之后的排序上。 */
+    stage3VerdictsFile?: string,
   ): Promise<RankResult> {
     const dir = mkdtempSync(join(tmpdir(), 'pfv4-lbl-'))
     try {
@@ -273,6 +305,7 @@ export class Ranker {
         args.push('--labels', p)
       }
       if (verdictsFile) args.push('--verdicts', verdictsFile)
+      if (stage3VerdictsFile) args.push('--stage3-verdicts', stage3VerdictsFile)
       return (await this.runJson<RankResult>(args, signal)).value
     } finally {
       rmSync(dir, { recursive: true, force: true })
