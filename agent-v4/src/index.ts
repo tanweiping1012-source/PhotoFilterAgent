@@ -18,9 +18,9 @@
  * @module @photo-filter-agent/dsh-photo-filter-v4
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve as resolvePath } from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -28,7 +28,8 @@ import { assertAnchorImagesComplete } from './anchors.ts'
 import { IdentityMap } from './identity.ts'
 import { comparePairs, type AnchorBlock } from './compare.ts'
 import { STAGE2_CODE_SEED, assignCodes } from './codes.ts'
-import { runPairEval, type PairEvalSpec } from './pairEval.ts'
+import { runPairEval, toCallRow, type PairEvalSpec } from './pairEval.ts'
+import { CALLS_FILE, runStage3, type Stage3Outcome } from './stage3.ts'
 import {
   appendRow, askPair, makeCode, mulberry32, newTransport, probeGrounding,
   type CallRow, type Slots,
@@ -90,6 +91,22 @@ export interface Config {
    * 默认开启是产品决定，不是数据支持的结论。agent 必须在报告里如实说明。
    */
   stage2Vlm: boolean
+  /**
+   * 阶段 3：段内边缘名额的视觉对决。**默认关。**
+   *
+   * 每个时间段只有最后一个交付名额接受挑战，挑战者正反两次都赢才换人，
+   * 平局 / 翻覆 / 都不够格一律保留本地排序。这个结构在实测数据集上最多多命中 1 张、
+   * 最多少命中 5 张，所以默认关；实测结果与发布规则见
+   * dsh-v4/ab-experiment/stage3/CRITERIA-E2E.md 与 REPORT-E2E.md。
+   */
+  stage3Vlm: boolean
+  /**
+   * 阶段 3 用的跨场景判据（整份进提示词）。和 rubricFile 是两份：
+   * 阶段 2 比的是同一组连拍，阶段 3 比的是不同场景的两张。配了却读不出来会直接报错。
+   */
+  stage3RubricFile: string
+  /** 阶段 3 用的范例锚点（格式同 anchorsFile）。配了却读不出来会直接报错，不静默跑成无锚点。 */
+  stage3AnchorsFile: string
   /** 摘要里直接列 ID 的上限。 */
   maxInlineIdList: number
   /**
@@ -119,6 +136,9 @@ export const Config: z<Config> = z.object({
   rubricFile: z.string().default(''),
   allowNeither: z.boolean().default(false),
   stage2Vlm: z.boolean().default(true),
+  stage3Vlm: z.boolean().default(false),
+  stage3RubricFile: z.string().default(''),
+  stage3AnchorsFile: z.string().default(''),
   maxInlineIdList: z.number().step(1).min(0).default(60),
   evalPairsFile: z.string().default(''),
   evalPairsDir: z.string().default(''),
@@ -162,6 +182,33 @@ export function apply(ctx: Context, config: Config): void {
   const loadRubric = (): string | null =>
     config.rubricFile && existsSync(config.rubricFile)
       ? readFileSync(config.rubricFile, 'utf8').trim() || null : null
+  const loadStage3Rubric = (): string | null =>
+    config.stage3RubricFile && existsSync(config.stage3RubricFile)
+      ? readFileSync(config.stage3RubricFile, 'utf8').trim() || null : null
+
+  /**
+   * 一次用到视觉模型的 rank_photos 一个独立的运行记录目录：时间戳 + 随机后缀。
+   * **不按数据集指纹命名** —— 同一批照片每次运行指纹相同，按指纹命名就会互相覆盖
+   * （CRITERIA-STAGE3 §9.1：上一轮对照组的逐局数据就是这样丢的）。
+   */
+  function openRunDir(): string {
+    const id = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}`
+    const dir = join(config.workdir, 'runs', id)
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  /**
+   * 锚点照片里哪些也在候选池里（按文件名）。非空就不许用这份锚点：
+   * 同一张照片一边当「这个人留了 / 没留」的范例给判官看、一边又当候选去比，就是泄题。
+   * 2026-09-18 查出：生产阶段 2 的 10 张锚点与 eval-people-309-acceptance 里的同名文件逐字节相同，
+   * 而 preset 的排除清单没有排掉它们 —— 此前每次在这个目录上跑阶段 2 都在泄题。
+   */
+  function anchorsInPool(anchors: { photos: string[] } | null, pool: readonly string[]): string[] {
+    if (!anchors) return []
+    const inPool = new Set(pool)
+    return anchors.photos.filter((n) => inPool.has(n))
+  }
 
   /**
    * 锚点 → 提示词块。**生产路径和评测路径必须走这一个函数。**
@@ -329,6 +376,18 @@ export function apply(ctx: Context, config: Config): void {
         let refineNote = ''
         let vlmCalls = 0
         const plan = res.notes.tournament_plan ?? []
+        // 运行记录：阶段 2 或阶段 3 真要调模型时才建。两个都不调时一个文件都不写。
+        const runDir = (config.stage2Vlm && plan.length) || config.stage3Vlm ? openRunDir() : null
+        const startedAt = new Date().toISOString()
+        const logCall = (stage: 2 | 3) => (r: Parameters<typeof toCallRow>[0]) => {
+          if (runDir) appendFileSync(join(runDir, CALLS_FILE), JSON.stringify({ stage, ...toCallRow(r) }) + '\n', 'utf8')
+        }
+        const services: HarnessVisionServices = {
+          llm: ctx.get('llm') as unknown as HarnessVisionServices['llm'],
+          attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
+        }
+        let stage2Vf: string | undefined
+        let stage2Record: Record<string, unknown> = { status: !config.stage2Vlm ? 'off' : plan.length ? 'pending' : 'skipped' }
         if (config.stage2Vlm && plan.length) {
           try {
             const names = [...new Set(plan.flat())]
@@ -347,21 +406,29 @@ export function apply(ctx: Context, config: Config): void {
               undefined, codes,
             )
             if (missing.length) throw new Error(`${missing.length} 张缺少预览`)
-            const anchorBlock = await buildAnchorBlock(loadAnchors(), exec.signal)
-            const services: HarnessVisionServices = {
-              llm: ctx.get('llm') as unknown as HarnessVisionServices['llm'],
-              attachments: ctx.get('attachments') as unknown as HarnessVisionServices['attachments'],
+            const leak2 = anchorsInPool(loadAnchors(), res.ranking)
+            if (leak2.length) {
+              throw new Error(
+                `阶段 2 的锚点照片有 ${leak2.length} 张也在候选池里（如 ${leak2.slice(0, 3).join(' ')}）—— ` +
+                '同一张照片既当范例又当候选就是泄题。请把它们加进排除清单，或换一份锚点',
+              )
             }
+            const anchorBlock = await buildAnchorBlock(loadAnchors(), exec.signal)
             const { verdicts, route } = await comparePairs(
               plan, previews, faces, anchorBlock, loadRubric(), config.allowNeither, codes, services,
-              exec as unknown as HarnessVisionExecution,
+              exec as unknown as HarnessVisionExecution, { onCall: logCall(2) },
             )
             const vf = join(config.workdir, `verdicts-${res.fingerprint}.json`)
             writeFileSync(vf, JSON.stringify({ verdicts }))
+            // 按指纹命名的那份会被下一次覆盖；阶段 3 重排用的是运行记录里这一份。
+            const runVf = runDir ? join(runDir, 'stage2-verdicts.json') : vf
+            if (runDir) writeFileSync(runVf, JSON.stringify({ plan, route, verdicts }, null, 2))
             res = await ranker.rank(
               state.folder, target, config.excludedRelativePaths, state.labels, state.style,
               exec.signal, vf,
             )
+            stage2Vf = runVf
+            stage2Record = { status: 'ran', route, matches: plan.length }
             vlmCalls = plan.length * 2
             const flips = verdicts.filter((v) => v.winner === 'b').length
             const cons = verdicts.filter((v) => v.consistent).length
@@ -380,9 +447,80 @@ export function apply(ctx: Context, config: Config): void {
               `另外实测：同一对重复问一遍，62.8% 会改口 —— ` +
               `所以改判不一定是改对，其中相当一部分是噪声。`
           } catch (e) {
+            stage2Record = { status: 'failed', error: describeRankerFailure(e) }
             refineNote = `\n\n**阶段 2 · 视觉模型复核未执行**：${describeRankerFailure(e)}。` +
               `已回落到本地分排序（0 次调用、结果确定）。`
           }
+        }
+
+        // ── 阶段 3 的视觉对决（默认关）──────────────────────────
+        //
+        // 计划取自阶段 2 应用之后的排序，所以重排时阶段 2 的裁决要一起带上 ——
+        // 不带的话排序器重算出来的计划指纹必然对不上，会拒绝应用。
+        const deliveredAfterStage2 = [...res.selected]
+        let stage3: Stage3Outcome | null = null
+        let stage3Error = ''
+        const stage3Inputs = { rubric_chars: 0, rubric_md5: null as string | null, anchor_photos: 0 }
+        if (config.stage3Vlm && runDir) {
+          try {
+            if (stage2Record.status === 'failed') {
+              throw new Error('阶段 2 视觉复核这次没有执行成功，阶段 3 不开跑（计划会建立在另一份排序上）')
+            }
+            const s3Rubric = loadStage3Rubric()
+            if (config.stage3RubricFile && !s3Rubric) throw new Error(`阶段 3 判据文件读不出来：${config.stage3RubricFile}`)
+            const s3Anchors = config.stage3AnchorsFile ? readAnchors(config.stage3AnchorsFile) : null
+            if (config.stage3AnchorsFile && !s3Anchors) throw new Error(`阶段 3 锚点文件读不出来：${config.stage3AnchorsFile}`)
+            // 实际用了什么写进运行记录 —— 事后核「这一组是不是真的没带 / 带了 rubric 和锚点」只能靠它。
+            stage3Inputs.rubric_chars = s3Rubric?.length ?? 0
+            stage3Inputs.rubric_md5 = s3Rubric ? createHash('md5').update(s3Rubric).digest('hex') : null
+            stage3Inputs.anchor_photos = s3Anchors?.photos.length ?? 0
+            const leak3 = anchorsInPool(s3Anchors, res.ranking)
+            if (leak3.length) {
+              throw new Error(
+                `阶段 3 的锚点照片有 ${leak3.length} 张也在候选池里（如 ${leak3.slice(0, 3).join(' ')}）—— ` +
+                '同一张照片既当范例又当候选就是泄题。请把它们加进排除清单，或换一份锚点',
+              )
+            }
+            const folderNow = state.folder
+            stage3 = await runStage3({
+              before: res, folder: folderNow, exclude: config.excludedRelativePaths,
+              rubric: s3Rubric, anchors: s3Anchors, allowNeither: config.allowNeither, services,
+              exec: exec as unknown as HarnessVisionExecution, runDir,
+            }, {
+              preview: ranker.preview.bind(ranker),
+              buildAnchorBlock,
+              rank: (s3File) => ranker.rank(
+                folderNow, target, config.excludedRelativePaths, state.labels, state.style,
+                exec.signal, stage2Vf, s3File,
+              ),
+            })
+            res = stage3.result
+            vlmCalls += stage3.comparisons
+          } catch (e) {
+            stage3Error = describeRankerFailure(e)
+          }
+        }
+        if (runDir) {
+          writeFileSync(join(runDir, 'run.json'), JSON.stringify({
+            run_id: basename(runDir), fingerprint: res.fingerprint,
+            started_at: startedAt, finished_at: new Date().toISOString(),
+            target, style: state.style,
+            config: {
+              stage2Vlm: config.stage2Vlm, rubricFile: config.rubricFile, anchorsFile: config.anchorsFile,
+              allowNeither: config.allowNeither, stage3Vlm: config.stage3Vlm,
+              stage3RubricFile: config.stage3RubricFile, stage3AnchorsFile: config.stage3AnchorsFile,
+            },
+            stage2: { ...stage2Record, anchor_photos: config.stage2Vlm ? (loadAnchors()?.photos.length ?? 0) : 0 },
+            stage3_inputs: config.stage3Vlm ? stage3Inputs : null,
+            stage3: !config.stage3Vlm ? { status: 'off' }
+              : stage3 ? { status: stage3.note ? 'ran' : 'no_contests', route: stage3.route, plan: stage3.plan,
+                           plan_md5: stage3.planMd5, comparisons: stage3.comparisons, preflights: stage3.preflights,
+                           note: stage3.note }
+              : { status: 'failed', error: stage3Error, plan: res.notes.stage3_plan ?? [],
+                  plan_md5: res.notes.stage3_plan_md5 ?? null },
+            delivered_after_stage2: deliveredAfterStage2,
+            delivered_final: res.selected,
+          }, null, 2))
         }
 
         const ids = IdentityMap.load(config.workdir, res.fingerprint)
@@ -390,6 +528,33 @@ export function apply(ctx: Context, config: Config): void {
         state.ids = ids
         state.fingerprint = res.fingerprint
         state.last = res
+
+        let stage3Text = ''
+        if (config.stage3Vlm) {
+          if (stage3?.note) {
+            const nt = stage3.note
+            const kept2 = new Set(deliveredAfterStage2)
+            const final3 = new Set(res.selected)
+            const swaps = stage3.plan
+              .filter((x) => kept2.has(x.a) && !final3.has(x.a) && final3.has(x.b))
+              .map((x) => `段 ${x.segment}：${ids.id(x.a)} → ${ids.id(x.b)}`)
+            const notSwapped = nt.contests - nt.swapped
+            stage3Text =
+              `\n\n**阶段 3 · 段内边缘名额的视觉对决**（${stage3.route}）：${nt.contests} 局，` +
+              `比较调用 ${stage3.comparisons} 次，换人 ${nt.swapped} 局` +
+              (swaps.length ? `（${swaps.join('；')}）` : '') + `。\n` +
+              `没换的 ${notSwapped} 局：在位那张赢 ${nt.kept_a} · 平局 ${nt.kept_tie} · ` +
+              `两张都不够格 ${nt.kept_neither} · 正反两次答案不一致 ${nt.kept_inconsistent}` +
+              (nt.refused_family_cap ? ` · 换了会超同组上限 ${nt.refused_family_cap}` : '') +
+              (nt.missing ? ` · 没判 ${nt.missing}` : '') + `。\n` +
+              `规则：挑战者正反两次都赢才换人，其余保留本地排序。换了人不代表换得更好。\n` +
+              `运行记录：${runDir}`
+          } else if (stage3 && !stage3.plan.length) {
+            stage3Text = `\n\n**阶段 3 · 视觉对决**：这批照片没有可以挑战的边缘名额，0 次调用。`
+          } else if (stage3Error) {
+            stage3Text = `\n\n**阶段 3 · 视觉对决未执行**：${stage3Error}。名单保留阶段 3 之前的结果。`
+          }
+        }
 
         const n = res.notes
         const styleText = state.style === 'mood'
@@ -432,9 +597,12 @@ export function apply(ctx: Context, config: Config): void {
             // 一次真实运行花了 114 次调用，而 agent 照旧告诉用户「0 次、全在本机算完」——
             // 等于把成本瞒了下来。人设里另有五处同样的写死，一并清了。
             (vlmCalls > 0
-              ? `**付费模型调用 ${vlmCalls} 次** —— 阶段 2 的组内比较用了视觉模型。\n`
+              ? `**付费模型调用 ${vlmCalls} 次** —— ${[
+                  stage2Record.status === 'ran' ? '阶段 2 的组内比较' : '',
+                  stage3?.comparisons ? '阶段 3 的边缘对决' : '',
+                ].filter(Boolean).join('与')}用了视觉模型。\n`
               : `**付费模型调用 0 次** —— 全程在本机算完。\n`) +
-            warn + gateNote + capNote + refineNote + `\n\n` +
+            warn + gateNote + capNote + refineNote + stage3Text + `\n\n` +
             `选出 ${res.selected.length} 张，分布在 ${famCount} 个不同场景组：\n${rows}\n\n` +
             `分数是标准化后的相对值，不是绝对质量分：+1.8 表示明显高于这批照片的平均水平。\n` +
             `想看某几张为什么入选、或边界上差了什么，调 explain_ranking。`,

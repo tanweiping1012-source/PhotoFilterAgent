@@ -91,8 +91,11 @@ def test_计划指纹对不上就拒绝():
 
 def test_裁决里有候选池外的照片就报错():
     _, _, _, plan = _run()
-    with pytest.raises(ValueError, match="不在候选池里"):
+    # 接住任何异常再断言类型与原因：检查被删掉时会变成 KeyError 崩出来，那种红不算测试抓到。
+    with pytest.raises(Exception) as ei:
         _run({("NOPE.JPG", "DSCF9406.JPG"): "b"}, plan.plan_md5)
+    assert isinstance(ei.value, ValueError) and "不在候选池里" in str(ei.value), \
+        f"应当明确报出候选池外的照片，实际是 {type(ei.value).__name__}: {ei.value}"
 
 
 def test_不属于这份计划的裁决记为unused():

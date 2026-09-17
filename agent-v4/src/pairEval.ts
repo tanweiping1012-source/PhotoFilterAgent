@@ -100,7 +100,8 @@ export const partialPathOf = (outPath: string): string => `${outPath}.partial.js
  */
 export const callsPathOf = (outPath: string): string => `${outPath}.calls.jsonl`
 
-function toCallRow(r: VisionCallRecord) {
+/** 把 transport 的调用记录转成 calls.jsonl 的一行。阶段 3 的运行记录复用同一种行格式（另加 stage）。 */
+export function toCallRow(r: VisionCallRecord) {
   return {
     ts: r.startedAt,
     elapsed_ms: r.elapsedMs,
