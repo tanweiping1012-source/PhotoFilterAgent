@@ -123,3 +123,6 @@ jobs:
           node --experimental-transform-types src/ranker.test.ts
           node --experimental-strip-types src/pairEval.test.ts
           node --experimental-strip-types src/stage3.test.ts
+          # rank_photos 闭包的接线（运行记录、交付名单、摘要、调用计数）。要起一个假排序器子进程，
+          # 所以跟着 ranker.ts 一样用 transform-types；ubuntu-latest 自带 python3，假排序器只用标准库。
+          node --experimental-transform-types src/rankPhotos.wiring.test.ts
