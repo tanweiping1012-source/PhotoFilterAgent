@@ -160,6 +160,9 @@ def main(argv: list[str] | None = None) -> int:
     p_pick.add_argument("--json", type=Path, default=None, help="把完整结果写到这个文件")
     p_pick.add_argument("--verdicts", type=Path, default=None,
                         help="VLM 复核的裁决（TS 侧跑完回传）。用它替换组内名次后重出名单")
+    p_pick.add_argument("--stage3-verdicts", type=Path, default=None,
+                        help="阶段 3 段内对决的裁决（TS 侧跑完回传，须带 plan_md5）。"
+                             "计划指纹对不上就拒绝，退出码 2")
 
     p_eval = sub.add_parser("eval", help="有人工答案时，测排序器到底行不行")
     _common(p_eval)
@@ -411,7 +414,19 @@ def main(argv: list[str] | None = None) -> int:
 
             judge = ReplayJudge(vd, LocalJudge({}))
 
-        res = rank_folder(cfg, verbose, judge)
+        from .stage3 import Stage3PlanMismatch, load_stage3_verdicts
+        s3_md5, s3_verdicts = None, None
+        if getattr(a, "stage3_verdicts", None):
+            try:
+                s3_md5, s3_verdicts = load_stage3_verdicts(json.loads(a.stage3_verdicts.read_text()))
+            except (OSError, ValueError, KeyError) as e:
+                print(f"阶段 3 裁决文件不可用：{e}", file=sys.stderr)
+                return 2
+        try:
+            res = rank_folder(cfg, verbose, judge, s3_verdicts, s3_md5)
+        except Stage3PlanMismatch as e:
+            print(str(e), file=sys.stderr)
+            return 2
 
         check_verdicts_applied(judge, res.notes)
 
@@ -426,6 +441,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n资格门拦下 {res.notes['n_blocked']} 张闭眼照（仍留在候选池里，只是不进名单）")
         if res.notes.get("relaxed"):
             print(f"\n⚠ 同组上限从 {cfg.family_cap} 放宽到 {res.notes['family_cap_used']} 才凑满 {a.target} 张")
+        s3 = res.notes.get("stage3")
+        if s3 is not None:
+            print(f"\n阶段 3：{s3['contests']} 局对决，换人 {s3['swapped']} 局；不换 —— 擂主赢 {s3['kept_a']} · "
+                  f"平局 {s3['kept_tie']} · 都不够格 {s3['kept_neither']} · 翻覆 {s3['kept_inconsistent']} · "
+                  f"没跑 {s3['missing']} · 破同组上限被拒 {s3['refused_family_cap']}")
         if a.json:
             a.json.write_text(result_to_json(res))
             print(f"\n完整结果 → {a.json}")

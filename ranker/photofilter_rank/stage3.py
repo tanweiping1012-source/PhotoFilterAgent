@@ -64,10 +64,12 @@ CRITERIA-STAGE3.md §7.2 推翻：金标在 10 个段里的分布叠上段配额
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 
 from .dedupe import segment_of, select_spread
-from .pipeline import Verdict
+from .pipeline import Verdict, load_verdicts
 
 #: 仲裁排序前把 margin 量化到这么多位小数。见 apply_stage3_verdicts 的「量化那一步」。
 _MARGIN_NDIGITS = 6
@@ -367,3 +369,87 @@ def _check_invariants(
             f"换人跨了段，段配额不再与基线一致：{{段号: (换前, 换后)}} = {moved}。"
             f"对决必须在段内进行 —— 挑战者和擂主不在同一段说明对决表算错了。"
         )
+
+
+# ━━ 产品接线：出计划 → TS 侧判 → 带着计划指纹回来应用 ━━━━━━━━━━━━━━━━━━━━━━━
+
+def plan_md5(pairs: list[list[str]]) -> str:
+    """对局计划的指纹：紧凑 JSON 的 `[[甲, 乙], ...]`（文件名带后缀）取 md5。
+
+    与 CRITERIA-STAGE3.md §3.2 的冻结对局表是同一种序列化，
+    所以产品路径算出来的指纹可以直接和预登记的 md5 比。
+    """
+    return hashlib.md5(json.dumps(pairs, separators=(",", ":")).encode()).hexdigest()
+
+
+class Stage3PlanMismatch(ValueError):
+    """裁决是针对另一份对局计划判的。应用它会把换人打在一个并不存在的名额上。"""
+
+
+def load_stage3_verdicts(raw: dict) -> tuple[str, dict[tuple[str, str], Verdict]]:
+    """校验 TS 侧回传的阶段 3 裁决文件，返回（计划指纹, 裁决表）。
+
+    文件必须带 `plan_md5`：出计划和应用裁决是两次独立的排序器进程，
+    中间隔着几十次模型调用，任何一个输入变了（照片增删、排除清单、打分改动），
+    第二次算出的计划就可能和第一次不同 —— 而 apply_stage3_verdicts 只会在擂主
+    不在名单里时报错，挑战者变了它查不出来。winner 的取值校验复用 pipeline.load_verdicts。
+    """
+    md5 = raw.get("plan_md5")
+    if not isinstance(md5, str) or len(md5) != 32:
+        raise ValueError(
+            f"阶段 3 裁决文件缺少合法的 plan_md5（收到 {md5!r}）。"
+            f"它应当原样抄自出计划那一次 pick 输出的 notes.stage3_plan_md5。"
+        )
+    return md5, load_verdicts(raw)
+
+
+@dataclass(frozen=True)
+class Stage3Outcome:
+    """一次阶段 3 的结果。`note` 为 None 表示这一轮没有给裁决（只出了计划）。"""
+
+    picked: list[int]
+    plan: list[dict]
+    plan_md5: str
+    note: dict | None
+
+
+def run_stage3(
+    eligible: list[int], families: list[int], score: list[float], names: list[str],
+    target: int, family_cap: int, segments: int, picked: list[int],
+    verdicts: dict[tuple[str, str], Verdict] | None = None,
+    expected_md5: str | None = None,
+) -> Stage3Outcome:
+    """出阶段 3 的对局计划；给了裁决就应用。rank_folder 只调这一个函数。
+
+    参数与 rank_folder 里 select_spread 的入参**逐个相同**，`picked` 必须是那次
+    select_spread 的输出 —— stage3_contests 会自己再算一遍基线，
+    apply_stage3_verdicts 会核对擂主在名单里。
+
+    没给裁决：`picked` 原样返回，只多出计划。给了裁决：
+        计划指纹 ≠ expected_md5       → Stage3PlanMismatch
+        裁决里有候选池外的文件名       → ValueError
+        其余照 apply_stage3_verdicts 的规则换人，note 另加 `unused`
+        （裁决表里不属于这份计划的对数 —— 正常应为 0）
+    """
+    contests = stage3_contests(eligible, families, score, len(names), target, family_cap, segments)
+    plan = [{"segment": c.segment, "a": names[c.defender], "b": names[c.challenger],
+             "margin": round(c.margin, _MARGIN_NDIGITS)} for c in contests]
+    md5 = plan_md5([[x["a"], x["b"]] for x in plan])
+    if verdicts is None:
+        return Stage3Outcome(list(picked), plan, md5, None)
+    if expected_md5 != md5:
+        raise Stage3PlanMismatch(
+            f"阶段 3 裁决对应的计划指纹是 {expected_md5}，这一次重算出来的是 {md5}。"
+            f"两次排序之间输入变了（照片、排除清单、标注或打分），裁决不能用在这份名单上。"
+            f"重新出计划、重新判。"
+        )
+    idx = {n: i for i, n in enumerate(names)}
+    unknown = sorted({x for pair in verdicts for x in pair if x not in idx})
+    if unknown:
+        raise ValueError(f"阶段 3 裁决里有不在候选池里的照片：{unknown[:3]}")
+    vidx = {(idx[a], idx[b]): w for (a, b), w in verdicts.items()}
+    final, note = apply_stage3_verdicts(list(picked), contests, vidx, families,
+                                        len(names), family_cap, segments)
+    in_plan = {(c.defender, c.challenger) for c in contests} | {(c.challenger, c.defender) for c in contests}
+    note["unused"] = sum(1 for k in vidx if k not in in_plan)
+    return Stage3Outcome(final, plan, md5, note)

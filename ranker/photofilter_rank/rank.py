@@ -21,6 +21,7 @@ from .pipeline import (Judge, LocalJudge, attach_local_fallback, stage2_reorder,
                        tournament_plan, verdict_accounting)
 from .quality import cold_start_score, local_quality, zscore
 from .scan import build_cache, fingerprint, list_photos
+from .stage3 import run_stage3
 from .taste import TasteProbe, label_concentration
 
 
@@ -60,7 +61,10 @@ def _load_labels(path: Path | None, names: list[str]) -> list[str]:
     return sorted(wanted & known)
 
 
-def rank_folder(cfg: RankConfig, verbose: bool = True, judge: Judge | None = None) -> RankResult:
+def rank_folder(
+    cfg: RankConfig, verbose: bool = True, judge: Judge | None = None,
+    stage3_verdicts: dict | None = None, stage3_plan_md5: str | None = None,
+) -> RankResult:
     t0 = time.time()
     device = cfg.resolve_device()
 
@@ -238,6 +242,21 @@ def rank_folder(cfg: RankConfig, verbose: bool = True, judge: Judge | None = Non
     else:
         picked, cap_note = select_with_cap(eligible, families, k, cfg.family_cap)
 
+    # --- 阶段 3：段内边缘对决 ---
+    #
+    # 每段只有最后一个名额接受挑战（见 stage3.py 模块说明）。计划每次都出（0 次调用），
+    # 裁决只在 TS 侧跑完模型、带着计划指纹回来时才应用 —— 不给裁决时 picked 原样不动。
+    # 没有段配额（time_segments=0）就没有「段内边缘名额」，也就没有阶段 3。
+    stage3 = None
+    if cfg.time_segments > 0:
+        stage3 = run_stage3(
+            eligible, list(families), [float(x) for x in final], names, k,
+            cfg.family_cap, cfg.time_segments, picked, stage3_verdicts, stage3_plan_md5,
+        )
+        picked = stage3.picked
+    elif stage3_verdicts is not None:
+        raise ValueError("给了阶段 3 裁决，但 time_segments=0：没有段配额就没有阶段 3 对决。")
+
     # VLM 复核计划：哪些对局值得花钱让模型再判一次。
     #
     # 只挑「冠军进了最终名单」且「本地分前两名咬得紧」的组 ——
@@ -267,6 +286,11 @@ def rank_folder(cfg: RankConfig, verbose: bool = True, judge: Judge | None = Non
         "stage2_verdicts_missing": verdict_acct["missing"] if verdict_acct else None,
         "stage2_verdicts_unused": verdict_acct["unused"] if verdict_acct else None,
         "stage2_judge": (judge.name if judge else ("local" if cfg.stage2 else "off")),
+        # 阶段 3。计划与指纹每次都有；stage3 是换人计数，没给裁决时为 None（不是全 0）。
+        "stage3_plan": stage3.plan if stage3 else [],
+        "stage3_plan_md5": stage3.plan_md5 if stage3 else None,
+        "stage3": stage3.note if stage3 else None,
+        "stage3_judge": "replay" if stage3_verdicts is not None else "off",
         "cold_strategy": cold_strategy,
         "unvalidated_domain": unvalidated_domain,
         "style": cfg.style,
