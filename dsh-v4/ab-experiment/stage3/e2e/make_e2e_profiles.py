@@ -20,10 +20,12 @@
   · 锚点文件必须与 calib-arm3 spec 的 anchors 在 folder / text / photos / labels 上逐项相同，
     不许残留 @@ 占位符，8 张照片在 folder 下各找到恰好 1 张
   · 排除清单（excludedRelativePaths）是 preset 层的键，写在 profile 里不生效 —— 实验期的排除改在 preset（修订 2.1），不在这里
-  · **这一版只做 dry-run**：--out-dir 落在 ~/.dsh-v4/profiles 里就拒绝；目标目录已存在也拒绝，不覆盖。部署是另一个决定
+  · **默认只做 dry-run**：--out-dir 落在 ~/.dsh-v4/profiles 里就拒绝。要部署得显式给 --deploy，
+    而且 --deploy 只认 profiles 根目录本身（写进它下面某一层，DSH 按名字找不到）。两种模式都不覆盖已存在的目录
 
 用法：
   python3 make_e2e_profiles.py --out-dir <scratch> --rubric-file <rubric> --anchors-file <锚点>
+  python3 make_e2e_profiles.py --out-dir ~/.dsh-v4/profiles --deploy --rubric-file <rubric> --anchors-file <锚点>
 变异验证：validate_make_e2e_profiles.py
 """
 from __future__ import annotations
@@ -153,14 +155,18 @@ def main() -> int:
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--rubric-file", type=Path, required=True)
     ap.add_argument("--anchors-file", type=Path, required=True)
+    ap.add_argument("--deploy", action="store_true", help="写进 ~/.dsh-v4/profiles（部署）。不给就是 dry-run")
     ap.add_argument("--src", type=Path, default=SRC, help="源 profile（只给验证脚本换成副本用）")
     ap.add_argument("--calib-dir", type=Path, default=CALIB, help="第三轮标定 spec 所在目录（只给验证脚本换成副本用）")
     args = ap.parse_args()
 
     out = args.out_dir.expanduser().resolve()
     profiles = PROFILES.resolve()
-    if out == profiles or profiles in out.parents:
-        raise SystemExit(f"dry-run：拒绝写进 {PROFILES}（部署是另一个决定）")
+    inside = out == profiles or profiles in out.parents
+    if inside and not args.deploy:   # 守卫：不写 profiles
+        raise SystemExit(f"dry-run：拒绝写进 {PROFILES}（要部署就显式给 --deploy）")
+    if args.deploy and out != profiles:   # 守卫：部署只认 profiles 根目录
+        raise SystemExit(f"--deploy 只能写 {PROFILES} 本身，收到 {out} —— 写进它下面某一层，DSH 按名字找不到这几份 profile")
 
     patch = (args.src / "cordis.patch.yml").read_text(encoding="utf-8")
     pkg = (args.src / "package.json").read_text(encoding="utf-8")
@@ -199,7 +205,7 @@ def main() -> int:
         for f in ("cordis.yml", "pnpm-workspace.yaml"):
             shutil.copy2(args.src / f, d / f)
 
-    print(f"✅ 四份 profile 写到 {out}（dry-run）")
+    print(f"✅ 四份 profile 写到 {out}（{'部署' if args.deploy else 'dry-run'}）")
     print(f"   rubric {rubric_path}：{rubric_len} 字 · md5 {rubric_md5} · 与 calib-arm2 spec 逐字相同 · trim() 前后不变")
     print(f"   锚点 {anchors_path}：{n_anchors} 张 · md5 {anchors_md5} · 与 calib-arm3 spec 逐项相同 · 照片都找到")
     print(f"   源 {args.src}：patch md5 {md5(patch.encode('utf-8'))}")
@@ -211,6 +217,10 @@ def main() -> int:
         print(f"   {group:<2} {name:<16} stage3Vlm={vals['stage3Vlm']:<5} rubric={rubric_mark} 锚点={anchors_mark}"
               f" · patch md5 {md5(p.encode('utf-8'))}")
     print("   自检：去掉插入的几行后四份都与 photo-v4 逐字节相同；三个键各一行、值与组别一致")
+    print("   每份的文件 md5（拿去和 dump-config 对）：")
+    for name, _, _ in built.values():
+        for f in sorted(x.name for x in (out / name).iterdir()):
+            print(f"     {name}/{f:<18} {md5((out / name / f).read_bytes())}")
     return 0
 
 

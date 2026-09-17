@@ -28,7 +28,8 @@ NAMES = ("photo-v4-e2e-a", "photo-v4-e2e-b1", "photo-v4-e2e-b2", "photo-v4-e2e-b
 
 # 生成器源码里的原文，变异按它们打。每条必须恰好出现一次，否则变异打偏了也看不出来
 PROFILES_LINE = 'PROFILES = HOME / ".dsh-v4/profiles"\n'
-PROFILES_GUARD = "    if out == profiles or profiles in out.parents:\n"
+PROFILES_GUARD = "    if inside and not args.deploy:   # 守卫：不写 profiles\n"
+DEPLOY_GUARD = "    if args.deploy and out != profiles:   # 守卫：部署只认 profiles 根目录\n"
 GUARD1 = "        if strip_block(p) != patch:\n"
 GUARD2 = "            if len(found) != 1 or found[0][1].strip() != val:\n"
 BUILD_RETURN = "    return base[:m.end()] + block + base[m.end():]\n"
@@ -38,10 +39,10 @@ VLM_LINE = "        f\"{indent}stage3Vlm: {'true' if vlm else 'false'}\",\n"
 VLM_ALWAYS_TRUE = "        f\"{indent}stage3Vlm: true\",\n"
 
 
-def run(gen: Path, root: Path, out: Path, calib: Path = CALIB) -> tuple[int, str]:
+def run(gen: Path, root: Path, out: Path, calib: Path = CALIB, extra=()) -> tuple[int, str]:
     p = subprocess.run([sys.executable, str(gen), "--src", str(root / "src"), "--out-dir", str(out),
                         "--rubric-file", str(root / "rubric.txt"), "--anchors-file", str(root / "anchors.json"),
-                        "--calib-dir", str(calib)], capture_output=True, text=True)
+                        "--calib-dir", str(calib), *extra], capture_output=True, text=True)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -208,6 +209,28 @@ def main() -> int:
             wrote = any(fake_profiles.rglob("cordis.patch.yml"))
             rows.append((name, rc != 0 and "拒绝写进" in text and not wrote and "Traceback" not in text,
                          f"exit {rc}" + ("，profiles 下写出了东西" if wrote else "") + f" | {last_line(text)}"))
+        # --deploy：只认 profiles 根目录本身；给对了就真写
+        root = setup(tmp, f"fp-{len(rows)}", args.rubric_file, args.anchors_file)
+        rc, text = run(gen_fp, root, fake_profiles / "sub", extra=["--deploy"])
+        rows.append(("--deploy 指到 profiles 下面某一层 → 拒绝",
+                     rc != 0 and "只能写" in text and not any(fake_profiles.rglob("cordis.patch.yml")) and "Traceback" not in text,
+                     f"exit {rc} | {last_line(text)}"))
+        root = setup(tmp, f"fp-{len(rows)}", args.rubric_file, args.anchors_file)
+        rc, text = run(gen_fp, root, fake_profiles, extra=["--deploy"])
+        deployed = all((fake_profiles / n / "cordis.patch.yml").exists() for n in NAMES)
+        rows.append(("--deploy 指到 profiles 本身 → 四份都写出来、打印每个文件的 md5",
+                     rc == 0 and deployed and "部署" in text and "md5" in text and "Traceback" not in text,
+                     f"exit {rc}，四份齐全={deployed} | {last_line(text)}"))
+        root = setup(tmp, f"fp-{len(rows)}", args.rubric_file, args.anchors_file)
+        rc, text = run(gen_fp, root, fake_profiles, extra=["--deploy"])
+        rows.append(("再部署一次 → 拒绝覆盖", rc != 0 and "不覆盖" in text and "Traceback" not in text,
+                     f"exit {rc} | {last_line(text)}"))
+        root = setup(tmp, f"fp-{len(rows)}", args.rubric_file, args.anchors_file)
+        rc, text = run(mutant_gen(tmp, "no-deploy-guard", point, (DEPLOY_GUARD, "    if False:\n")),
+                       root, fake_profiles / "sub2", extra=["--deploy"])
+        rows.append(("去掉「部署只认根目录」守卫 → 写进了下面一层",
+                     rc == 0 and (fake_profiles / "sub2" / NAMES[0] / "cordis.patch.yml").exists(),
+                     f"exit {rc} | {last_line(text)}"))
         root = setup(tmp, f"fp-{len(rows)}", args.rubric_file, args.anchors_file)
         rc, text = run(mutant_gen(tmp, "no-profiles-guard", point, (PROFILES_GUARD, "    if False:\n")), root, fake_profiles / "y")
         wrote = (fake_profiles / "y" / NAMES[0] / "cordis.patch.yml").exists()
