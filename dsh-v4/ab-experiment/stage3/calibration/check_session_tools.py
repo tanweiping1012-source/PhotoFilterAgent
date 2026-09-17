@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """冒烟 / 正式运行之后，核这次会话实际挂了哪个 preset、agent 实际调了哪些工具。0 次调用。
 
+    评测那两遍（run_pair_eval）：
     python check_session_tools.py <session 目录> --mode smoke|full --pairs <考题文件名>
         --since <发起运行前记下的时间> --expect-out <这一遍归档的结果文件> --out-under <archive 目录>
+
+    第四轮端到端 A/B 的每一次运行（scan_folder + rank_photos，判据 CRITERIA-E2E 修订 2.9）：
+    python check_session_tools.py <session 目录> --mode rank --since <…>
+        --folder <本轮写死的扫描目录> [--target 20] [--style quality]
 
 退出码：0 全对 · 1 只有不花钱的多余调用（警告）· 2 **停**（多花了钱、跑的不是该跑的那一遍、核的不是这次的会话、
         挂错了 preset，或者**检查脚本自己出错了** —— 崩溃和 SystemExit("…") 默认也是 1，已统一改成 2）
@@ -20,8 +25,14 @@
     subagent 这种自己会花钱的也只是警告，因为它只出现在别的 preset 里，那种会话已经被上面 preset 那条停下
     ⚠️ 推导靠的是注册块里的**字面量** ctx.get('llm')：代码一改（比如取 services 包成 helper），
     清单可能悄悄漏工具 —— 所以被测代码每合并一次，都要先重跑 validate_check_session_tools.py
-  · run_pair_eval 本身也要数：每次运行**正好 1 次**。多一次就是多一遍 19×2=38 次调用
+  · 这一遍**该调的工具**本身也要数：每个**正好 1 次**。smoke/full 是 run_pair_eval（多一次就是多一遍
+    19×2=38 次调用）；rank 是 scan_folder + rank_photos（多一次 rank_photos 就是多一整轮阶段 2/3 的调用）
   · 冒烟必须 limit=1；全量必须不带 limit
+  · rank 模式另外三条：scan_folder 必须排在 rank_photos **之前**（index.ts 硬性要求，顺序反了说明这次运行
+    不是照指令走的）；scan_folder 的目录必须就是本轮写死的那个；rank_photos 的 style/target 给了就必须与本组
+    相同 —— **没给不算错**（用 profile 的 defaultTarget 与默认 quality），但会单独打一行，因为那时这两个值
+    由 profile 决定，要去 profile 那边核
+  · 模式与参数必须配套：`--mode rank` 给了 `--pairs` 之类就停。参数给串了却照样打印「✅」是最坏的结果
   · pairs 必须是这一遍的考题文件，**三遍都要显式传**（第一遍漏传虽然会落回同一个文件，也照样停）——
     漏传会静默落回 evalPairsFile（第一遍），第二、三遍就等于把第一遍又跑了一次
   · out 必须**就是**这一遍归档的那个结果文件，并且在 archive 目录下，不许落进 /tmp
@@ -104,12 +115,29 @@ def fmt_ms(ms: int | None) -> str:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("session", type=Path)
-    ap.add_argument("--mode", choices=["smoke", "full"], required=True)
-    ap.add_argument("--pairs", required=True, help="这一遍的考题文件名，如 calib-arm2-rubric.json")
+    ap.add_argument("--mode", choices=["smoke", "full", "rank"], required=True)
     ap.add_argument("--since", required=True, help="发起这次运行之前记下的时间：ISO（2026-09-14T20:30:00）或 epoch 毫秒")
-    ap.add_argument("--expect-out", type=Path, required=True, help="这一遍归档的结果文件")
-    ap.add_argument("--out-under", type=Path, required=True)
+    # 评测那两遍（run_pair_eval）
+    ap.add_argument("--pairs", help="这一遍的考题文件名，如 calib-arm2-rubric.json")
+    ap.add_argument("--expect-out", type=Path, help="这一遍归档的结果文件")
+    ap.add_argument("--out-under", type=Path)
+    # 端到端那一遍（scan_folder + rank_photos）
+    ap.add_argument("--folder", type=Path, help="rank 模式：本轮写死的扫描目录")
+    ap.add_argument("--target", type=int, default=20, help="rank 模式：rank_photos 的 target（默认 20）")
+    ap.add_argument("--style", default="quality", help="rank 模式：rank_photos 的 style（默认 quality）")
     a = ap.parse_args(argv)
+
+    # 模式与参数必须配套。少一个就核不了那一项，而少了却照样打印「✅」是最坏的结果
+    need = {"smoke": ("pairs", "expect_out", "out_under"), "full": ("pairs", "expect_out", "out_under"),
+            "rank": ("folder",)}[a.mode]
+    dash = lambda k: "--" + k.replace("_", "-")
+    miss = [dash(k) for k in need if getattr(a, k) is None]
+    if miss:   # 守卫：模式与参数配套
+        raise SystemExit(f"--mode {a.mode} 需要 {' '.join(miss)}")
+    extra = [dash(k) for k in ("pairs", "expect_out", "out_under", "folder")
+             if k not in need and getattr(a, k) is not None]
+    if extra:
+        raise SystemExit(f"--mode {a.mode} 用不上 {' '.join(extra)} —— 给了说明模式选错了，核的不是这一遍")
 
     paid, every = paid_tools()
     recs = load_records(a.session)
@@ -123,38 +151,69 @@ def main(argv=None) -> int:
     print(f"注册的工具 {len(every)} 个；推出来会花钱的 {sorted(paid)}")
     print(f"本会话 tool/call {len(calls)} 次：{dict(names)}")
 
-    stop, warn = [], []
+    stop, warn, note = [], [], []
     since_ms = to_ms(a.since)
     if t0 is None or t0 < since_ms:   # 守卫：会话时间
         stop.append(f"会话最早一条记录 {fmt_ms(t0)} 早于 --since {fmt_ms(since_ms)}（或没有时间戳）—— 这不是这次运行的会话")
     if preset != PRESET:   # 守卫：preset
         stop.append(f"会话实际挂的 preset 是 {preset!r}，应为 {PRESET!r} —— 别的 preset（比如默认的 cordis）"
                     f"自带 bash / read / write / subagent 这类工具，profile 管不到；headless 会话没有 preset，也不算")
-    other_paid = sorted({n for n in names if n in paid and n != "run_pair_eval"})
+    # 这一遍该调的工具。评测那两遍只有 run_pair_eval；端到端那一遍是「先扫描、再排序」两件事
+    planned = ("scan_folder", "rank_photos") if a.mode == "rank" else ("run_pair_eval",)
+    other_paid = sorted({n for n in names if n in paid and n not in planned})
     if other_paid:
         stop.append(f"调了计划外的花钱工具 {other_paid}（各 {[names[n] for n in other_paid]} 次）")
-    rpe = [args for n, args in calls if n == "run_pair_eval"]
-    if len(rpe) != 1:
-        stop.append(f"run_pair_eval 调了 {len(rpe)} 次，应当正好 1 次（多一次就是多 38 次调用）")
-    for args in rpe:
-        if "__unparsable__" in args:
-            stop.append("run_pair_eval 的参数解析不出来，核不了 —— 停")
-            continue
-        lim = args.get("limit")
-        if a.mode == "smoke" and lim != 1:
-            stop.append(f"冒烟必须 limit=1，实际 limit={lim!r}")
-        if a.mode == "full" and lim not in (None, 0):
-            stop.append(f"全量不许带 limit，实际 limit={lim!r}")
-        if args.get("pairs") != a.pairs:
-            stop.append(f"pairs 应为 {a.pairs}，实际 {args.get('pairs')!r} —— 三遍都必须显式传；漏传会静默落回第一遍的考题")
-        out = str(args.get("out") or "")
-        out_res = Path(out).expanduser().resolve() if out else None
-        if out_res is None or out_res != a.expect_out.expanduser().resolve():   # 守卫：结果文件
-            stop.append(f"out 应就是归档的结果文件 {a.expect_out}，实际 {out!r}")
-        root = str(a.out_under.expanduser().resolve())
-        if out_res is None or not str(out_res).startswith(root + "/"):
-            stop.append(f"out 应在 {root}/ 下，实际 {out!r}")
-    free_extra = sorted({n for n in names if n not in paid})
+    for tool in planned:
+        if names[tool] != 1:   # 守卫：该调的工具各正好 1 次
+            stop.append(f"{tool} 调了 {names[tool]} 次，应当正好 1 次"
+                        + ("（多一次就是多 38 次调用）" if tool == "run_pair_eval"
+                           else "（多一次 rank_photos 就是多跑一整轮阶段 2/3）" if tool == "rank_photos" else ""))
+    args_of = lambda tool: [args for n, args in calls if n == tool]
+
+    if a.mode == "rank":
+        seq = [n for n, _ in calls if n in planned]
+        if seq[:2] != ["scan_folder", "rank_photos"]:   # 守卫：先扫描后排序
+            stop.append(f"工具顺序应当是 scan_folder → rank_photos，实际 {seq or '一次都没调'} —— "
+                        f"rank_photos 之前必须先 scan_folder（index.ts 硬性要求），顺序不对说明这次没照指令走")
+        for args in args_of("scan_folder"):
+            if "__unparsable__" in args:
+                stop.append("scan_folder 的参数解析不出来，核不了 —— 停")
+                continue
+            got = str(args.get("folder") or "")
+            if not got or Path(got).expanduser().resolve() != a.folder.expanduser().resolve():   # 守卫：扫描目录
+                stop.append(f"scan_folder 的目录应为 {a.folder}，实际 {got!r} —— 四组必须扫同一个目录")
+        for args in args_of("rank_photos"):
+            if "__unparsable__" in args:
+                stop.append("rank_photos 的参数解析不出来，核不了 —— 停")
+                continue
+            for key, want in (("style", a.style), ("target", a.target)):
+                got = args.get(key)
+                if got is None:
+                    # 没给不算错：这时用的是 profile 的默认值。但那就轮不到这里核了，单独说一句
+                    note.append(f"rank_photos 没显式给 {key}：用的是 profile 的默认值，本组应当是 {want!r} —— 去 profile 核")
+                elif got != want:   # 守卫：rank_photos 参数
+                    stop.append(f"rank_photos 的 {key} 应为 {want!r}，实际 {got!r} —— 四组的指令逐字相同，参数也应当相同")
+    else:
+        for args in args_of("run_pair_eval"):
+            if "__unparsable__" in args:
+                stop.append("run_pair_eval 的参数解析不出来，核不了 —— 停")
+                continue
+            lim = args.get("limit")
+            if a.mode == "smoke" and lim != 1:
+                stop.append(f"冒烟必须 limit=1，实际 limit={lim!r}")
+            if a.mode == "full" and lim not in (None, 0):
+                stop.append(f"全量不许带 limit，实际 limit={lim!r}")
+            if args.get("pairs") != a.pairs:
+                stop.append(f"pairs 应为 {a.pairs}，实际 {args.get('pairs')!r} —— 三遍都必须显式传；漏传会静默落回第一遍的考题")
+            out = str(args.get("out") or "")
+            out_res = Path(out).expanduser().resolve() if out else None
+            if out_res is None or out_res != a.expect_out.expanduser().resolve():   # 守卫：结果文件
+                stop.append(f"out 应就是归档的结果文件 {a.expect_out}，实际 {out!r}")
+            root = str(a.out_under.expanduser().resolve())
+            if out_res is None or not str(out_res).startswith(root + "/"):
+                stop.append(f"out 应在 {root}/ 下，实际 {out!r}")
+
+    free_extra = sorted({n for n in names if n not in paid and n not in planned})
     if free_extra:
         warn.append(f"另外调了不花钱的工具 {free_extra} —— 不多花钱，但说明 agent 没照提示词直接调")
 
@@ -162,11 +221,15 @@ def main(argv=None) -> int:
         print(f"❌ {s}")
     for w in warn:
         print(f"⚠️ {w}")
+    for x in note:
+        print(f"ℹ️ {x}")
     if stop:
         return 2
     if warn:
         return 1
-    print("✅ 这是这次运行的会话，挂的是 photo-filter-v4，只调了 1 次 run_pair_eval，参数符合这一遍")
+    done = ("只调了 1 次 scan_folder + 1 次 rank_photos，目录与参数符合本组" if a.mode == "rank"
+            else "只调了 1 次 run_pair_eval，参数符合这一遍")
+    print(f"✅ 这是这次运行的会话，挂的是 {PRESET}，{done}")
     return 0
 
 
