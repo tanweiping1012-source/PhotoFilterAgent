@@ -455,3 +455,19 @@ B3   同 B2 · 锚点 8 张
 ```
 
 §12 增加第 8 条：**运行跨越多个时间窗口，轮流跑只能减轻、不能消除时间混杂。** 每次运行的起止时间写进报告。
+
+---
+
+## 修订 3 · 2026-09-18 · 开跑前（本轮 0 次付费调用）· 可见工具数
+
+```
+来源   执行方 2026-09-18 指出；owner 核 agent-v4/src/index.ts 属实。
+性质   「怎么跑」的核对口径，不动任何指标。
+```
+
+**取代修订 2.9 的「可见工具 9 个」**：E2E 四份 profile 不带 `evalPairsFile`，`run_pair_eval` 与 `run_instrument_check`
+（index.ts 里注册在 `if (config.evalPairsFile)` 块内）不会注册，模型可见的是 **7 个**：
+`compare_within_groups` `evaluate_against_answer` `explain_ranking` `export_selection` `rank_photos` `scan_folder` `set_my_favorites`。
+第三轮标定的 9 个来自 calib-web 带了 `evalPairsFile`。
+
+核对时**以代码按该 profile 实际配置推导出的清单为准**，不写死一个数；阶段 3 接线（b622dda）没有新增工具。
