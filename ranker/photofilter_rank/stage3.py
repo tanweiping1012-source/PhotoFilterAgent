@@ -371,32 +371,48 @@ def _check_invariants(
         )
 
 
-# ━━ 产品接线：出计划 → TS 侧判 → 带着计划指纹回来应用 ━━━━━━━━━━━━━━━━━━━━━━━
+# ━━ 产品接线：出计划 → TS 侧判 → 带着计划 md5 回来应用 ━━━━━━━━━━━━━━━━━━━━━━━
 
 def plan_md5(pairs: list[list[str]]) -> str:
-    """对局计划的指纹：紧凑 JSON 的 `[[甲, 乙], ...]`（文件名带后缀）取 md5。
+    """对局计划的 md5：紧凑 JSON 的 `[[甲, 乙], ...]`（文件名带后缀）取 md5。
 
     与 CRITERIA-STAGE3.md §3.2 的冻结对局表是同一种序列化，
-    所以产品路径算出来的指纹可以直接和预登记的 md5 比。
+    所以产品路径算出来的计划 md5 可以直接和预登记的 md5 比。
     """
     return hashlib.md5(json.dumps(pairs, separators=(",", ":")).encode()).hexdigest()
 
 
-class Stage3PlanMismatch(ValueError):
+class Stage3VerdictsError(ValueError):
+    """这份阶段 3 裁决不能用在这份名单上。cli 一律翻成退出码 2 + 一行原因。
+
+    统一一个基类是因为这些错分散在两层：文件本身的毛病在 load_stage3_verdicts 里，
+    「裁决与这次重算出来的计划对不上」在 rank_folder 内部的 run_stage3 里。
+    cli 只接一个类型，新增的判定不会漏在外面变成栈回溯 + 退出码 1。
+    """
+
+
+class Stage3PlanMismatch(Stage3VerdictsError):
     """裁决是针对另一份对局计划判的。应用它会把换人打在一个并不存在的名额上。"""
 
 
-def load_stage3_verdicts(raw: dict) -> tuple[str, dict[tuple[str, str], Verdict]]:
-    """校验 TS 侧回传的阶段 3 裁决文件，返回（计划指纹, 裁决表）。
+def load_stage3_verdicts(raw: object) -> tuple[str, dict[tuple[str, str], Verdict]]:
+    """校验 TS 侧回传的阶段 3 裁决文件，返回（计划 md5, 裁决表）。
 
     文件必须带 `plan_md5`：出计划和应用裁决是两次独立的排序器进程，
     中间隔着几十次模型调用，任何一个输入变了（照片增删、排除清单、打分改动），
     第二次算出的计划就可能和第一次不同 —— 而 apply_stage3_verdicts 只会在擂主
     不在名单里时报错，挑战者变了它查不出来。winner 的取值校验复用 pipeline.load_verdicts。
+
+    入参是 `object` 而不是 `dict`：它来自磁盘上的 JSON，顶层是数组或字符串都可能，
+    那不是类型系统能保证的事。
     """
+    if not isinstance(raw, dict):
+        raise Stage3VerdictsError(
+            f"阶段 3 裁决文件的顶层应当是一个对象，收到的是 {type(raw).__name__}。"
+        )
     md5 = raw.get("plan_md5")
     if not isinstance(md5, str) or len(md5) != 32:
-        raise ValueError(
+        raise Stage3VerdictsError(
             f"阶段 3 裁决文件缺少合法的 plan_md5（收到 {md5!r}）。"
             f"它应当原样抄自出计划那一次 pick 输出的 notes.stage3_plan_md5。"
         )
@@ -426,8 +442,8 @@ def run_stage3(
     apply_stage3_verdicts 会核对擂主在名单里。
 
     没给裁决：`picked` 原样返回，只多出计划。给了裁决：
-        计划指纹 ≠ expected_md5       → Stage3PlanMismatch
-        裁决里有候选池外的文件名       → ValueError
+        计划 md5 ≠ expected_md5       → Stage3PlanMismatch
+        裁决里有候选池外的文件名       → Stage3VerdictsError
         其余照 apply_stage3_verdicts 的规则换人，note 另加 `unused`
         （裁决表里不属于这份计划的对数 —— 正常应为 0）
     """
@@ -439,14 +455,14 @@ def run_stage3(
         return Stage3Outcome(list(picked), plan, md5, None)
     if expected_md5 != md5:
         raise Stage3PlanMismatch(
-            f"阶段 3 裁决对应的计划指纹是 {expected_md5}，这一次重算出来的是 {md5}。"
+            f"阶段 3 裁决对应的计划 md5 是 {expected_md5}，这一次重算出来的是 {md5}。"
             f"两次排序之间输入变了（照片、排除清单、标注或打分），裁决不能用在这份名单上。"
             f"重新出计划、重新判。"
         )
     idx = {n: i for i, n in enumerate(names)}
     unknown = sorted({x for pair in verdicts for x in pair if x not in idx})
     if unknown:
-        raise ValueError(f"阶段 3 裁决里有不在候选池里的照片：{unknown[:3]}")
+        raise Stage3VerdictsError(f"阶段 3 裁决里有不在候选池里的照片：{unknown[:3]}")
     vidx = {(idx[a], idx[b]): w for (a, b), w in verdicts.items()}
     final, note = apply_stage3_verdicts(list(picked), contests, vidx, families,
                                         len(names), family_cap, segments)

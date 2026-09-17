@@ -93,6 +93,8 @@ function setup(o: { plan?: Stage3PlanRow[]; md5?: string | null; anchors?: boole
     codeMap: undefined as Record<string, string> | undefined,
     compareArgs: undefined as Parameters<typeof comparePairs> | undefined,
     rankFile: undefined as string | undefined,
+    // 抄送给调用方的调用记录：闭包那一层靠它把账记住，跨异常还在。
+    onCallRows: [] as { sent: boolean; kind: string }[],
   }
   const before = rankResult({
     stage3_plan: o.plan ?? PLAN,
@@ -117,6 +119,7 @@ function setup(o: { plan?: Stage3PlanRow[]; md5?: string | null; anchors?: boole
       }
     },
     async buildAnchorBlock(a) { return a ? { text: a.text, jpegs: ANCHOR_JPEGS } : null },
+    onCall: (r) => { seen.onCallRows.push({ sent: r.sent, kind: r.kind }) },
     async rank(file) { seen.rankFile = file; return after },
     compare: (async (...args: Parameters<typeof comparePairs>) => {
       seen.compareArgs = args
@@ -158,6 +161,10 @@ function setup(o: { plan?: Stage3PlanRow[]; md5?: string | null; anchors?: boole
   assert.deepEqual(rows.map((r) => r.kind), ['preflight', 'compare', 'compare', 'compare', 'compare'])
   assert.equal(out.comparisons, 4)
   assert.equal(out.preflights, 1)
+  assert.equal(out.anchorPhotos, 0, '没配锚点时实发张数必须是 0，不是「配了几张」')
+  assert.deepEqual(t.seen.onCallRows.map((r) => r.kind),
+                   ['preflight', 'structured', 'structured', 'structured', 'structured'],
+                   '每条调用记录都要抄送调用方 —— 否则半路失败的运行记不住花了多少')
   assert.equal(out.result, t.after, '返回的必须是应用裁决之后的结果')
   assert.equal(out.note?.swapped, 2)
   rmSync(t.runDir, { recursive: true, force: true })
@@ -166,8 +173,9 @@ function setup(o: { plan?: Stage3PlanRow[]; md5?: string | null; anchors?: boole
 // ── 带锚点：每次 20 幅 ────────────────────────────────────────────────
 {
   const t = setup({ anchors: true })
-  await runStage3(t.input, t.deps)
+  const out = await runStage3(t.input, t.deps)
   assert.equal((t.seen.compareArgs![3] as { jpegs: string[] }).jpegs.length, 16)
+  assert.equal(out.anchorPhotos, 16, '实发锚点张数必须数真附上的图，run.json 靠它核「这一组真的带了锚点」')
   assert.deepEqual(t.harness.perCallImages, [20, 20, 20, 20], '带锚点时每次比较 16 + 4 = 20 幅')
   rmSync(t.runDir, { recursive: true, force: true })
 }
@@ -187,7 +195,7 @@ function setup(o: { plan?: Stage3PlanRow[]; md5?: string | null; anchors?: boole
 // ── 有计划却没有计划 md5：拒绝，不取图不调模型 ────────────────────────
 {
   const t = setup({ md5: null })
-  await assert.rejects(runStage3(t.input, t.deps), /计划指纹/)
+  await assert.rejects(runStage3(t.input, t.deps), /计划 md5/)
   assert.equal(t.seen.previewCalls, 0)
   assert.equal(t.calls().length, 0)
   rmSync(t.runDir, { recursive: true, force: true })

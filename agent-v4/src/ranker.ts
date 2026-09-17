@@ -60,7 +60,7 @@ export interface RankNotes {
   segments_relaxed?: number
   /** 阶段 3 段内边缘对局计划。每次 pick 都出（0 次调用）；没有段配额时为空。 */
   stage3_plan?: Stage3PlanRow[]
-  /** 计划指纹：紧凑 JSON 的 [[甲, 乙], ...] 取 md5。应用裁决时排序器重算比对，对不上就拒绝。 */
+  /** 计划 md5：紧凑 JSON 的 [[甲, 乙], ...] 取 md5。应用裁决时排序器重算比对，对不上就拒绝。 */
   stage3_plan_md5?: string | null
   /** 换人计数；没给阶段 3 裁决时为 null（不是全 0 —— 0 的意思是「判过、没换」）。 */
   stage3?: Stage3Note | null

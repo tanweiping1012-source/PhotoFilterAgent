@@ -1,5 +1,5 @@
 /**
- * 阶段 3 视觉对决：排序器出的段内边缘对局 → 视觉模型判 → 带着计划指纹回排序器应用。
+ * 阶段 3 视觉对决：排序器出的段内边缘对局 → 视觉模型判 → 带着计划 md5 回排序器应用。
  *
  * 为什么和阶段 2 分开写成一个模块：阶段 2 的那段逻辑长在 rank_photos 的闭包里，
  * 测不到调用点（2026-09-14 index.ts:688 的参数错位就是这么漏过去的）。这里所有外部依赖
@@ -24,7 +24,7 @@ export interface Stage3Anchors {
 }
 
 export interface Stage3Input {
-  /** 阶段 2 应用之后的排序结果。计划与计划指纹都取自它的 notes。 */
+  /** 阶段 2 应用之后的排序结果。计划与计划 md5 都取自它的 notes。 */
   before: RankResult
   folder: string
   exclude: string[]
@@ -44,10 +44,21 @@ export interface Stage3Deps {
     labelMap?: Record<string, string>, codeMap?: Record<string, string>,
   ): Promise<{ previews: Record<string, string>; faces: Record<string, string>; missing: string[] }>
   buildAnchorBlock(anchors: Stage3Anchors | null, signal: AbortSignal | undefined): Promise<AnchorBlock | null>
-  /** 用这份阶段 3 裁决文件重排。调用方负责把阶段 2 的裁决也一起带上 —— 否则计划指纹必然对不上。 */
+  /**
+   * 用这份阶段 3 裁决文件重排。调用方负责把阶段 2 的裁决也一起带上。
+   *
+   * 计划变了才会被计划 md5 拦下来；没变的时候 md5 照样对得上 —— 阶段 2 改的要是名单里
+   * 非边缘的那一席，对局计划一字不变，丢了阶段 2 的裁决只会静默少掉它的改判。
+   * 那种情况只有**交付名单**看得出来。
+   */
   rank(stage3VerdictsFile: string): Promise<RankResult>
   /** 只为测试留的缝：包一层真实的 comparePairs 以看到实参。生产不传。 */
   compare?: typeof comparePairs
+  /**
+   * 每条调用记录额外抄送调用方。本模块自己写 calls.jsonl，这个只为让计数活在调用方那一层 ——
+   * 局部变量里的计数一抛就没了，而半路失败的运行照样花了钱。
+   */
+  onCall?(record: Parameters<typeof toCallRow>[0]): void
 }
 
 export interface Stage3Outcome {
@@ -60,6 +71,8 @@ export interface Stage3Outcome {
   comparisons: number
   /** 真正发出去的预检次数。 */
   preflights: number
+  /** 每次调用真正附上的锚点照片张数（没带锚点是 0）。核「这一组真的带了 8 张」只能看它。 */
+  anchorPhotos: number
   note: Stage3Note | null
   verdictsFile: string | null
 }
@@ -74,11 +87,11 @@ export async function runStage3(input: Stage3Input, deps: Stage3Deps): Promise<S
   if (!plan.length) {
     // 没有合法挑战者的数据集（段内凑不出第三张）就没有阶段 3。不花钱，名单原样。
     return { result: before, plan, planMd5: before.notes.stage3_plan_md5 ?? null, verdicts: [], route: null,
-             comparisons: 0, preflights: 0, note: null, verdictsFile: null }
+             comparisons: 0, preflights: 0, anchorPhotos: 0, note: null, verdictsFile: null }
   }
   const planMd5 = before.notes.stage3_plan_md5
   if (!planMd5) {
-    throw new Error('排序器给了阶段 3 计划却没有计划指纹（stage3_plan_md5）—— 排序器与 agent 版本不一致，不发任何调用。')
+    throw new Error('排序器给了阶段 3 计划却没有计划 md5（stage3_plan_md5）—— 排序器与 agent 版本不一致，不发任何调用。')
   }
 
   const names = [...new Set(plan.flatMap((p) => [p.a, p.b]))]
@@ -103,6 +116,7 @@ export async function runStage3(input: Stage3Input, deps: Stage3Deps): Promise<S
           if (r.kind === 'preflight') preflights++
           else comparisons++
         }
+        deps.onCall?.(r)
         appendFileSync(calls, JSON.stringify({ stage: 3, ...toCallRow(r) }) + '\n', 'utf8')
       },
     },
@@ -129,5 +143,6 @@ export async function runStage3(input: Stage3Input, deps: Stage3Deps): Promise<S
       '名单与不开阶段 3 相同，这次运行不能当作阶段 3 的结果。',
     )
   }
-  return { result, plan, planMd5, verdicts, route, comparisons, preflights, note: result.notes.stage3, verdictsFile }
+  return { result, plan, planMd5, verdicts, route, comparisons, preflights,
+           anchorPhotos: anchorBlock?.jpegs.length ?? 0, note: result.notes.stage3, verdictsFile }
 }

@@ -21,7 +21,7 @@ from .pipeline import (Judge, LocalJudge, attach_local_fallback, stage2_reorder,
                        tournament_plan, verdict_accounting)
 from .quality import cold_start_score, local_quality, zscore
 from .scan import build_cache, fingerprint, list_photos
-from .stage3 import run_stage3
+from .stage3 import Stage3VerdictsError, run_stage3
 from .taste import TasteProbe, label_concentration
 
 
@@ -245,7 +245,7 @@ def rank_folder(
     # --- 阶段 3：段内边缘对决 ---
     #
     # 每段只有最后一个名额接受挑战（见 stage3.py 模块说明）。计划每次都出（0 次调用），
-    # 裁决只在 TS 侧跑完模型、带着计划指纹回来时才应用 —— 不给裁决时 picked 原样不动。
+    # 裁决只在 TS 侧跑完模型、带着计划 md5 回来时才应用 —— 不给裁决时 picked 原样不动。
     # 没有段配额（time_segments=0）就没有「段内边缘名额」，也就没有阶段 3。
     stage3 = None
     if cfg.time_segments > 0:
@@ -255,7 +255,7 @@ def rank_folder(
         )
         picked = stage3.picked
     elif stage3_verdicts is not None:
-        raise ValueError("给了阶段 3 裁决，但 time_segments=0：没有段配额就没有阶段 3 对决。")
+        raise Stage3VerdictsError("给了阶段 3 裁决，但 time_segments=0：没有段配额就没有阶段 3 对决。")
 
     # VLM 复核计划：哪些对局值得花钱让模型再判一次。
     #
@@ -286,11 +286,14 @@ def rank_folder(
         "stage2_verdicts_missing": verdict_acct["missing"] if verdict_acct else None,
         "stage2_verdicts_unused": verdict_acct["unused"] if verdict_acct else None,
         "stage2_judge": (judge.name if judge else ("local" if cfg.stage2 else "off")),
-        # 阶段 3。计划与指纹每次都有；stage3 是换人计数，没给裁决时为 None（不是全 0）。
+        # 阶段 3。计划与计划 md5 每次都有；stage3 是换人计数，没给裁决时为 None（不是全 0）。
         "stage3_plan": stage3.plan if stage3 else [],
         "stage3_plan_md5": stage3.plan_md5 if stage3 else None,
         "stage3": stage3.note if stage3 else None,
-        "stage3_judge": "replay" if stage3_verdicts is not None else "off",
+        # 按**结果**算，不按入参算：入参在、裁决却没走到对决表，这里照样会是 replay，
+        # 读起来和真的应用过一模一样 —— 阶段 2 的 stage2_judge 就是这么被 check_verdicts_applied
+        # 抓住的（cli 那一行丢了 judge，计数器全 None，没有任何东西报警）。
+        "stage3_judge": "replay" if (stage3 and stage3.note is not None) else "off",
         "cold_strategy": cold_strategy,
         "unvalidated_domain": unvalidated_domain,
         "style": cfg.style,

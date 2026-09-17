@@ -1,4 +1,4 @@
-"""阶段 3 接进产品路径：rank_folder / pick 出计划、带着计划指纹回来应用裁决。
+"""阶段 3 接进产品路径：rank_folder / pick 出计划、带着计划 md5 回来应用裁决。
 
 纯逻辑在 stage3.run_stage3，这里用冻结件（pick-299-baseline.json）直接验：
 不需要照片和模型，CI 能跑。rank_folder 本身要真照片，只对它的**调用点**做文本钉住，
@@ -11,15 +11,18 @@ from pathlib import Path
 import pytest
 
 from photofilter_rank.dedupe import select_spread
-from photofilter_rank.stage3 import (Stage3PlanMismatch, load_stage3_verdicts, plan_md5,
-                                     run_stage3)
+from photofilter_rank.stage3 import (Stage3PlanMismatch, Stage3VerdictsError,
+                                     load_stage3_verdicts, plan_md5, run_stage3)
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = ROOT / "dsh-v4" / "ab-experiment" / "stage3" / "pick-299-baseline.json"
-GOLD = {"DSCF8880.JPG", "DSCF8881.JPG", "DSCF8888.JPG", "DSCF8893.JPG", "DSCF8896.JPG",
-        "DSCF9110.JPG", "DSCF9111.JPG", "DSCF9314.JPG", "DSCF9325.JPG", "DSCF9345.JPG",
-        "DSCF9374.JPG", "DSCF9379.JPG", "DSCF9406.JPG", "DSCF9408.JPG", "DSCF9445.JPG",
-        "DSCF9452.JPG", "DSCF9504.JPG", "DSCF9519.JPG", "DSCF9529.JPG", "DSCF9533.JPG"}
+# 金标只有一份来源：仓库里的答案清单。**不在这里复制一份** ——
+# 2026-09-18 执行方查出这里原本硬编码的 20 张与它差 2 张（多 9408/9519，少 9102/9435）。
+# 一直没暴露是因为在冻结基线上两份的命中都是 7、决定性分类也完全一样；
+# 而阶段 2 一开排序就会变，9519 在 299 名次里排第 24、9408 排第 41，
+# 任何一张挤进交付或当上挑战者，两份就会给出差 1 的主指标。
+GOLD_FILE = ROOT / "dsh-v4" / "eval-sets" / "eval-people-309-acceptance.gold.txt"
+GOLD = {ln.strip() for ln in GOLD_FILE.read_text().splitlines() if ln.strip()}
 DUEL_MD5 = "9798113940cfb900cc5736e731a2030d"
 TARGET, FAMILY_CAP, SEGMENTS = 20, 2, 10
 
@@ -82,7 +85,7 @@ def test_反向键的裁决按挑战者赢处理():
     assert out.note["swapped"] == 1 and out.note["missing"] == 9
 
 
-def test_计划指纹对不上就拒绝():
+def test_计划md5对不上就拒绝():
     _, _, _, plan = _run()
     verdicts = {(x["a"], x["b"]): "b" for x in plan.plan}
     with pytest.raises(Stage3PlanMismatch):
@@ -134,12 +137,12 @@ def test_cli_裁决文件坏了_退出码2_且不去排序(tmp_path, monkeypatch
     assert rc == 2 and "plan_md5" in err
 
 
-def test_cli_计划指纹对不上_退出码2_原因进stderr(tmp_path, monkeypatch, capsys):
+def test_cli_计划md5对不上_退出码2_原因进stderr(tmp_path, monkeypatch, capsys):
     def mismatch(*a, **k):
-        raise Stage3PlanMismatch("阶段 3 裁决对应的计划指纹是 X，这一次重算出来的是 Y")
+        raise Stage3PlanMismatch("阶段 3 裁决对应的计划 md5 是 X，这一次重算出来的是 Y")
     body = json.dumps({"plan_md5": "a" * 32, "verdicts": []})
     rc, err = _pick(tmp_path, monkeypatch, capsys, body, mismatch)
-    assert rc == 2 and "计划指纹" in err
+    assert rc == 2 and "计划 md5" in err
 
 
 def test_rank_folder的调用点把同一组入参交给run_stage3_并用它的结果交付():
@@ -149,3 +152,87 @@ def test_rank_folder的调用点把同一组入参交给run_stage3_并用它的�
         "rank_folder 交给 run_stage3 的入参必须与 select_spread 那次逐个相同"
     assert "picked = stage3.picked" in src, "阶段 3 的结果没有用于交付"
     assert '"stage3_plan_md5": stage3.plan_md5 if stage3 else None' in src
+
+
+def test_裁决文件顶层不是对象也当文件不可用():
+    """顶层是数组时 raw.get 会抛 AttributeError —— 那不在 cli 接住的三种里，会变成栈 + 退出码 1。
+
+    接住任何异常再断言类型：守卫被删掉时会崩成 AttributeError，那种红不算测试抓到。
+    """
+    with pytest.raises(Exception) as ei:
+        load_stage3_verdicts([{"a": "x.JPG", "b": "y.JPG", "winner": "a"}])
+    assert isinstance(ei.value, Stage3VerdictsError) and "顶层" in str(ei.value), \
+        f"顶层不是对象应当明确报出来，实际是 {type(ei.value).__name__}: {ei.value}"
+
+
+def test_候选池外的照片也走退出码2那条路():
+    """两类「裁决不能用」必须是同一个异常家族，cli 才不会漏掉其中一类。"""
+    assert issubclass(Stage3PlanMismatch, Stage3VerdictsError)
+    _, _, _, plan = _run()
+    with pytest.raises(Stage3VerdictsError):
+        _run({("NOPE.JPG", "DSCF9406.JPG"): "b"}, plan.plan_md5)
+
+
+def test_cli_候选池外的照片_退出码2_原因进stderr(tmp_path, monkeypatch, capsys):
+    def unknown(*a, **k):
+        raise Stage3VerdictsError("阶段 3 裁决里有不在候选池里的照片：['NOPE.JPG']")
+    body = json.dumps({"plan_md5": "a" * 32, "verdicts": []})
+    rc, err = _pick(tmp_path, monkeypatch, capsys, body, unknown)
+    assert rc == 2 and "不在候选池里" in err
+
+
+def test_cli_给了verdicts但文件不存在_退出码2(tmp_path, monkeypatch, capsys):
+    """老行为是静默当没给。接上阶段 3 之后，那会让阶段 2 的改判悄悄消失，
+    而计划 md5 不保证能拦（阶段 2 改的是名单里非边缘那一席时，计划一字不变）。"""
+    import photofilter_rank.rank as rank_mod
+    from photofilter_rank.cli import main
+
+    def boom(*a, **k):
+        raise AssertionError("裁决文件不存在时不应该开始排序")
+    monkeypatch.setattr(rank_mod, "rank_folder", boom)
+    rc = main(["pick", str(tmp_path), "--quiet", "--verdicts", str(tmp_path / "没有这个文件.json")])
+    assert rc == 2 and "文件不存在" in capsys.readouterr().err
+
+
+def test_给了阶段3裁决却没应用_退出码2(tmp_path, monkeypatch, capsys):
+    """P7 那个变异：cli 把裁决建好却没传进 rank_folder，退出码 0、名单与不给完全相同。
+
+    只有从 notes 反查才抓得到 —— 与 check_verdicts_applied 同一个教训。
+    """
+    from photofilter_rank.cli import stage3_not_applied
+    applied = {"stage3_judge": "replay", "stage3": {"contests": 3, "swapped": 1}}
+    assert stage3_not_applied(None, {"stage3_judge": "off", "stage3": None}) is None
+    assert stage3_not_applied({("a", "b"): "a"}, applied) is None
+    for notes in ({"stage3_judge": "off", "stage3": None},
+                  {"stage3_judge": "replay", "stage3": None},
+                  {"stage3_judge": "off", "stage3": {"contests": 3}}):
+        msg = stage3_not_applied({("a", "b"): "a"}, notes)
+        assert msg and "没有到达段内对决" in msg, notes
+
+    def ignored(cfg, verbose=True, judge=None, *a, **k):
+        class R:
+            notes = {"stage3_judge": "off", "stage3": None, "n_families": 1, "stage2_judge": "off"}
+            mode, n_labels, n_candidates, elapsed_sec = "cold", 0, 1, 0.1
+            selected, scores, ranking = [], {}, []
+        return R()
+    rc, err = _pick(tmp_path, monkeypatch, capsys,
+                    json.dumps({"plan_md5": "a" * 32,
+                                "verdicts": [{"a": "x.JPG", "b": "y.JPG", "winner": "a"}]}), ignored)
+    assert rc == 2 and "没有到达段内对决" in err
+
+
+def test_cli的调用点把阶段3的两个入参交给rank_folder():
+    """P7 那个变异：`rank_folder(cfg, verbose, judge)` 把裁决丢在半路，退出码 0、名单不变。
+
+    运行时有 stage3_not_applied 兜底（从 notes 反查），这里再钉一道调用点本身。
+    """
+    src = (ROOT / "ranker" / "photofilter_rank" / "cli.py").read_text(encoding="utf-8")
+    assert "res = rank_folder(cfg, verbose, judge, s3_verdicts, s3_md5)" in src, \
+        "cli 必须把阶段 3 的裁决与计划 md5 一起交给 rank_folder"
+
+
+def test_stage3_judge按结果算不按入参算():
+    """P9 那个变异：恒为 replay 时三道网全绿 —— 因为没有任何测试从结果反查。"""
+    src = (ROOT / "ranker" / "photofilter_rank" / "rank.py").read_text(encoding="utf-8")
+    assert '"stage3_judge": "replay" if (stage3 and stage3.note is not None) else "off"' in src
+    assert '"stage3_judge": "replay" if stage3_verdicts is not None else "off"' not in src

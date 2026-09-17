@@ -108,6 +108,27 @@ def check_verdicts_applied(judge, notes: dict) -> None:
     )
 
 
+def stage3_not_applied(verdicts, notes: dict) -> str | None:
+    """给了 --stage3-verdicts 就必须从**结果**里看到裁决被应用了，否则返回一行原因。
+
+    与 check_verdicts_applied 同一个教训，也是同一个失败模式的阶段 3 版本：
+    cli 把裁决建好却没传进 rank_folder 时（`rank_folder(cfg, verbose, judge)`），
+    计划、计划 md5 照出，退出码 0，名单与不给裁决完全相同 —— 入参那一侧一切正常，
+    只有反查 notes 才看得出对决根本没跑。
+
+    两个字段都要看：stage3_judge 说裁判是谁，stage3 是换人计数（没应用时为 None）。
+    """
+    if verdicts is None:
+        return None
+    if notes.get("stage3_judge") == "replay" and notes.get("stage3") is not None:
+        return None
+    return (
+        f"给了 --stage3-verdicts，但排序器报告的阶段 3 裁判是 "
+        f"{notes.get('stage3_judge')!r}、换人计数是 {notes.get('stage3')!r}。"
+        "裁决没有到达段内对决，这一轮的名单与不给裁决完全相同。"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="photofilter-rank", description="本地优先的照片排序")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -162,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="VLM 复核的裁决（TS 侧跑完回传）。用它替换组内名次后重出名单")
     p_pick.add_argument("--stage3-verdicts", type=Path, default=None,
                         help="阶段 3 段内对决的裁决（TS 侧跑完回传，须带 plan_md5）。"
-                             "计划指纹对不上就拒绝，退出码 2")
+                             "计划 md5 对不上就拒绝，退出码 2")
 
     p_eval = sub.add_parser("eval", help="有人工答案时，测排序器到底行不行")
     _common(p_eval)
@@ -401,7 +422,17 @@ def main(argv: list[str] | None = None) -> int:
 
         judge = None
 
-        if getattr(a, "verdicts", None) and a.verdicts.exists():
+        if getattr(a, "verdicts", None):
+
+            # 文件不在就当没给过，是接上阶段 3 之前的老行为，现在不行了：
+            # 阶段 3 重排那一次要是丢了阶段 2 的裁决，改判会**静默**消失，
+            # 而计划 md5 不保证能拦下来 —— 阶段 2 改的要是名单里非边缘的那一席，
+            # 对局计划一字不变，md5 照样对上（执行方 2026-09-18 造出了这个场景）。
+            if not a.verdicts.exists():
+
+                print(f"给了 --verdicts，但文件不存在：{a.verdicts}", file=sys.stderr)
+
+                return 2
 
             import json as _json
 
@@ -414,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
 
             judge = ReplayJudge(vd, LocalJudge({}))
 
-        from .stage3 import Stage3PlanMismatch, load_stage3_verdicts
+        from .stage3 import Stage3VerdictsError, load_stage3_verdicts
         s3_md5, s3_verdicts = None, None
         if getattr(a, "stage3_verdicts", None):
             try:
@@ -424,11 +455,15 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
         try:
             res = rank_folder(cfg, verbose, judge, s3_verdicts, s3_md5)
-        except Stage3PlanMismatch as e:
+        except Stage3VerdictsError as e:
             print(str(e), file=sys.stderr)
             return 2
 
         check_verdicts_applied(judge, res.notes)
+        s3_problem = stage3_not_applied(s3_verdicts, res.notes)
+        if s3_problem:
+            print(s3_problem, file=sys.stderr)
+            return 2
 
         print(f"\n模式 {res.mode}（{res.n_labels} 张标注）· {res.n_candidates} 张候选 "
               f"· {res.notes['n_families']} 个场景组 · {res.elapsed_sec}s")
