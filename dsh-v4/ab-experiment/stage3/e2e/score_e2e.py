@@ -17,8 +17,11 @@ stage2-verdicts.json、stage3-verdicts.json。**判据写在看到数据之前**
     「都不够格」算表态但没有赢家 → 不进有方向的分母，单独报；翻覆与正反都平局 → 未表态（修订 2.6）
   · **合并只做描述性汇总，不给置信区间**（修订 2.7）：同一组 5 次里大量是同一对照片重复问，不是独立样本。
     主报法是逐对报「这一对出现 n 次、判中金标 x 次、未表态 y 次」
-  · **作废规则**（修订 2.8、1.5）：阶段 2 failed（任一组）/ 阶段 3 failed（B 组）/ note.missing > 0 /
-    note.unused > 0 / 阶段 3 的输入与本组应有值不符。作废运行的调用**单独记账、计入成本、不计入任何指标**
+  · **作废规则**（修订 2.8、1.5、4.4、4.6）：阶段 2 failed（任一组）/ 阶段 3 failed（B 组）/ note.missing > 0 /
+    note.unused > 0 / 阶段 3 的输入与本组应有值不符 / run.json 的 comparisons+preflights ≠ calls.jsonl 里该 stage
+    sent 的行数 / 同阶段 anchor_jpegs_sent ≠ anchor_photos_sent × 2。作废运行的调用**单独记账、计入成本、不进指标**
+  · **调用数以 run.json 的 comparisons / preflights 为准**（修订 4.2），不再用「对数 × 2」倒推；预检计入总数
+  · **锚点核实发不核配置**（修订 4.3、4.6）：阶段 2 `anchor_photos_sent` = 10；B3 阶段 3 = 8，A/B1/B2 = 0
   · **组别按运行记录自己判**：config 里配了什么路径 → 应当是哪一组；stage3_inputs 记的是实际读到什么。
     两者对不上就是作废（修订 2.10），不是「按配置当成那一组算」
   · 换人、不换的原因、双向一致率、读码率、contradiction、实际调用数、每次调用的图数、跨次一致性：照 §5.3 全报
@@ -49,7 +52,7 @@ GROUPS = {   # 组 → (阶段 3 开关, 要 rubric, 要锚点, 每次阶段 3 �
     "B3": (True, True, True, 20),
 }
 STAGE2_JPEGS = 24            # 锚点 10 张 × 2 + 待判 2 张 × 2（修订 2.2）
-ANCHOR_PHOTOS_S2 = 10
+ANCHOR_PHOTOS_S2 = 10        # 修订 4.3：核 anchor_photos_sent，不核 configured
 ANCHOR_PHOTOS_S3 = 8
 
 
@@ -121,11 +124,12 @@ def classify(run: dict) -> tuple[str, list]:
         if not want_rubric and (ins.get("rubric_chars") or ins.get("rubric_md5")):
             bad.append(f"{group} 组不该带 rubric，实际 {ins.get('rubric_chars')} 字 / {ins.get('rubric_md5')}")
         want_n = ANCHOR_PHOTOS_S3 if want_anchors else 0
-        if (ins.get("anchor_photos") or 0) != want_n:
-            bad.append(f"{group} 组的阶段 3 锚点应为 {want_n} 张，实际 {ins.get('anchor_photos')}")
+        sent3 = ((run.get("stage3") or {}).get("anchor_photos_sent") or 0)
+        if sent3 != want_n:   # 修订 4.3/4.6：核真发出去的张数
+            bad.append(f"{group} 组的阶段 3 实发锚点应为 {want_n} 张，实际 {sent3}")
     s2 = run.get("stage2") or {}
-    if s2.get("status") == "ran" and (s2.get("anchor_photos") or 0) != ANCHOR_PHOTOS_S2:
-        bad.append(f"阶段 2 的锚点应为 {ANCHOR_PHOTOS_S2} 张，实际 {s2.get('anchor_photos')}")
+    if s2.get("status") == "ran" and (s2.get("anchor_photos_sent") or 0) != ANCHOR_PHOTOS_S2:
+        bad.append(f"阶段 2 实发锚点应为 {ANCHOR_PHOTOS_S2} 张，实际 {s2.get('anchor_photos_sent')}")
     return group, bad
 
 
@@ -171,7 +175,7 @@ def call_stats(calls: list, group: str) -> dict:
     return out
 
 
-def record_consistency(run: dict, v3: dict | None) -> list:
+def record_consistency(run: dict, v3: dict | None, calls: list) -> list:
     """运行记录自身要对得上。这几条不花钱、也不依赖任何外部答案，但错了会让整次运行的数都不可信：
     计划 md5 与计划本身算出来的对不上，说明记录不是同一次算的；裁决文件里的计划与 run.json 不一致，
     说明应用的是另一份计划。"""
@@ -182,6 +186,16 @@ def record_consistency(run: dict, v3: dict | None) -> list:
         got = plan_md5([[x["a"], x["b"]] for x in plan])
         if got != s3["plan_md5"]:
             out.append(f"run.json 里的计划 md5 是 {s3['plan_md5']}，按记下来的计划重算是 {got}")
+    for stage, rec in ((2, run.get("stage2") or {}), (3, s3)):
+        if "comparisons" not in rec:
+            continue
+        want = (rec.get("comparisons") or 0) + (rec.get("preflights") or 0)
+        got = sum(1 for c in calls if c.get("stage") == stage and c.get("sent"))
+        if want != got:   # 修订 4.4：闭包计数器与调用记录必须对得上
+            out.append(f"阶段 {stage} 的 comparisons+preflights = {want}，calls.jsonl 里 sent 的行数 = {got}")
+        photos, jpegs = rec.get("anchor_photos_sent"), rec.get("anchor_jpegs_sent")
+        if photos is not None and jpegs is not None and jpegs != photos * 2:   # 修订 4.6：每张两幅
+            out.append(f"阶段 {stage} 的 anchor_jpegs_sent={jpegs} ≠ anchor_photos_sent×2={photos * 2} —— 锚点图取残了")
     if v3 is not None:
         if v3.get("plan_md5") != s3.get("plan_md5"):
             out.append(f"裁决文件的计划 md5 {v3.get('plan_md5')} ≠ run.json 的 {s3.get('plan_md5')}")
@@ -193,7 +207,7 @@ def record_consistency(run: dict, v3: dict | None) -> list:
 def score_run(r: dict, gold: set) -> dict:
     run, v3 = r["run"], r["v3"]
     group, inputs_bad = classify(run)
-    void = void_reasons(run, group, inputs_bad) + record_consistency(run, v3)
+    void = void_reasons(run, group, inputs_bad) + record_consistency(run, v3, r["calls"])
     d2 = list(run.get("delivered_after_stage2") or [])
     d3 = list(run.get("delivered_final") or [])
     s3 = run.get("stage3") or {}
@@ -242,6 +256,7 @@ def score_run(r: dict, gold: set) -> dict:
         "code_read_ok": sum(1 for x in duels if x["code_read_ok"]),
         "contradiction": sum(1 for x in duels if x["contradiction"]),
         "duels": duels,
+        "record": {"stage2": run.get("stage2"), "stage3": s3},
         "calls": call_stats(r["calls"], group if group in GROUPS else "B1"),
     }
 
@@ -332,10 +347,10 @@ def main() -> int:
                       f"判决取值 {sorted({str(x['winner']) for x in xs})}")
         lists = {tuple(s["delivered_final"]) for s in rows}
         print(f"      跨次一致性：交付名单 {len(lists)} 种 / {len(rows)} 次 · 计划 md5 {len({s['plan_md5'] for s in rows})} 种")
-        c2 = sum(s["calls"]["stage2"]["compare_sent"] for s in rows)
-        c3 = sum(s["calls"]["stage3"]["compare_sent"] for s in rows)
-        p = sum(s["calls"][f"stage{k}"]["preflight_sent"] for s in rows for k in (2, 3))
-        print(f"      实际调用：阶段 2 比较 {c2} · 阶段 3 比较 {c3} · 预检 {p} · 合计 {c2 + c3 + p}")
+        c2 = sum((s["record"]["stage2"] or {}).get("comparisons", 0) for s in rows)
+        c3 = sum((s["record"]["stage3"] or {}).get("comparisons", 0) for s in rows)
+        p = sum((s["record"][f"stage{k}"] or {}).get("preflights", 0) for s in rows for k in (2, 3))
+        print(f"      实际调用（run.json，修订 4.2）：阶段 2 比较 {c2} · 阶段 3 比较 {c3} · 预检 {p} · 合计 {c2 + c3 + p}")
         off = [(s["dir"], k, v) for s in rows for k in ("stage2", "stage3") for v in [s["calls"][k]["jpegs_off"]] if v]
         if off:
             print(f"      ⚠️ 有调用的图数不等于本组应有值（待判照片检不到脸会少 1~2 幅，逐条核）：{off}")

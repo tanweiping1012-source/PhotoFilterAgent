@@ -46,7 +46,8 @@ def plan_md5(pairs):
 def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), stage2="ran",
              stage3_status=None, note_extra=None, rubric_md5=RUBRIC_MD5, anchor_photos=None,
              s3_jpegs=None, plan=None, plan_md5_override=None, verdict_plan_override=None,
-             delivered_final=None, s2_anchor_photos=10):
+             delivered_final=None, s2_anchor_photos=10, s3_anchor_photos=None,
+             s2_jpegs_sent=None, drop_calls=0):
     """造一份运行记录。outcomes: {段号: winner}，缺省判擂主赢（'a'）。"""
     d = root / name
     d.mkdir(parents=True)
@@ -77,10 +78,15 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
     note.update(note_extra or {})
     final = delivered_final if delivered_final is not None else final
     status = stage3_status or ("off" if group == "A" else "ran")
-    s3 = {"status": "off"} if group == "A" else (
-        {"status": status, "error": "mock 失败", "plan": plan, "plan_md5": md5} if status == "failed"
-        else {"status": status, "route": "mock/mock-vision", "plan": plan, "plan_md5": md5,
-              "comparisons": 2 * len(plan), "preflights": 1, "note": note})
+    # 修订 4.6：张数与幅数分开记；修订 4.3：B3 实发 8 张，A/B1/B2 为 0
+    s3_photos = (8 if want_anchors else 0) if s3_anchor_photos is None else s3_anchor_photos
+    # 修订 4.5：A 组（阶段 3 关）也记计划与 plan_md5
+    s3 = ({"status": "off", "plan": plan, "plan_md5": md5} if group == "A"
+          else {"status": status, "error": "mock 失败", "plan": plan, "plan_md5": md5,
+                "comparisons": 0, "preflights": 0} if status == "failed"
+          else {"status": status, "route": "mock/mock-vision", "plan": plan, "plan_md5": md5,
+                "comparisons": 2 * len(plan), "preflights": 1,
+                "anchor_photos_sent": s3_photos, "anchor_jpegs_sent": s3_photos * 2, "note": note})
     run = {
         "run_id": name, "fingerprint": "5e9947ea9eae8391",
         "started_at": f"2026-09-20T10:{sum(map(ord, name)) % 60:02d}:00.000Z",
@@ -89,13 +95,17 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
                    "allowNeither": True, "stage3Vlm": group != "A",
                    "stage3RubricFile": "/x/rubric3.txt" if want_rubric else "",
                    "stage3AnchorsFile": "/x/anchors3.json" if want_anchors else ""},
-        "stage2": ({"status": "failed", "error": "mock 阶段 2 失败", "anchor_photos": s2_anchor_photos}
-                   if stage2 == "failed" else
-                   {"status": stage2, "route": "mock/mock-vision", "matches": 3, "anchor_photos": s2_anchor_photos}),
+        "stage2": {
+            "status": "failed" if stage2 == "failed" else stage2,
+            **({"error": "mock 阶段 2 失败"} if stage2 == "failed" else {"route": "mock/mock-vision", "matches": 3}),
+            "anchor_photos_configured": 10, "anchor_photos_sent": s2_anchor_photos,
+            "anchor_jpegs_sent": s2_anchor_photos * 2 if s2_jpegs_sent is None else s2_jpegs_sent,
+            "comparisons": 6 - drop_calls, "preflights": 1,
+        },
         "stage3_inputs": None if group == "A" else {
             "rubric_chars": 1154 if want_rubric else 0,
             "rubric_md5": rubric_md5 if want_rubric else None,
-            "anchor_photos": (8 if want_anchors else 0) if anchor_photos is None else anchor_photos},
+            "anchor_photos_configured": (8 if want_anchors else 0) if anchor_photos is None else anchor_photos},
         "stage3": s3,
         "delivered_after_stage2": SELECTED,
         "delivered_final": SELECTED if group == "A" else final,
@@ -148,10 +158,13 @@ def main() -> int:
     runs["v-missing"] = make_run(tmp, "v-missing", "B1", note_extra={"missing": 2})
     runs["v-unused"] = make_run(tmp, "v-unused", "B1", note_extra={"unused": 1})
     runs["v-rubric"] = make_run(tmp, "v-rubric", "B2", rubric_md5="0" * 32)
-    runs["v-anchors"] = make_run(tmp, "v-anchors", "B3", anchor_photos=7)
+    runs["v-anchors"] = make_run(tmp, "v-anchors", "B3", anchor_photos=7, s3_anchor_photos=7)
     runs["v-s2anchor"] = make_run(tmp, "v-s2anchor", "B1", s2_anchor_photos=0)
     runs["v-md5"] = make_run(tmp, "v-md5", "B1", plan_md5_override="a" * 32)
     runs["v-vplan"] = make_run(tmp, "v-vplan", "B1", verdict_plan_override=PLAN[:5])
+    runs["v-callcount"] = make_run(tmp, "v-callcount", "B1", drop_calls=1)        # run.json 少记一次调用
+    runs["v-jpegs"] = make_run(tmp, "v-jpegs", "B1", s2_jpegs_sent=19)            # 幅数 ≠ 张数 × 2
+    runs["v-s3anchor"] = make_run(tmp, "v-s3anchor", "B3", s3_anchor_photos=7)    # B3 实发只有 7 张
     runs["jpegs"] = make_run(tmp, "jpegs", "B1", {UP_SEG: "b"}, s3_jpegs=3)
 
     rc, out, S = score(SCORE, runs.values())
@@ -189,7 +202,9 @@ def main() -> int:
     voids = {
         "v-s2fail": "阶段 2 未执行", "v-s3fail": "阶段 3 未执行", "v-missing": "note.missing > 0",
         "v-unused": "note.unused > 0", "v-rubric": "rubric md5", "v-anchors": "锚点应为 8 张",
-        "v-s2anchor": "阶段 2 的锚点应为 10 张", "v-md5": "按记下来的计划重算", "v-vplan": "不是同一份",
+        "v-s2anchor": "阶段 2 实发锚点应为 10 张", "v-md5": "按记下来的计划重算", "v-vplan": "不是同一份",
+        "v-callcount": "calls.jsonl 里 sent 的行数", "v-jpegs": "锚点图取残了",
+        "v-s3anchor": "阶段 3 实发锚点应为 8 张",
     }
     for k, needle in voids.items():
         ck(f"作废：{k}", S.get(k, {}).get("void") and any(needle in x for x in S[k]["void"]),
@@ -248,6 +263,15 @@ def main() -> int:
          lambda S2: not S2["v-md5"]["void"]),
         ("去掉裁决文件与 run.json 的计划比对", '        if (v3.get("plan") or []) != plan:\n', '        if False:\n',
          lambda S2: not S2["v-vplan"]["void"]),
+        ("去掉「调用账与调用记录对账」（修订 4.4）", "        if want != got:   # 修订 4.4：闭包计数器与调用记录必须对得上\n",
+         "        if False:\n", lambda S2: not S2["v-callcount"]["void"]),
+        ("去掉「每张锚点两幅」（修订 4.6）",
+         "        if photos is not None and jpegs is not None and jpegs != photos * 2:   # 修订 4.6：每张两幅\n",
+         "        if False:\n", lambda S2: not S2["v-jpegs"]["void"]),
+        ("阶段 3 锚点核 configured 而不是实发（修订 4.3 反着来）",
+         '        sent3 = ((run.get("stage3") or {}).get("anchor_photos_sent") or 0)\n',
+         '        sent3 = (ins.get("anchor_photos_configured") or 0)\n',
+         lambda S2: not S2["v-s3anchor"]["void"]),
     ]
     for name, needle, repl, changed in MUT:
         n = src.count(needle)
