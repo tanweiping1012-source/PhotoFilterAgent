@@ -403,6 +403,7 @@ export function apply(ctx: Context, config: Config): void {
         }
         let stage2Vf: string | undefined
         let stage2AnchorsSent = 0
+        let stage2AnchorJpegs = 0
         let stage2Record: Record<string, unknown> = { status: !config.stage2Vlm ? 'off' : plan.length ? 'pending' : 'skipped' }
         if (config.stage2Vlm && plan.length) {
           try {
@@ -424,16 +425,20 @@ export function apply(ctx: Context, config: Config): void {
               undefined, codes,
             )
             if (missing.length) throw new Error(`${missing.length} 张缺少预览`)
-            const leak2 = anchorsInPool(loadAnchors(), res.ranking)
+            const anchors2 = loadAnchors()
+            const leak2 = anchorsInPool(anchors2, res.ranking)
             if (leak2.length) {
               throw new Error(
                 `阶段 2 的锚点照片有 ${leak2.length} 张也在候选池里（如 ${leak2.slice(0, 3).join(' ')}）—— ` +
                 '同一张照片既当范例又当候选就是泄题。请把它们加进排除清单，或换一份锚点',
               )
             }
-            const anchorBlock = await buildAnchorBlock(loadAnchors(), exec.signal)
+            const anchorBlock = await buildAnchorBlock(anchors2, exec.signal)
             // 记「真发出去几张」而不是「配了几张」：锚点文件里有 10 张，不代表这一次发了 10 张。
-            stage2AnchorsSent = anchorBlock?.jpegs.length ?? 0
+            // 张数与幅数分开记：每张锚点进两幅（整幅 + 人脸特写，assertAnchorImagesComplete 强制），
+            // 只记一个数就会出现「字段名说张数、值是幅数」—— 执行方 2026-09-18 查出的正是这个。
+            stage2AnchorsSent = anchorBlock ? anchors2?.photos.length ?? 0 : 0
+            stage2AnchorJpegs = anchorBlock?.jpegs.length ?? 0
             const { verdicts, route } = await comparePairs(
               plan, previews, faces, anchorBlock, loadRubric(), config.allowNeither, codes, services,
               exec as unknown as HarnessVisionExecution, { onCall: logCall(2) },
@@ -549,7 +554,7 @@ export function apply(ctx: Context, config: Config): void {
               // 配了几张 ≠ 发了几张：跳过、失败、或因泄题没发锚点时，「配了 10 张」照样成立，
               // 拿它核「四组都带了 10 张锚点」会给没发出去的运行开绿灯。
               anchor_photos_configured: config.stage2Vlm ? (loadAnchors()?.photos.length ?? 0) : 0,
-              anchor_photos_sent: stage2AnchorsSent,
+              anchor_photos_sent: stage2AnchorsSent, anchor_jpegs_sent: stage2AnchorJpegs,
               comparisons: sent[2].compares, preflights: sent[2].preflights,
             },
             stage3_inputs: config.stage3Vlm ? stage3Inputs : null,
@@ -559,7 +564,8 @@ export function apply(ctx: Context, config: Config): void {
               ? { status: 'off', plan: res.notes.stage3_plan ?? [], plan_md5: res.notes.stage3_plan_md5 ?? null }
               : stage3 ? { status: stage3.note ? 'ran' : 'no_contests', route: stage3.route, plan: stage3.plan,
                            plan_md5: stage3.planMd5, comparisons: sent[3].compares, preflights: sent[3].preflights,
-                           anchor_photos_sent: stage3.anchorPhotos, note: stage3.note }
+                           anchor_photos_sent: stage3.anchorPhotos, anchor_jpegs_sent: stage3.anchorJpegs,
+                           note: stage3.note }
               : { status: 'failed', error: stage3Error, plan: res.notes.stage3_plan ?? [],
                   plan_md5: res.notes.stage3_plan_md5 ?? null,
                   comparisons: sent[3].compares, preflights: sent[3].preflights },

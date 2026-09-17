@@ -71,8 +71,10 @@ export interface Stage3Outcome {
   comparisons: number
   /** 真正发出去的预检次数。 */
   preflights: number
-  /** 每次调用真正附上的锚点照片张数（没带锚点是 0）。核「这一组真的带了 8 张」只能看它。 */
+  /** 每次调用真正附上的锚点**照片张数**（没带锚点是 0）。核「这一组真的带了 8 张」只能看它。 */
   anchorPhotos: number
+  /** 同一批锚点的**幅数**：每张进两幅（整幅 + 人脸特写），所以正常是张数 × 2。 */
+  anchorJpegs: number
   note: Stage3Note | null
   verdictsFile: string | null
 }
@@ -87,7 +89,7 @@ export async function runStage3(input: Stage3Input, deps: Stage3Deps): Promise<S
   if (!plan.length) {
     // 没有合法挑战者的数据集（段内凑不出第三张）就没有阶段 3。不花钱，名单原样。
     return { result: before, plan, planMd5: before.notes.stage3_plan_md5 ?? null, verdicts: [], route: null,
-             comparisons: 0, preflights: 0, anchorPhotos: 0, note: null, verdictsFile: null }
+             comparisons: 0, preflights: 0, anchorPhotos: 0, anchorJpegs: 0, note: null, verdictsFile: null }
   }
   const planMd5 = before.notes.stage3_plan_md5
   if (!planMd5) {
@@ -144,5 +146,6 @@ export async function runStage3(input: Stage3Input, deps: Stage3Deps): Promise<S
     )
   }
   return { result, plan, planMd5, verdicts, route, comparisons, preflights,
-           anchorPhotos: anchorBlock?.jpegs.length ?? 0, note: result.notes.stage3, verdictsFile }
+           anchorPhotos: anchorBlock ? input.anchors?.photos.length ?? 0 : 0,
+           anchorJpegs: anchorBlock?.jpegs.length ?? 0, note: result.notes.stage3, verdictsFile }
 }

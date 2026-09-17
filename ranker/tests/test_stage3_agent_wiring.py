@@ -42,10 +42,11 @@ def test_阶段3只读自己的rubric与锚点_不回落到阶段2的键():
 
 
 def test_两个阶段用锚点之前都查泄题():
-    assert re.search(r"const leak2 = anchorsInPool\(loadAnchors\(\), res\.ranking\)\s*\n\s*if \(leak2\.length\)", INDEX)
+    assert re.search(r"const leak2 = anchorsInPool\(anchors2, res\.ranking\)\s*\n\s*if \(leak2\.length\)", INDEX)
     assert re.search(r"const leak3 = anchorsInPool\(s3Anchors, res\.ranking\)\s*\n\s*if \(leak3\.length\)", INDEX)
-    # 阶段 2 的查重必须在取锚点图之前
-    assert INDEX.index("const leak2 = anchorsInPool") < INDEX.index("const anchorBlock = await buildAnchorBlock(loadAnchors(), exec.signal)")
+    # 查的和发的必须是同一份锚点：同一个变量，不是各读一次文件
+    assert "const anchors2 = loadAnchors()" in INDEX
+    assert INDEX.index("const leak2 = anchorsInPool") < INDEX.index("const anchorBlock = await buildAnchorBlock(anchors2, exec.signal)")
 
 
 def test_运行记录目录不按数据集指纹命名():
@@ -86,10 +87,18 @@ def test_失败的阶段也把已花的调用报出来():
 
 
 def test_run_json_记真发出的锚点张数():
-    """「配了几张」在锚点根本没发出去的运行上也成立，拿它核「四组都带了锚点」会开绿灯。"""
-    assert "anchor_photos_configured:" in INDEX and "anchor_photos_sent: stage2AnchorsSent," in INDEX
-    assert re.search(r"stage2AnchorsSent = anchorBlock\?\.jpegs\.length \?\? 0", INDEX)
-    assert "anchor_photos_sent: stage3.anchorPhotos," in INDEX
+    """三件事各记各的：配了几张、发了几张、发了几幅。
+
+    「配了几张」在锚点根本没发出去的运行上也成立；而张数与幅数混一个字段，
+    字段名说张数、值却是张数 × 2（每张进整幅 + 人脸特写）—— 执行方 2026-09-18 查出的正是这个，
+    判据 2.10 按 10/8 核，会把每一次正常运行都判成作废。
+    """
+    assert "anchor_photos_configured:" in INDEX
+    assert "anchor_photos_sent: stage2AnchorsSent, anchor_jpegs_sent: stage2AnchorJpegs," in INDEX
+    assert re.search(r"stage2AnchorsSent = anchorBlock \? anchors2\?\.photos\.length \?\? 0 : 0", INDEX), \
+        "阶段 2 的实发张数必须数照片张数，不是 jpegs 幅数"
+    assert re.search(r"stage2AnchorJpegs = anchorBlock\?\.jpegs\.length \?\? 0", INDEX)
+    assert "anchor_photos_sent: stage3.anchorPhotos, anchor_jpegs_sent: stage3.anchorJpegs," in INDEX
 
 
 def test_关着阶段3也记计划与计划md5():

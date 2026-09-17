@@ -530,3 +530,18 @@ run.json  stage2.anchor_photos_configured / stage2.anchor_photos_sent
    并拿它重排 —— 那是跨运行共享的可变文件，轮流跑四组时每轮被覆盖 4 次，交付路径上不再留。
 2. A 组（阶段 3 关）的 `run.json` 也写 `stage3.plan` 与 `stage3.plan_md5`（0 次调用白拿）。
    A 与 B 因此能在同一份计划口径上比决定性对局。
+
+### 修订 4.6 · 锚点「张数」与「幅数」分开记（修正修订 4.3 的字段）
+
+修订 4.3 落地时两个字段记的都是 **jpegs 幅数**：每张锚点进两幅（整幅 + 人脸特写，
+`assertAnchorImagesComplete` 强制 photos × 2），于是一次正常运行会写 阶段 2 = 20、B3 = 16，
+而修订 2.10 按 10 / 8 核 —— 每一次正常运行都会被判成作废（执行方 2026-09-18 部署 profile 时查出）。
+
+```
+run.json  stage2.anchor_photos_sent / stage2.anchor_jpegs_sent
+          stage3.anchor_photos_sent / stage3.anchor_jpegs_sent
+```
+
+修订 2.10 的表按 `anchor_photos_sent` 核：四组 阶段 2 = 10；B3 阶段 3 = 8，A/B1/B2 = 0。
+**再加一条记录自洽**（补充修订 4.4）：同一阶段 `anchor_jpegs_sent` 必须等于 `anchor_photos_sent × 2`，
+不等于说明锚点图取残了 —— 那种状态下提示词会引用不存在的范例图，而指标一切正常。

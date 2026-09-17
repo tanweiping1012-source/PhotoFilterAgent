@@ -589,8 +589,13 @@ def test_锚点只能由一个函数构造():
 
     assert ts.count('async function buildAnchorBlock(') == 1, \
         'buildAnchorBlock 不见了（或定义了两份）—— 锚点构造又散回各个调用点了'
-    # 生产 rank_photos 直接调它
-    assert 'buildAnchorBlock(loadAnchors()' in ts, '生产路径没有走 buildAnchorBlock'
+    # 生产 rank_photos 直接调它。
+    #
+    # 原来钉的是字面量 `buildAnchorBlock(loadAnchors()`。2026-09-18 泄题检查与取图改成共用
+    # 同一个变量（查的和发的必须是同一份锚点）之后这条会红 —— 钉住的是写法，不是意图。
+    # 改成钉「生产路径上确实调了它，且拿的是 loadAnchors() 读出来的那一份」。
+    assert re.search(r"const anchors2 = loadAnchors\(\)[\s\S]{0,800}?buildAnchorBlock\(anchors2,", ts), \
+        '生产路径没有走 buildAnchorBlock，或者传进去的不是 loadAnchors() 读出来的那一份'
     # 评测 run_pair_eval 的主体 2026-09-14 抽到了 pairEval.ts：index.ts 把同一个函数交进去，
     # pairEval.ts 只能经由它构造锚点。
     #
