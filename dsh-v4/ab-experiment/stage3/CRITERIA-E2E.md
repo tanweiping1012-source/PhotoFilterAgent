@@ -471,3 +471,62 @@ B3   同 B2 · 锚点 8 张
 第三轮标定的 9 个来自 calib-web 带了 `evalPairsFile`。
 
 核对时**以代码按该 profile 实际配置推导出的清单为准**，不写死一个数；阶段 3 接线（b622dda）没有新增工具。
+
+---
+
+## 修订 4 · 2026-09-18 · 开跑前（本轮 0 次付费调用）· 复审后代码变了，核对口径跟着变
+
+```
+来源   执行方对 d561a16 + b622dda 的独立复审（6 处）+ 它查出的金标清单不一致；
+       owner 逐条改完，合并为 e9a081b（CI 绿）。
+性质   全是「怎么核、怎么记账」，不动任何指标定义与主指标。
+```
+
+### 修订 4.1 · 金标只有一份来源（澄清 §5.1，补充 §9）
+
+主指标与决定性对局的金标一律取 `dsh-v4/eval-sets/eval-people-309-acceptance.gold.txt`（20 张）。
+**任何脚本、测试都不得自带一份副本。** 起因：`ranker/tests/test_stage3_wiring.py` 原本硬编码的 20 张与它差 2 张
+（多 DSCF9408 / DSCF9519，少 DSCF9102 / DSCF9435）。在冻结基线上两份都是 7 命中、决定性分类也相同，所以一直绿着；
+而这一轮阶段 2 开着、排序会变（9519 在 299 名次里第 24、9408 第 41），任何一张动一下，两份就给出差 1 的主指标。
+
+算分脚本启动时须比 **整份 20 张** 与 `duel-table.json` 的 `gold_hits` ∪ `undelivered_gold` 相同 ——
+只比命中数拦不住这种形态（换掉一张没进交付的金标，命中数一点不变）。
+
+### 修订 4.2 · 调用记账改为数真发出的调用，预检计入（取代修订 2.2 的「实际调用数」读法）
+
+原先阶段 2 记 `对数 × 2` 且只在成功后赋值 —— 中途 429 的那次摘要会说「0 次调用」，而 calls.jsonl 里已有 `sent=true` 的行；
+阶段 3 的计数活在函数局部变量里，一抛就没了。现在：
+
+```
+计数在 rank_photos 闭包里按 stage 累计 r.sent，跨异常仍在
+run.json    stage2.comparisons / stage2.preflights、stage3.comparisons / stage3.preflights（失败的那支也写）
+摘要        **付费模型调用 N 次**（比较 C 次 + 路由预检 P 次）；失败的阶段另报「失败前已经发出 N 次调用」
+```
+
+**预检（kind=preflight，不带图）也是一次真调用，计入总数**，每个阶段每次运行 1 次。
+§11 的成本估算据此上浮：四组 × 5 轮 × 2 个阶段 ≈ 多 40 次。
+
+核对时以 run.json 的 comparisons 为准，不再用「对数 × 2」倒推。
+
+### 修订 4.3 · 锚点张数核「实发」不核「配置」（取代修订 2.10 的「锚点张数」字段）
+
+`anchor_photos` 一个字段说不清两件事：跳过、失败、或因泄题没发锚点的运行，「配了 10 张」照样成立。拆开：
+
+```
+run.json  stage2.anchor_photos_configured / stage2.anchor_photos_sent
+          stage3_inputs.anchor_photos_configured / stage3.anchor_photos_sent
+```
+
+修订 2.10 那张表按 **`_sent`** 核：四组 阶段 2 `anchor_photos_sent` = 10；B3 阶段 3 `anchor_photos_sent` = 8，A/B1/B2 = 0。
+
+### 修订 4.4 · 记录自洽再加一条（补充修订 2.8 的作废规则）
+
+`run.json` 里某阶段的 `comparisons + preflights` 必须等于 `calls.jsonl` 里该 stage `sent=true` 的行数。
+两个数一个来自闭包计数器、一个来自各阶段自己写的调用记录，对不上说明记账那条缝断了 → 作废并停。
+
+### 修订 4.5 · 运行记录的两处结构变化（补充修订 1.5 的记录格式）
+
+1. 阶段 2 的裁决只写 `<运行记录>/stage2-verdicts.json`，重排也用它。原先另写一份 `workdir/verdicts-<数据集指纹>.json`
+   并拿它重排 —— 那是跨运行共享的可变文件，轮流跑四组时每轮被覆盖 4 次，交付路径上不再留。
+2. A 组（阶段 3 关）的 `run.json` 也写 `stage3.plan` 与 `stage3.plan_md5`（0 次调用白拿）。
+   A 与 B 因此能在同一份计划口径上比决定性对局。
