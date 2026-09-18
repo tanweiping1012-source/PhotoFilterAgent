@@ -168,12 +168,18 @@ def call_stats(calls: list, group: str) -> dict:
         cmp_sent = [c for c in sent if c.get("kind") != "preflight"]
         want = STAGE2_JPEGS if stage == 2 else GROUPS[group][3]
         jpegs = Counter(c.get("jpegs") for c in cmp_sent)
+        # 比较调用的耗时分布。外部故障的形态差一个量级（实测：正常最大 23 秒，
+        # 一次 terminated 挂了 249 秒才断），有基线才看得出「挂住了」
+        good = [c.get("elapsed_ms") or 0 for c in cmp_sent if c.get("ok") is not False]
         out[f"stage{stage}"] = {
             "rows": len(rows), "sent": len(sent), "compare_sent": len(cmp_sent),
             "preflight_sent": len([c for c in sent if c.get("kind") == "preflight"]),
             "failed": len([c for c in sent if c.get("ok") is False]),
             "jpegs": dict(jpegs), "jpegs_expected": want,
             "jpegs_off": {k: v for k, v in jpegs.items() if want is not None and k != want},
+            "elapsed_median_ms": int(statistics.median(good)) if good else None,
+            "elapsed_max_ms": max(good) if good else None,
+            "failed_elapsed_ms": [c.get("elapsed_ms") for c in sent if c.get("ok") is False],
         }
     return out
 
@@ -312,6 +318,11 @@ def main() -> int:
             print(f"        计划：上行局 段 {s['up_segments'] or '（无 —— 这次 +1 结构上够不着）'} · "
                   f"下行局 段 {s['down_segments']} · 与冻结对局表相同的段 {len(s['frozen_same_segments'])}/{s['contests']} "
                   f"{s['frozen_same_segments']}")
+        lat = " · ".join(f"阶段 {k[-1]} 中位 {s['calls'][k]['elapsed_median_ms'] / 1000:.1f}s / 最大 {s['calls'][k]['elapsed_max_ms'] / 1000:.1f}s"
+                         for k in ("stage2", "stage3") if s["calls"][k]["elapsed_median_ms"] is not None)
+        fail = [ms for k in ("stage2", "stage3") for ms in s["calls"][k]["failed_elapsed_ms"]]
+        if lat:
+            print(f"        比较调用耗时：{lat}" + (f" · **失败那次 {max(fail) / 1000:.0f}s**" if fail else ""))
         for w in s["swaps"]:
             print(f"        段 {w['segment']}：{w['out']} → {w['in']}{'（换上的是金标）' if w['in_is_gold'] else ''}")
         for v in s["void"]:
@@ -384,9 +395,12 @@ def main() -> int:
 
     if void:
         cost = sum(s["calls"][k]["sent"] for s in void for k in ("stage2", "stage3"))
-        print(f"\n作废运行 {len(void)} 次（不计入任何指标，调用单独记账 {cost} 次）：")
+        print(f"\n作废运行 {len(void)} 次（修订 2.11：不计入任何指标，调用单独记账，合计 {cost} 次）：")
         for s in void:
-            print(f"  {s['group']} {s['dir']}：{'；'.join(s['void'])}")
+            n = sum(s["calls"][k]["sent"] for k in ("stage2", "stage3"))
+            f = [ms for k in ("stage2", "stage3") for ms in s["calls"][k]["failed_elapsed_ms"]]
+            print(f"  {s['group']} {s['dir']}：**花掉 {n} 次**"
+                  + (f"（失败那次挂了 {max(f) / 1000:.0f} 秒）" if f else "") + f" —— {'；'.join(s['void'])}")
     total = sum(s["calls"][k]["sent"] for s in scored for k in ("stage2", "stage3"))
     print(f"\n成本合计（运行记录里数出来的 sent）：{total} 次，其中有效 "
           f"{sum(s['calls'][k]['sent'] for s in valid for k in ('stage2', 'stage3'))} 次")

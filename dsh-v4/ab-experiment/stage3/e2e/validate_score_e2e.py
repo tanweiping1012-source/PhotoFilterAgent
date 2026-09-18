@@ -222,7 +222,11 @@ def main() -> int:
            json.dumps(S.get(k, {}).get("void"), ensure_ascii=False))
     ck("图数不对：不作废，但打出来要人核", not S["jpegs"].get("void") and S["jpegs"]["calls"]["stage3"]["jpegs_off"]
        and "图数不等于本组应有值" in out, json.dumps(S["jpegs"]["calls"]["stage3"]["jpegs_off"]))
-    ck("成本记账：作废运行的调用单独报", "作废运行" in out and "调用单独记账" in out)
+    ck("成本记账：作废运行逐次报出花掉多少次", "调用单独记账" in out
+       and any("花掉 7 次" in l for l in out.splitlines()), [l for l in out.splitlines() if "花掉" in l][:2])
+    ck("比较调用耗时：中位与最大都报", up["calls"]["stage2"]["elapsed_median_ms"] == 10
+       and up["calls"]["stage3"]["elapsed_max_ms"] == 10 and "比较调用耗时" in out,
+       json.dumps({k: up["calls"][k]["elapsed_median_ms"] for k in ("stage2", "stage3")}))
 
     # 发布措辞（修订 2.4）：净变化 < 0 的次数决定档位
     one = tmp / "wording1"
