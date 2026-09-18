@@ -179,6 +179,10 @@ def call_stats(calls: list, group: str) -> dict:
             "jpegs": dict(jpegs), "jpegs_expected": want,
             "jpegs_off": {k: v for k, v in jpegs.items() if want is not None and k != want},
             "elapsed_median_ms": int(statistics.median(good)) if good else None,
+            # p90 与「超过 30 秒几次」一起看：实测最大值 24.8 → 43.2 → 51.7 秒一路被刷新，
+            # 只报极值会以为慢调用很常见，实际 p90 只有 7 秒出头 —— 是稀疏的离群点
+            "elapsed_p90_ms": sorted(good)[min(int(len(good) * 0.9), len(good) - 1)] if good else None,
+            "slow_over_30s": sum(1 for x in good if x > 30_000),
             "elapsed_max_ms": max(good) if good else None,
             "failed_elapsed_ms": [c.get("elapsed_ms") for c in sent if c.get("ok") is False],
         }
@@ -324,8 +328,11 @@ def main() -> int:
             print(f"        计划：上行局 段 {s['up_segments'] or '（无 —— 这次 +1 结构上够不着）'} · "
                   f"下行局 段 {s['down_segments']} · 与冻结对局表相同的段 {len(s['frozen_same_segments'])}/{s['contests']} "
                   f"{s['frozen_same_segments']}")
-        lat = " · ".join(f"阶段 {k[-1]} 中位 {s['calls'][k]['elapsed_median_ms'] / 1000:.1f}s / 最大 {s['calls'][k]['elapsed_max_ms'] / 1000:.1f}s"
-                         for k in ("stage2", "stage3") if s["calls"][k]["elapsed_median_ms"] is not None)
+        lat = " · ".join(
+            f"阶段 {k[-1]} 中位 {s['calls'][k]['elapsed_median_ms'] / 1000:.1f}s / p90 {s['calls'][k]['elapsed_p90_ms'] / 1000:.1f}s"
+            f" / 最大 {s['calls'][k]['elapsed_max_ms'] / 1000:.1f}s"
+            + (f"（超 30s 的 {s['calls'][k]['slow_over_30s']} 次）" if s["calls"][k]["slow_over_30s"] else "")
+            for k in ("stage2", "stage3") if s["calls"][k]["elapsed_median_ms"] is not None)
         fail = [ms for k in ("stage2", "stage3") for ms in s["calls"][k]["failed_elapsed_ms"]]
         if lat:
             print(f"        比较调用耗时：{lat}" + (f" · **失败那次 {max(fail) / 1000:.0f}s**" if fail else ""))
@@ -410,12 +417,18 @@ def main() -> int:
 
     if void:
         cost = sum(s["calls"][k]["sent"] for s in void for k in ("stage2", "stage3"))
-        print(f"\n作废运行 {len(void)} 次（修订 2.11：不计入任何指标，调用单独记账，合计 {cost} 次）：")
+        # 作废分两种形态：没花钱的（配置/流程在发调用之前就被拦下）与有沉没调用的。
+        # 修订 2.11 只说「单独记账」，但这两种对「还要补跑多少钱」的含义完全不同
+        sunk = [s for s in void if sum(s["calls"][k]["sent"] for k in ("stage2", "stage3")) > 0]
+        free = [s for s in void if s not in sunk]
+        print(f"\n作废运行 {len(void)} 次（修订 2.11：不计入任何指标，调用单独记账）："
+              f"**跑到一半 {len(sunk)} 次、沉没 {cost} 次调用**；没花钱就被拦下 {len(free)} 次")
         for s in void:
             n = sum(s["calls"][k]["sent"] for k in ("stage2", "stage3"))
             f = [ms for k in ("stage2", "stage3") for ms in s["calls"][k]["failed_elapsed_ms"]]
-            print(f"  {s['group']} {s['dir']}：**花掉 {n} 次**"
-                  + (f"（失败那次挂了 {max(f) / 1000:.0f} 秒）" if f else "") + f" —— {'；'.join(s['void'])}")
+            tag = f"**沉没 {n} 次**" if n else "没花钱（发调用之前就拦下了）"
+            print(f"  {s['group']} {s['dir']}：{tag}"
+                  + (f"（失败那次 {max(f) / 1000:.0f} 秒）" if f else "") + f" —— {'；'.join(s['void'])}")
     total = sum(s["calls"][k]["sent"] for s in scored for k in ("stage2", "stage3"))
     print(f"\n成本合计（运行记录里数出来的 sent）：{total} 次，其中有效 "
           f"{sum(s['calls'][k]['sent'] for s in valid for k in ('stage2', 'stage3'))} 次")

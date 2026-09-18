@@ -227,8 +227,13 @@ def main() -> int:
            json.dumps(S.get(k, {}).get("void"), ensure_ascii=False))
     ck("图数不对：不作废，但打出来要人核", not S["jpegs"].get("void") and S["jpegs"]["calls"]["stage3"]["jpegs_off"]
        and "图数不等于本组应有值" in out, json.dumps(S["jpegs"]["calls"]["stage3"]["jpegs_off"]))
-    ck("成本记账：作废运行逐次报出花掉多少次", "调用单独记账" in out
-       and any("花掉 7 次" in l for l in out.splitlines()), [l for l in out.splitlines() if "花掉" in l][:2])
+    ck("成本记账：作废运行逐次报出沉没多少次", "调用单独记账" in out
+       and any("沉没 7 次" in l for l in out.splitlines()), [l for l in out.splitlines() if "沉没" in l][:2])
+    ck("作废分两种形态：跑到一半 vs 没花钱就被拦下",
+       "跑到一半" in out and "没花钱就被拦下" in out, [l for l in out.splitlines() if "跑到一半" in l][:1])
+    ck("耗时报 p90 与超 30 秒的次数", up["calls"]["stage2"]["elapsed_p90_ms"] == 10
+       and up["calls"]["stage2"]["slow_over_30s"] == 0 and "p90" in out,
+       json.dumps({"p90": up["calls"]["stage2"]["elapsed_p90_ms"]}))
     ck("比较调用耗时：中位与最大都报", up["calls"]["stage2"]["elapsed_median_ms"] == 10
        and up["calls"]["stage3"]["elapsed_max_ms"] == 10 and "比较调用耗时" in out,
        json.dumps({k: up["calls"][k]["elapsed_median_ms"] for k in ("stage2", "stage3")}))
