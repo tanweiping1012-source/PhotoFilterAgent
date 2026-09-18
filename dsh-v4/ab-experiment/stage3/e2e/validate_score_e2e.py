@@ -154,6 +154,8 @@ def main() -> int:
                               reverse=(6,))
     runs["b3-ok"] = make_run(tmp, "b3-ok", "B3", {UP_SEG: "b"})
     runs["v-s2fail"] = make_run(tmp, "v-s2fail", "B1", stage2="failed")
+    # 阶段 2 先失败的 B2：rubric 没读过是必然，不该再报「rubric md5 不符」
+    runs["v-s2fail-b2"] = make_run(tmp, "v-s2fail-b2", "B2", stage2="failed", stage3_status="failed", rubric_md5=None)
     runs["v-s3fail"] = make_run(tmp, "v-s3fail", "B1", stage3_status="failed")
     runs["v-missing"] = make_run(tmp, "v-missing", "B1", note_extra={"missing": 2})
     runs["v-unused"] = make_run(tmp, "v-unused", "B1", note_extra={"unused": 1})
@@ -225,6 +227,9 @@ def main() -> int:
     for k, needle in voids.items():
         ck(f"作废：{k}", S.get(k, {}).get("void") and any(needle in x for x in S[k]["void"]),
            json.dumps(S.get(k, {}).get("void"), ensure_ascii=False))
+    ck("阶段 2 先失败的 B2：只报阶段 2，不报「rubric md5 不符」（假警报）",
+       S["v-s2fail-b2"]["void"] and all("rubric md5" not in x for x in S["v-s2fail-b2"]["void"]),
+       json.dumps(S["v-s2fail-b2"]["void"], ensure_ascii=False)[:150])
     ck("图数不对：不作废，但打出来要人核", not S["jpegs"].get("void") and S["jpegs"]["calls"]["stage3"]["jpegs_off"]
        and "图数不等于本组应有值" in out, json.dumps(S["jpegs"]["calls"]["stage3"]["jpegs_off"]))
     ck("成本记账：作废运行逐次报出沉没多少次", "调用单独记账" in out
@@ -297,6 +302,9 @@ def main() -> int:
          lambda S2: S2["b1-up"]["up_segments"] != [UP_SEG]),
         ("去掉 note.missing 的作废规则", '        if note.get("missing"):\n', '        if False:\n',
          lambda S2: not S2["v-missing"]["void"]),
+        ("阶段 3 没跑到也照样核 rubric（假警报回来了）",
+         '    elif not ran3:\n', '    elif False:\n',
+         lambda S2: any("rubric md5" in x for x in S2["v-s2fail-b2"]["void"])),
         ("组别只看 config、不看实际读到什么",
          '        if want_rubric and (ins.get("rubric_md5") != RUBRIC_MD5):\n', '        if False:\n',
          lambda S2: not S2["v-rubric"]["void"]),

@@ -117,9 +117,15 @@ def classify(run: dict) -> tuple[str, list]:
     if group is None:
         return "?", [f"config 的阶段 3 三个键组合不对应任何一组：{ {k: cfg.get(k) for k in ('stage3Vlm', 'stage3RubricFile', 'stage3AnchorsFile')} }"]
     ins = run.get("stage3_inputs")
+    ran3 = (run.get("stage3") or {}).get("status") in ("ran", "no_contests")
     if group == "A":
         if ins is not None:
             bad.append(f"A 组不该有 stage3_inputs，实际 {ins}")
+    elif not ran3:
+        # 阶段 3 压根没跑到（多半是阶段 2 先失败了），rubric / 锚点自然没读过。
+        # 这时再报「rubric md5 不符」是**假警报**：那一次本来就因为阶段 2 作废了，
+        # 多报一条不成立的原因只会让人以后不看这些原因
+        pass
     elif ins is None:
         bad.append(f"{group} 组没有 stage3_inputs —— 核不了这一次到底带没带 rubric / 锚点")
     else:
