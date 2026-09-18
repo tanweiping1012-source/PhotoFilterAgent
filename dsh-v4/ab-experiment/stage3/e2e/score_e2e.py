@@ -364,6 +364,10 @@ def main() -> int:
                 print(f"        段 {xs[0]['segment']} {pa} vs {pb}（金标是 {gold_name}）："
                       f"出现 {len(xs)} 次 · 判中 {ok} 次 · 都不够格 {nei} 次 · 未表态 {un} 次 · "
                       f"判决取值 {sorted({str(x['winner']) for x in xs})}")
+        # 一致率 × 换人 × 净变化：翻覆的局**结构上不可能换人**（要挑战者正反都赢），
+        # 所以「一致率低却换得多」的意思是「少数表了态的局里挑战者赢的比例高」。攒够五轮再看，现在只列不解读
+        trio = [(f"{s['consistent']}/{s['contests']}", s["note"].get("swapped", 0), s["net"]) for s in rows]
+        print(f"      一致率 × 换人 × 净变化（逐次，不解读）：{trio}")
         with_up = [s for s in rows if s["up_segments"]]
         print(f"      计划稳定性：{len(with_up)}/{len(rows)} 次的计划里有上行局"
               f"（有上行局的那几次：{[s['up_segments'] for s in with_up] or '无'}）· "
