@@ -240,6 +240,14 @@ def main() -> int:
         make_run(one, f"w{i:02d}", "B1", {DOWN_SEG: "b"} if i < 3 else {})
     rc2, out2, _ = score(SCORE, [one / f"w{i:02d}" for i in range(5)])
     ck("5 次里 3 次净变化 < 0 → 文档写作「不推荐开启」", "不推荐开启" in out2 and rc2 == 0)
+    # 同组两两重合：造两次 B1，第二次把交付换掉两张 → 重合 18/20
+    two = tmp / "pairwise"
+    two.mkdir()
+    make_run(two, "p1", "B1")
+    make_run(two, "p2", "B1", delivered_final=SELECTED[:18] + ["DSCF9406.JPG", "DSCF9423.JPG"])
+    rcp, outp, _ = score(SCORE, [two / "p1", two / "p2"])
+    line = next((l for l in outp.splitlines() if "同组两两重合" in l), "")
+    ck("同组两两重合：两次差两张 → 交付₃ 重合 18", "交付₃ [18]" in line and rcp == 0, line.strip()[:110])
     rc3, out3, _ = score(SCORE, [tmp / "b1-up", tmp / "b3-ok"])
     ck("没有一次净变化 < 0 → 「实测未发现阶段 3 把精选换下去」", "实测未发现阶段 3 把精选换下去" in out3)
     ck("合并数不给置信区间（修订 2.7）", "不给置信区间" in out2 and "置信区间" not in out2.split("不给置信区间")[0])

@@ -40,6 +40,7 @@ import json
 import statistics
 import sys
 from collections import Counter, defaultdict
+from itertools import combinations
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[4]
@@ -388,6 +389,15 @@ def main() -> int:
         print(f"      计划稳定性：{len(with_up)}/{len(rows)} 次的计划里有上行局"
               f"（有上行局的那几次：{[s['up_segments'] for s in with_up] or '无'}）· "
               f"与冻结对局表相同的段数 {[len(s['frozen_same_segments']) for s in rows]}")
+        # 同组内部两两重合：同一配置、同一批照片、同一条指令，交付名单还能差多少。
+        # A 组（阶段 3 关）量的就是**阶段 2 的噪声带宽**；B 组的交付₂ 同理，交付₃ 再叠上阶段 3。
+        # 组间差要拿这把尺子去读 —— 比组间差本身更该先看（修订 1.4）
+        if len(rows) >= 2:
+            def pairwise(key):
+                return sorted(len(set(x[key]) & set(y[key])) for x, y in combinations(rows, 2))
+            p2, p3 = pairwise("delivered_after_stage2"), pairwise("delivered_final")
+            print(f"      同组两两重合（{len(p3)} 对）：交付₂ {p2}（{min(p2)}~{max(p2)}）· "
+                  f"交付₃ {p3}（{min(p3)}~{max(p3)}）—— 同配置下的噪声带宽，读组间差要先看它")
         lists = {tuple(s["delivered_final"]) for s in rows}
         print(f"      跨次一致性：交付名单 {len(lists)} 种 / {len(rows)} 次 · 计划 md5 {len({s['plan_md5'] for s in rows})} 种")
         c2 = sum((s["record"]["stage2"] or {}).get("comparisons", 0) for s in rows)
