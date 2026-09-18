@@ -166,6 +166,9 @@ def main() -> int:
     runs["v-jpegs"] = make_run(tmp, "v-jpegs", "B1", s2_jpegs_sent=19)            # 幅数 ≠ 张数 × 2
     runs["v-s3anchor"] = make_run(tmp, "v-s3anchor", "B3", s3_anchor_photos=7)    # B3 实发只有 7 张
     runs["jpegs"] = make_run(tmp, "jpegs", "B1", {UP_SEG: "b"}, s3_jpegs=3)
+    shifted = [dict(x) for x in PLAN]
+    shifted[0] = {**shifted[0], "segment": 99}          # 同一对挪到别的段号
+    runs["plan-shift"] = make_run(tmp, "plan-shift", "B1", plan=shifted)
 
     rc, out, S = score(SCORE, runs.values())
     checks = []
@@ -196,6 +199,14 @@ def main() -> int:
     ck("「都不够格」单独一栏、不进有方向的分母", mix.get("dec_neither") == 1, str(mix.get("dec_neither")))
     ck("未表态 = 翻覆 + 正反都平局，共 2 局", mix.get("dec_unstated") == 2, str(mix.get("dec_unstated")))
     ck("反向键写的裁决也认（段 6 不算「没判」）", mix.get("dec_unjudged") == 0, str(mix.get("dec_unjudged")))
+    ck("计划稳定性：全用冻结计划时 10 段全同、上行局是段 7",
+       up.get("frozen_same_segments") == sorted(x["segment"] for x in PLAN)
+       and up.get("up_segments") == [UP_SEG] and up.get("down_segments") == sorted(FROZEN["reach"]["down"]),
+       f"同段 {up.get('frozen_same_segments')} 上行 {up.get('up_segments')} 下行 {up.get('down_segments')}")
+    ck("计划稳定性：同一对挪到别的段号 → 不算「与冻结相同」",
+       len(S["plan-shift"]["frozen_same_segments"]) == len(PLAN) - 1
+       and PLAN[0]["segment"] not in S["plan-shift"]["frozen_same_segments"],
+       json.dumps(S["plan-shift"]["frozen_same_segments"]))
     ck("B3：组别 B3、锚点 8 张、每次 20 幅、无作废",
        b3.get("group") == "B3" and not b3.get("void") and not b3["calls"]["stage3"]["jpegs_off"],
        json.dumps(b3.get("void"), ensure_ascii=False))
@@ -254,6 +265,14 @@ def main() -> int:
          lambda S2: len(S2["b1-up"]["swaps"]) != 1),
         ("反向键的裁决不认", 'v = verdicts.get((a, b)) or verdicts.get((b, a))', 'v = verdicts.get((a, b))',
          lambda S2: S2["b2-mix"]["dec_unjudged"] != 0),
+        ("与冻结表比对时不看段号，只看对子",
+         'same_frozen = sorted(x["segment"] for x in duels if frozen.get(x["segment"]) == (x["a"], x["b"]))',
+         'same_frozen = sorted(x["segment"] for x in duels if (x["a"], x["b"]) in set(frozen.values()))',
+         lambda S2: len(S2["plan-shift"]["frozen_same_segments"]) != len(PLAN) - 1),
+        ("上行局按在位是金标算（定义反了）",
+         '"up_segments": sorted(x["segment"] for x in dec if x["gold_side"] == "b"),',
+         '"up_segments": sorted(x["segment"] for x in dec if x["gold_side"] == "a"),',
+         lambda S2: S2["b1-up"]["up_segments"] != [UP_SEG]),
         ("去掉 note.missing 的作废规则", '        if note.get("missing"):\n', '        if False:\n',
          lambda S2: not S2["v-missing"]["void"]),
         ("组别只看 config、不看实际读到什么",

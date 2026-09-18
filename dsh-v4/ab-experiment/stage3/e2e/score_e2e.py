@@ -25,6 +25,9 @@ stage2-verdicts.json、stage3-verdicts.json。**判据写在看到数据之前**
   · **组别按运行记录自己判**：config 里配了什么路径 → 应当是哪一组；stage3_inputs 记的是实际读到什么。
     两者对不上就是作废（修订 2.10），不是「按配置当成那一组算」
   · 换人、不换的原因、双向一致率、读码率、contradiction、实际调用数、每次调用的图数、跨次一致性：照 §5.3 全报
+  · **每次的计划稳定性**：阶段 2 的判决会换掉一部分对局，所以每次运行报「与冻结对局表相同的段」
+    以及**本次计划里有没有上行局**（挑战者是金标、在位不是）。没有上行局的那次，+1 结构上就够不着 ——
+    不报这一项，单看「某次 +1」会被读成「阶段 3 能加分」
 
 **不许做的事**（§6）：不把重合数的变化写成「准确率提升 / 下降 X%」；不与第二步 A/B 或第三轮标定做「提升了多少」；
 不引用 14/20 以上的任何上限。这个脚本只输出数，措辞规则见 §6、§7 与修订 2.4。
@@ -204,7 +207,13 @@ def record_consistency(run: dict, v3: dict | None, calls: list) -> list:
     return out
 
 
-def score_run(r: dict, gold: set) -> dict:
+def frozen_pairs(duel_table: Path) -> dict:
+    """冻结对局表：{段号: (擂主, 挑战者)}。只用来做对照，不参与任何判定。"""
+    f = json.loads(duel_table.read_text(encoding="utf-8"))
+    return {x["seg"]: (x["incumbent"], x["challenger"]) for x in f["duels"] if x["challenger"]}
+
+
+def score_run(r: dict, gold: set, frozen: dict) -> dict:
     run, v3 = r["run"], r["v3"]
     group, inputs_bad = classify(run)
     void = void_reasons(run, group, inputs_bad) + record_consistency(run, v3, r["calls"])
@@ -232,6 +241,8 @@ def score_run(r: dict, gold: set) -> dict:
         })
     dec = [x for x in duels if x["gold_side"]]
     directional = [x for x in dec if x["winner"] in ("a", "b")]
+    # 与冻结对局表逐段比：段号与那一对都相同才算同一局
+    same_frozen = sorted(x["segment"] for x in duels if frozen.get(x["segment"]) == (x["a"], x["b"]))
     return {
         "dir": r["dir"].name, "group": group, "void": void,
         "run_id": run.get("run_id"), "fingerprint": run.get("fingerprint"),
@@ -246,6 +257,9 @@ def score_run(r: dict, gold: set) -> dict:
         # 修订 2.3：每次运行按自己的计划现算上行 / 下行与可达区间
         "up": sum(1 for x in dec if x["gold_side"] == "b"),
         "down": sum(1 for x in dec if x["gold_side"] == "a"),
+        "up_segments": sorted(x["segment"] for x in dec if x["gold_side"] == "b"),
+        "down_segments": sorted(x["segment"] for x in dec if x["gold_side"] == "a"),
+        "frozen_same_segments": same_frozen,
         "decisive": len(dec),
         "dec_directional": len(directional),
         "dec_correct": sum(1 for x in directional if x["winner"] == x["gold_side"]),
@@ -278,7 +292,8 @@ def main() -> int:
     gold = load_gold(a.gold, a.duel_table, a.baseline)
     print(f"金标 {len(gold)} 张（{a.gold.name}）· 冻结件自检通过：整份清单、冻结名单上的命中、上行/下行都与 duel-table.json 一致\n")
 
-    scored = [score_run(read_run(d), gold) for d in a.runs]
+    frozen = frozen_pairs(a.duel_table)
+    scored = [score_run(read_run(d), gold, frozen) for d in a.runs]
     scored.sort(key=lambda s: (s["group"], s["started_at"] or ""))
     valid = [s for s in scored if not s["void"]]
     void = [s for s in scored if s["void"]]
@@ -293,6 +308,10 @@ def main() -> int:
               f"{s['note'].get('swapped', 0):>5}{s['decisive']:>6}"
               f"{hit:>11}{s['dec_neither']:>8}{s['dec_unstated']:>6}"
               f"{reach(s):>7}  {str(s['plan_md5'])[:8]} {mark}")
+        if s["contests"]:
+            print(f"        计划：上行局 段 {s['up_segments'] or '（无 —— 这次 +1 结构上够不着）'} · "
+                  f"下行局 段 {s['down_segments']} · 与冻结对局表相同的段 {len(s['frozen_same_segments'])}/{s['contests']} "
+                  f"{s['frozen_same_segments']}")
         for w in s["swaps"]:
             print(f"        段 {w['segment']}：{w['out']} → {w['in']}{'（换上的是金标）' if w['in_is_gold'] else ''}")
         for v in s["void"]:
@@ -345,6 +364,10 @@ def main() -> int:
                 print(f"        段 {xs[0]['segment']} {pa} vs {pb}（金标是 {gold_name}）："
                       f"出现 {len(xs)} 次 · 判中 {ok} 次 · 都不够格 {nei} 次 · 未表态 {un} 次 · "
                       f"判决取值 {sorted({str(x['winner']) for x in xs})}")
+        with_up = [s for s in rows if s["up_segments"]]
+        print(f"      计划稳定性：{len(with_up)}/{len(rows)} 次的计划里有上行局"
+              f"（有上行局的那几次：{[s['up_segments'] for s in with_up] or '无'}）· "
+              f"与冻结对局表相同的段数 {[len(s['frozen_same_segments']) for s in rows]}")
         lists = {tuple(s["delivered_final"]) for s in rows}
         print(f"      跨次一致性：交付名单 {len(lists)} 种 / {len(rows)} 次 · 计划 md5 {len({s['plan_md5'] for s in rows})} 种")
         c2 = sum((s["record"]["stage2"] or {}).get("comparisons", 0) for s in rows)
