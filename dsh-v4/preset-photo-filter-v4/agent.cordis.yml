@@ -261,3 +261,14 @@
     allowedExportRoots: ["@@EXPORT@@"]
     rankerTimeoutMs: 1800000
     defaultTarget: 20
+    # 阶段 2 的两项，2026-09-18 补：web 会话用的是 **preset 这一份 config**，
+    # 而它们此前只写在 profile 里 —— 于是 web 里的阶段 2 一直裸跑：
+    # 一张锚点都没发（anchorsFile 落到 schema 默认的 ''），
+    # 也不允许模型答「两张都不够格」（allowNeither 落到 false）。
+    # 第四轮端到端的第一次冒烟花了 121 次调用才看见，而张数、名单、指纹、调用数全都正常。
+    # headless 不读 preset，那一路 profile 是活的，所以这个缺陷只打 web。
+    anchorsFile: @@DSH_HOME@@/anchors.json
+    allowNeither: true
+    # 显式写出来，尽管 schema 默认就是 true：preset 是 web 会话唯一的真相来源，
+    # 这里不写就得去读插件源码才知道阶段 2 开着。
+    stage2Vlm: true

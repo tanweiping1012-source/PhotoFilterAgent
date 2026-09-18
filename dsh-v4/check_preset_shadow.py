@@ -1,17 +1,41 @@
 #!/usr/bin/env python3
-"""找出被 preset 盖掉、因而不生效的 profile 配置键。
+"""找出 web 会话里**不生效**的 profile 配置键。
 
-2026-09-05 这件事坑掉了一整轮实验（120 次付费调用作废）。
+同一类事故坑掉过两轮实验：2026-09-05 那次 120 次付费调用作废，
+2026-09-18 第四轮端到端的第一次冒烟又是 121 次。
 
-web 路径下 preset 与 profile 的 `config` 是**逐键合并，preset 覆盖 profile**。
-三个实验 profile 从 01:09 起就写着 10 条锚点排除，02:06 跑出来仍是 309 张、
-含全部 10 张锚点 —— 因为 preset 也定义了 `excludedRelativePaths`，profile 那份是死的。
-指标一切正常：张数、名单、重合度都不报警。
+## 机制（2026-09-18 更正，两条都是实测）
 
-分组实验尤其致命：处理变量若落在被覆盖的键上，三组其实完全一样，
+原先这里写的是「逐键合并，preset 覆盖 profile」。**不准。**
+preset 会自己挂一棵子树（harness `packages/preset/agent-presets/src/mount.ts`），
+于是同一个插件被挂了两次，两份 config 各自独立：
+
+  · **模型真正调到的同名工具，用的是 preset 那一份 config。**
+    实测（09-18 作废的那次运行记录）：profile 写着 `anchorsFile` 与 `allowNeither: true`，
+    而 run.json 记下的生效值是 `''` 和 `false` —— 也就是 preset 没写的键**落到了 schema 默认值**，
+    没有回落到 profile
+  · **profile 那棵子树并没有消失**：只有它才有的**额外工具**照常注册。
+    实测（第三轮标定的 web 会话）：calib-web 的 `evalPairsFile` 让 `run_pair_eval` /
+    `run_instrument_check` 出现在模型可见的 9 个工具里，而 preset 里没有这个键
+
+所以这份报告是**风险清单，不是判决**：最终以运行记录（run.json 的 config）为准。
+
+两次事故正好是这个模型的两半：
+
+  · 09-05：两边都写了 `excludedRelativePaths`，preset 那份赢 —— 旧模型看得见
+  · 09-18：只有 profile 写了 `anchorsFile` / `allowNeither`，于是阶段 2 一张锚点都没发，
+    而张数、名单、指纹、调用数**全部正常**。旧模型看不见，这道守卫当时是绿的
+
+分组实验尤其致命：处理变量若落在不生效的键上，各组其实完全一样，
 却会得出「这个变量没有效果」的结论。
 
-**只报值不同的键。** 值相同的覆盖没有后果，报出来只会淹掉真信号。
+## 报什么
+
+  ① 两边都写了、值不同        preset 的值会赢
+  ② profile 写了、preset 没写   同名工具拿到的是 schema 默认值（不是 profile 的值）；
+                              只有这个键才启用的**额外工具**不受影响
+
+值相同的覆盖没有后果，不报 —— 报出来只会淹掉真信号。
 headless profile 不读 preset，跳过。
 """
 import sys
@@ -72,12 +96,21 @@ def main() -> int:
             k for k, v in prof.items()
             if k in preset and preset[k] != v          # 值相同的覆盖无后果，不报
         ]
+        # preset 没写的键不会回落到 profile，而是回落到 schema 默认值。
+        # 2026-09-18 漏掉 anchorsFile / allowNeither 的就是这一类：旧版只看 ① 那一类。
+        dropped = sorted(k for k in prof if k not in preset)
         if shadowed:
             bad = True
             print(f"  ❌ {prof_dir.name}：这些键写了也不生效，preset 的值会赢")
             for k in sorted(shadowed):
                 for line in _explain(k, prof[k], preset[k]):
                     print(f"       {line}")
+        if dropped:
+            bad = True
+            print(f"  ❌ {prof_dir.name}：这些键 preset 没写 —— 模型调到的同名工具拿的是 schema 默认值，不是 profile 的值")
+            print("       （只有这个键才启用的额外工具不受影响，见 docstring；最终以 run.json 的 config 为准）")
+            for k in dropped:
+                print(f"       {k}: profile={_brief(prof[k])}  ←同名工具实际用→  插件 schema 的默认值")
     if not bad:
         print("  ✅ 没有被 preset 盖掉的 profile 键")
     return 1 if bad else 0
