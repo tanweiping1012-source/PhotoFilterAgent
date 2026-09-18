@@ -7,13 +7,16 @@
 
     第四轮端到端 A/B 的每一次运行（scan_folder + rank_photos，判据 CRITERIA-E2E 修订 2.9）：
     python check_session_tools.py <session 目录> --mode rank --since <…>
-        --folder <本轮写死的扫描目录> [--target 20] [--style quality]
+        --preset <本组的 preset 名> --folder <本轮写死的扫描目录> [--target 20] [--style quality]
 
 退出码：0 全对 · 1 只有不花钱的多余调用（警告）· 2 **停**（多花了钱、跑的不是该跑的那一遍、核的不是这次的会话、
         挂错了 preset，或者**检查脚本自己出错了** —— 崩溃和 SystemExit("…") 默认也是 1，已统一改成 2）
 
 几条规矩，每条都对着一个会静默多花钱、测错对象、或者核错东西的方式：
-  · 会话实际挂的 preset 必须是 photo-filter-v4：取**最后一次** agent-preset/selected，一次都没选过才看头部的
+  · 会话实际挂的 preset 必须是**本组那一份**（rank 模式下用 --preset 指名，别的模式默认 photo-filter-v4）。
+    2026-09-18 作废的那次 A 组冒烟就栽在这里：会话挂的是基线 preset，而分组的三个键写在各组自己的 preset 里 ——
+    **preset 就是分组本身**，挂错了四组会跑成同一组，而指纹、候选池、调用数全都正常。
+    取**最后一次** agent-preset/selected，一次都没选过才看头部的
     agentPreset（与 DSH 的 resolveSessionPreset 同一个口径）。web 会话按 settings 里的默认 preset 建 ——
     这台机器上是 cordis —— 要在会话还空着时切过去。cordis preset 自带 bash / read / write / glob / grep /
     subagent 这些工具，挂在会话层，profile 里写的 disabled 管不到（09-02 会话 7abc4612 的 request/header
@@ -117,6 +120,7 @@ def main(argv=None) -> int:
     ap.add_argument("session", type=Path)
     ap.add_argument("--mode", choices=["smoke", "full", "rank"], required=True)
     ap.add_argument("--since", required=True, help="发起这次运行之前记下的时间：ISO（2026-09-14T20:30:00）或 epoch 毫秒")
+    ap.add_argument("--preset", help="本次会话应当挂的 preset；rank 模式必须显式给（preset 就是分组）")
     # 评测那两遍（run_pair_eval）
     ap.add_argument("--pairs", help="这一遍的考题文件名，如 calib-arm2-rubric.json")
     ap.add_argument("--expect-out", type=Path, help="这一遍归档的结果文件")
@@ -129,7 +133,7 @@ def main(argv=None) -> int:
 
     # 模式与参数必须配套。少一个就核不了那一项，而少了却照样打印「✅」是最坏的结果
     need = {"smoke": ("pairs", "expect_out", "out_under"), "full": ("pairs", "expect_out", "out_under"),
-            "rank": ("folder",)}[a.mode]
+            "rank": ("folder", "preset")}[a.mode]
     dash = lambda k: "--" + k.replace("_", "-")
     miss = [dash(k) for k in need if getattr(a, k) is None]
     if miss:   # 守卫：模式与参数配套
@@ -155,9 +159,12 @@ def main(argv=None) -> int:
     since_ms = to_ms(a.since)
     if t0 is None or t0 < since_ms:   # 守卫：会话时间
         stop.append(f"会话最早一条记录 {fmt_ms(t0)} 早于 --since {fmt_ms(since_ms)}（或没有时间戳）—— 这不是这次运行的会话")
-    if preset != PRESET:   # 守卫：preset
-        stop.append(f"会话实际挂的 preset 是 {preset!r}，应为 {PRESET!r} —— 别的 preset（比如默认的 cordis）"
-                    f"自带 bash / read / write / subagent 这类工具，profile 管不到；headless 会话没有 preset，也不算")
+    want_preset = a.preset or PRESET
+    if preset != want_preset:   # 守卫：preset
+        stop.append(f"会话实际挂的 preset 是 {preset!r}，应为 {want_preset!r} —— **preset 就是分组**："
+                    f"阶段 3 的三个键写在各组自己的 preset 里，挂错了这一次就不是这一组（2026-09-18 作废的那次就是）。"
+                    f"别的 preset（比如默认的 cordis）还自带 bash / read / write / subagent，profile 管不到；"
+                    f"headless 会话没有 preset，也不算")
     # 这一遍该调的工具。评测那两遍只有 run_pair_eval；端到端那一遍是「先扫描、再排序」两件事
     planned = ("scan_folder", "rank_photos") if a.mode == "rank" else ("run_pair_eval",)
     other_paid = sorted({n for n in names if n in paid and n not in planned})
@@ -229,7 +236,7 @@ def main(argv=None) -> int:
         return 1
     done = ("只调了 1 次 scan_folder + 1 次 rank_photos，目录与参数符合本组" if a.mode == "rank"
             else "只调了 1 次 run_pair_eval，参数符合这一遍")
-    print(f"✅ 这是这次运行的会话，挂的是 {PRESET}，{done}")
+    print(f"✅ 这是这次运行的会话，挂的是 {want_preset}，{done}")
     return 0
 
 

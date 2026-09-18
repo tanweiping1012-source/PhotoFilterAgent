@@ -72,7 +72,8 @@ GOOD = ("run_pair_eval", {"limit": 1, "pairs": A1, "out": O1})
 FULL2 = ("run_pair_eval", {"pairs": A2, "out": O2})
 SMOKE1 = ["--mode", "smoke", "--pairs", A1, "--expect-out", O1, "--out-under", ARCH]
 FULL = ["--mode", "full", "--pairs", A2, "--expect-out", O2, "--out-under", ARCH]
-RANK = ["--mode", "rank", "--folder", FOLDER]
+E2E_PRESET = "photo-filter-v4-e2e-a"
+RANK = ["--mode", "rank", "--folder", FOLDER, "--preset", E2E_PRESET]
 SCAN = ("scan_folder", {"folder": FOLDER})
 RANK20 = ("rank_photos", {"target": 20, "style": "quality"})
 # cordis 这类 preset 在会话层自带的工具，名字取自真实会话 7abc4612 的 request/header
@@ -105,22 +106,24 @@ CASES = [
      {"header_preset": "photo-filter-v4", "picks": ()}),
     ("S23 调了 bash / read / write / glob / grep / subagent", [*GENERIC, GOOD], SMOKE1, 1, {}),
     # ── 第四轮端到端：scan_folder 1 次 + rank_photos 1 次 ──────────────────
-    ("R1  合规运行（显式 target/style）", [SCAN, RANK20], RANK, 0, {}),
-    ("R2  合规运行（不给参数，用 profile 默认）", [SCAN, ("rank_photos", {})], RANK, 0, {}),
-    ("R3  没调 scan_folder", [RANK20], RANK, 2, {}),
-    ("R4  scan_folder 调了两次（跑完又扫一遍）", [SCAN, RANK20, SCAN], RANK, 2, {}),
-    ("R5  rank_photos 调了两次", [SCAN, RANK20, RANK20], RANK, 2, {}),
-    ("R6  顺序反了（先 rank_photos）", [RANK20, SCAN], RANK, 2, {}),
-    ("R7  style 是 mood", [SCAN, ("rank_photos", {"target": 20, "style": "mood"})], RANK, 2, {}),
-    ("R8  target 是 10", [SCAN, ("rank_photos", {"target": 10, "style": "quality"})], RANK, 2, {}),
-    ("R9  扫描的不是本轮那个目录", [("scan_folder", {"folder": FOLDER + "/me-pick"}), RANK20], RANK, 2, {}),
-    ("R10 多调了 compare_within_groups", [SCAN, RANK20, ("compare_within_groups", {})], RANK, 2, {}),
-    ("R11 多调了 run_pair_eval", [SCAN, RANK20, GOOD], RANK, 2, {}),
-    ("R12 多调了不花钱的 explain_ranking", [SCAN, RANK20, ("explain_ranking", {"ids": ["p001"]})], RANK, 1, {}),
+    ("R1  合规运行（显式 target/style）", [SCAN, RANK20], RANK, 0, {"picks": (E2E_PRESET,)}),
+    ("R2  合规运行（不给参数，用 profile 默认）", [SCAN, ("rank_photos", {})], RANK, 0, {"picks": (E2E_PRESET,)}),
+    ("R3  没调 scan_folder", [RANK20], RANK, 2, {"picks": (E2E_PRESET,)}),
+    ("R4  scan_folder 调了两次（跑完又扫一遍）", [SCAN, RANK20, SCAN], RANK, 2, {"picks": (E2E_PRESET,)}),
+    ("R5  rank_photos 调了两次", [SCAN, RANK20, RANK20], RANK, 2, {"picks": (E2E_PRESET,)}),
+    ("R6  顺序反了（先 rank_photos）", [RANK20, SCAN], RANK, 2, {"picks": (E2E_PRESET,)}),
+    ("R7  style 是 mood", [SCAN, ("rank_photos", {"target": 20, "style": "mood"})], RANK, 2, {"picks": (E2E_PRESET,)}),
+    ("R8  target 是 10", [SCAN, ("rank_photos", {"target": 10, "style": "quality"})], RANK, 2, {"picks": (E2E_PRESET,)}),
+    ("R9  扫描的不是本轮那个目录", [("scan_folder", {"folder": FOLDER + "/me-pick"}), RANK20], RANK, 2, {"picks": (E2E_PRESET,)}),
+    ("R10 多调了 compare_within_groups", [SCAN, RANK20, ("compare_within_groups", {})], RANK, 2, {"picks": (E2E_PRESET,)}),
+    ("R11 多调了 run_pair_eval", [SCAN, RANK20, GOOD], RANK, 2, {"picks": (E2E_PRESET,)}),
+    ("R12 多调了不花钱的 explain_ranking", [SCAN, RANK20, ("explain_ranking", {"ids": ["p001"]})], RANK, 1, {"picks": (E2E_PRESET,)}),
     ("R13 会话挂的是 cordis", [SCAN, RANK20], RANK, 2, {"picks": ()}),
-    ("R14 拿错了一个旧会话", [SCAN, RANK20], RANK, 2, {"t": NOW - 86_400_000}),
-    ("R15 rank_photos 的参数解析不出来", [SCAN, ("rank_photos", "{坏 JSON")], RANK, 2, {}),
-    ("R16 rank 模式却传了 --pairs", [SCAN, RANK20], RANK + ["--pairs", A1], 2, {}),
+    ("R19 挂的是基线 preset 不是本组那份（2026-09-18 作废的形态）", [SCAN, RANK20], RANK, 2, {"picks": ("photo-filter-v4",)}),
+    ("R20 rank 模式没给 --preset", [SCAN, RANK20], ["--mode", "rank", "--folder", FOLDER], 2, {"picks": (E2E_PRESET,)}),
+    ("R14 拿错了一个旧会话", [SCAN, RANK20], RANK, 2, {"t": NOW - 86_400_000, "picks": (E2E_PRESET,)}),
+    ("R15 rank_photos 的参数解析不出来", [SCAN, ("rank_photos", "{坏 JSON")], RANK, 2, {"picks": (E2E_PRESET,)}),
+    ("R16 rank 模式却传了 --pairs", [SCAN, RANK20], RANK + ["--pairs", A1], 2, {"picks": (E2E_PRESET,)}),
     ("R17 rank 模式没给 --folder", [SCAN, RANK20], ["--mode", "rank"], 2, {}),
     ("R18 smoke 模式没给 --pairs", [GOOD], ["--mode", "smoke", "--expect-out", O1, "--out-under", ARCH], 2, {}),
 ]
@@ -132,6 +135,8 @@ MUST_PRINT = {
     "R6": ["工具顺序应当是 scan_folder → rank_photos"],
     "R3": ["工具顺序应当是 scan_folder → rank_photos", "scan_folder 调了 0 次"],
     "R18": ["需要 --pairs"],
+    "R19": ["preset 就是分组"],
+    "R20": ["需要 --preset"],
     "R12": ["⚠️ 另外调了不花钱的工具", "'explain_ranking'"],
 }
 EFFECTIVE = '    effective = picks[-1] if picks else header.get("agentPreset")   # 守卫：最后一次选择说了算\n'
@@ -146,7 +151,8 @@ MUTANTS = [   # (名字, 原文, 替换, 结果应当变掉的用例编号)
      "            if False:\n", ("S14",)),
     ("preset 只看头部", EFFECTIVE, '    effective = header.get("agentPreset")\n', ("S18",)),
     ("preset 只看第一次 selected", EFFECTIVE, '    effective = picks[0] if picks else header.get("agentPreset")\n', ("S20",)),
-    ("去掉 preset 守卫", "    if preset != PRESET:   # 守卫：preset\n", "    if False:\n", ("S19", "S20", "S21", "R13")),
+    ("去掉 preset 守卫", "    if preset != want_preset:   # 守卫：preset\n", "    if False:\n",
+     ("S19", "S20", "S21", "R13", "R19")),
     ("去掉「各正好 1 次」守卫", COUNT_GUARD, "        if False:\n",
      ("S5", "R4", "R5", ("R3", "scan_folder 调了 0 次"))),
     ("去掉先扫描后排序守卫", "        if seq[:2] != [\"scan_folder\", \"rank_photos\"]:   # 守卫：先扫描后排序\n",
