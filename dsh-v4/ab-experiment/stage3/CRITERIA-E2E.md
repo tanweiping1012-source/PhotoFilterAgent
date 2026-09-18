@@ -545,3 +545,48 @@ run.json  stage2.anchor_photos_sent / stage2.anchor_jpegs_sent
 修订 2.10 的表按 `anchor_photos_sent` 核：四组 阶段 2 = 10；B3 阶段 3 = 8，A/B1/B2 = 0。
 **再加一条记录自洽**（补充修订 4.4）：同一阶段 `anchor_jpegs_sent` 必须等于 `anchor_photos_sent × 2`，
 不等于说明锚点图取残了 —— 那种状态下提示词会引用不存在的范例图，而指标一切正常。
+
+---
+
+## 修订 5 · 2026-09-18 · 第一次冒烟之后 · 分组落在 preset，不落在 profile
+
+```
+来源   A 组第一次冒烟（作废）：阶段 2 一张锚点都没发。owner 查明根因，执行方用三条独立证据复核。
+性质   「怎么跑」的机制更正 + 一条作废记录。不动任何指标定义与主指标。
+花掉   121 次调用（比较 120 + 预检 1，0 次失败），按修订 2.11 单独记账，不进任何指标。
+```
+
+### 修订 5.1 · 生效的配置来自 preset，profile 的同 id 插件实例不参与会话（取代 §9 第 2 步、修订 3 的「四份 profile」）
+
+preset 会自己挂一棵子树（harness `packages/preset/agent-presets/src/mount.ts`）。会话用的是 **preset 那个插件实例**，
+profile 里同 id（`photo-filter-v4`）的实例根本没上场。所以生效值 = **preset 写了的键 + schema 默认值**：
+
+```
+作废那次的 run.json    anchorsFile ""（profile 写的是 anchors.json）· allowNeither false（profile 写的是 true）
+                       stage2Vlm true（schema 默认就是 true，所以阶段 2 照跑了，只是没有锚点）
+                       excludedRelativePaths 13 条（preset 写了，所以生效）→ 候选池 299、指纹对
+```
+
+→ 四份 E2E **profile** 的阶段 3 键全是死的。分组改挂 **preset**：`photo-filter-v4-e2e-{a,b1,b2,b3}`，
+由基线 preset 逐字派生，只追加 `anchorsFile` / `allowNeither: true` / `stage2Vlm: true` + 本组三个阶段 3 键。
+
+**id 不同的插件不受影响**：`attachment-local` 的 `maxImagesPerMessage: 40` 只在 profile 里，仍然生效 ——
+所以 DSH 必须用 photo-v4 派生的 profile 起（24 幅一次会超 harness 默认的 20）。
+**一次运行要两层同时对：preset 给分组与锚点，profile 给 40 幅上限。**
+
+`--dump-config` 看不到 preset 层，所以它核不出这件事。**跑前核对新增一条**：
+第一次比较调用的 `jpegs` 必须是 24（带 10 张锚点）且 `sent && ok`；不是就当场停，不要跑完整轮。
+
+### 修订 5.2 · 会话检查必须核 preset 名（补充修订 2.9）
+
+preset 就是分组，挂错了所有常规指标都正常 —— 只有核 preset 名看得出来。
+`check_session_tools.py --mode rank` 新增必填 `--preset`，核会话的 `agent-preset/selected` 是不是本组那一份。
+
+### 修订 5.3 · 顺带查明的产品缺陷（写进报告与 README，不影响本轮判据）
+
+web UI 走 preset，而**基线 preset 没写 `anchorsFile` / `allowNeither`** ——
+产品在 web 会话里的阶段 2 从来没发过锚点、也从来不允许「两张都不够格」，尽管 photo-v4 profile 配了。
+headless 会话没有 preset，那一路 profile 是活的，所以这条**只打 web**。
+
+作废那次因此是一份意外的对照数据：**无锚点 + allowNeither 关**时，阶段 2 双向一致率 17/60 = 28%
+（60 局、120 次比较）。报告里单列一行，注明口径，不与带锚点的数并列比较。
