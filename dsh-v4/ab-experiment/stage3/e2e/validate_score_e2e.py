@@ -170,13 +170,18 @@ def main() -> int:
     shifted[0] = {**shifted[0], "segment": 99}          # 同一对挪到别的段号
     runs["plan-shift"] = make_run(tmp, "plan-shift", "B1", plan=shifted)
 
-    rc, out, S = score(SCORE, runs.values())
+    # 正在跑的那一次：只有目录和 calls.jsonl，还没有 run.json
+    (tmp / "in-flight").mkdir()
+    (tmp / "in-flight" / "calls.jsonl").write_text("", encoding="utf-8")
+    rc, out, S = score(SCORE, list(runs.values()) + [tmp / "in-flight"])
     checks = []
 
     def ck(name, cond, detail=""):
         checks.append((name, bool(cond), detail))
 
     ck("正常跑完、每个 run 都算出来了", rc == 0 and len(S) == len(runs) and "Traceback" not in out, f"exit {rc}")
+    ck("正在跑的那一次：跳过并说一声，不崩", "跳过 1 个还没收尾的运行" in out and "Traceback" not in out,
+       [l for l in out.splitlines() if "跳过" in l])
     a1, up, down, mix, b3 = S.get("a1", {}), S.get("b1-up", {}), S.get("b1-down", {}), S.get("b2-mix", {}), S.get("b3-ok", {})
     ck("A 组：组别 A、无作废、交付₃ 命中 7、净变化 0",
        a1.get("group") == "A" and not a1.get("void") and a1.get("overlap3") == 7 and a1.get("net") == 0, json.dumps(a1.get("void")))
@@ -309,6 +314,15 @@ def main() -> int:
         bad += not ok
         print(f"{'✅' if ok else '❌'} 变异「{name}」下结果变了"
               + ("" if ok else f"  —— exit {rc5}{'（崩溃，不算）' if 'Traceback' in out5 else ''}"))
+    # 「跳过没收尾的运行」那条：去掉之后必须崩（这正是 2026-09-18 指着 runs/* 算分时踩到的）
+    mut = tmp / "mutant-inflight.py"
+    needle = '    scored = [score_run(read_run(d), gold, frozen) for d in a.runs if (d / "run.json").exists()]\n'
+    assert src.count(needle) == 1, "跳过那一行变了，先更新这个验证脚本"
+    mut.write_text(src.replace(needle, '    scored = [score_run(read_run(d), gold, frozen) for d in a.runs]\n'), encoding="utf-8")
+    rc7, out7, _ = score(mut, list(runs.values()) + [tmp / "in-flight"])
+    bad += not (rc7 != 0 and "FileNotFoundError" in out7)
+    print(f"{'✅' if rc7 != 0 and 'FileNotFoundError' in out7 else '❌'} 变异「不跳过没收尾的运行」下直接崩在 run.json 上（证明这道跳过在挡什么）")
+
     # 金标自检那条单独验：变异之后「换一张金标」不再停
     mut = tmp / "mutant-gold.py"
     needle = "    if gold != whole:\n"
@@ -319,7 +333,7 @@ def main() -> int:
     bad += not ok
     print(f"{'✅' if ok else '❌'} 变异「去掉金标自检」下换一张金标也照跑（证明是它拦的）")
 
-    print(f"\n{len(checks) + len(MUT) + 1 - bad}/{len(checks) + len(MUT) + 1} 项通过")
+    print(f"\n{len(checks) + len(MUT) + 2 - bad}/{len(checks) + len(MUT) + 2} 项通过")
     shutil.rmtree(tmp, ignore_errors=True)
     return 1 if bad else 0
 

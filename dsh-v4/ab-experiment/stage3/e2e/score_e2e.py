@@ -299,7 +299,12 @@ def main() -> int:
     print(f"金标 {len(gold)} 张（{a.gold.name}）· 冻结件自检通过：整份清单、冻结名单上的命中、上行/下行都与 duel-table.json 一致\n")
 
     frozen = frozen_pairs(a.duel_table)
-    scored = [score_run(read_run(d), gold, frozen) for d in a.runs]
+    # 跑到一半的运行：目录在开跑时就建好，run.json 是收尾才写的。跳过并说一声，
+    # 不要崩 —— 指着 runs/* 算分时，正在跑的那一次必然在列表里
+    pending = [d for d in a.runs if not (d / "run.json").exists()]
+    if pending:
+        print(f"跳过 {len(pending)} 个还没收尾的运行（没有 run.json，多半正在跑）：{[d.name for d in pending]}\n")
+    scored = [score_run(read_run(d), gold, frozen) for d in a.runs if (d / "run.json").exists()]
     scored.sort(key=lambda s: (s["group"], s["started_at"] or ""))
     valid = [s for s in scored if not s["void"]]
     void = [s for s in scored if s["void"]]
