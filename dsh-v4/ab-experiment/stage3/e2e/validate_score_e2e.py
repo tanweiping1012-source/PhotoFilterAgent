@@ -47,7 +47,8 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
              stage3_status=None, note_extra=None, rubric_md5=RUBRIC_MD5, anchor_photos=None,
              s3_jpegs=None, plan=None, plan_md5_override=None, verdict_plan_override=None,
              delivered_final=None, s2_anchor_photos=10, s3_anchor_photos=None,
-             s2_jpegs_sent=None, drop_calls=0):
+             s2_jpegs_sent=None, drop_calls=0, s2_code_bad=1, s2_code_missing=0, s3_code_bad=0,
+             s2_burned=True):
     """造一份运行记录。outcomes: {段号: winner}，缺省判擂主赢（'a'）。"""
     d = root / name
     d.mkdir(parents=True)
@@ -72,7 +73,9 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
             wr = {"a": "b", "b": "a"}.get(w, w)
         verdicts.append({"a": a, "b": b, "winner": wr, "consistent": wr in ("a", "b", "neither"),
                          "ab": "JIA", "ba": "YI", "reason_ab": "mock", "reason_ba": "mock",
-                         "code_a": "1111", "code_b": "2222", "code_read_ok": True, "contradiction": False})
+                         "code_a": "1111", "code_b": "2222",
+                         # 阶段 3 的裁决文件写下划线（真实格式），前 s3_code_bad 局读错
+                         "code_read_ok": len(verdicts) >= s3_code_bad, "contradiction": False})
     note["kept"] = sum(note["kept_" + k] for k in ("a", "tie", "neither", "inconsistent"))
     note["unused"] = 0
     note.update(note_extra or {})
@@ -126,6 +129,21 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
                 rows.append({"stage": 3, "ts": 1, "elapsed_ms": 10, "route": "mock/mock-vision", "kind": "compare",
                              "i": i, "dir": dr, "a": row["a"], "b": row["b"], "jpegs": jp, "sent": True, "ok": True})
     (d / "calls.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+    if stage2 == "ran":
+        # 阶段 2 的裁决文件用**驼峰** codeReadOk（产品就是这么写的，与阶段 3 的下划线不同）；
+        # s2_code_missing 条连字段都没有 —— 那是格式变了，不该被当成读码失败
+        s2v = []
+        for i in range(3):
+            row = {"a": f"s2-{i}a.JPG", "b": f"s2-{i}b.JPG", "winner": "a", "consistent": True,
+                   "contradiction": False}
+            if s2_burned:                        # 没烧码时产品根本不写这几个键
+                row.update(codeA="JWHE", codeB="PNVR",
+                           codesRead={"abJia": "JWHE", "abYi": "PNVR", "baJia": "PNVR", "baYi": "JWHE"})
+            if i >= s2_code_missing:
+                row["codeReadOk"] = i >= s2_code_missing + s2_code_bad
+            s2v.append(row)
+        (d / "stage2-verdicts.json").write_text(json.dumps(
+            {"plan": [], "route": "mock/mock-vision", "verdicts": s2v}, ensure_ascii=False, indent=1), encoding="utf-8")
     if group != "A" and status != "failed":
         (d / "stage3-verdicts.json").write_text(json.dumps(
             {"plan_md5": md5, "plan": verdict_plan_override if verdict_plan_override is not None else plan,
@@ -168,6 +186,12 @@ def main() -> int:
     runs["v-jpegs"] = make_run(tmp, "v-jpegs", "B1", s2_jpegs_sent=19)            # 幅数 ≠ 张数 × 2
     runs["v-s3anchor"] = make_run(tmp, "v-s3anchor", "B3", s3_anchor_photos=7)    # B3 实发只有 7 张
     runs["jpegs"] = make_run(tmp, "jpegs", "B1", {UP_SEG: "b"}, s3_jpegs=3)
+    # 读码率：阶段 2 三局读错两局（驼峰键），阶段 3 十局读错三局（下划线键）
+    runs["v-coderead"] = make_run(tmp, "v-coderead", "B1", s2_code_bad=2, s3_code_bad=3)
+    # 裁决文件里两条连读码字段都没有：那是格式问题，不该混进读码失败
+    runs["v-codemissing"] = make_run(tmp, "v-codemissing", "B1", s2_code_bad=0, s2_code_missing=2)
+    # 没烧码：codeReadOk 恒为真，照抄就是假的满分（compare.ts:398）
+    runs["v-nocodes"] = make_run(tmp, "v-nocodes", "B1", s2_code_bad=0, s2_burned=False)
     shifted = [dict(x) for x in PLAN]
     shifted[0] = {**shifted[0], "segment": 99}          # 同一对挪到别的段号
     runs["plan-shift"] = make_run(tmp, "plan-shift", "B1", plan=shifted)
@@ -236,6 +260,27 @@ def main() -> int:
        and any("沉没 7 次" in l for l in out.splitlines()), [l for l in out.splitlines() if "沉没" in l][:2])
     ck("作废分两种形态：跑到一半 vs 没花钱就被拦下",
        "跑到一半" in out and "没花钱就被拦下" in out, [l for l in out.splitlines() if "跑到一半" in l][:1])
+    cr = (S.get("v-coderead") or {}).get("code_read") or {}
+    ck("逐次读码率：阶段 2 认驼峰键 1/3、阶段 3 认下划线键 7/10（两阶段键名不同，只认一种会全场变 0）",
+       (cr.get("stage2") or {}).get("ok") == 1 and (cr.get("stage2") or {}).get("judged") == 3
+       and (cr.get("stage3") or {}).get("ok") == 7 and (cr.get("stage3") or {}).get("judged") == 10
+       and "判官读码正确（按裁决文件逐次数）：阶段 2 1/3 · 阶段 3 7/10" in out,
+       json.dumps(cr, ensure_ascii=False))
+    nb = ((S.get("v-nocodes") or {}).get("code_read") or {}).get("stage2") or {}
+    ck("没烧码的局不进读码率分母：codeReadOk 恒为真，报成 3/3 就是假的满分",
+       nb.get("judged") == 0 and nb.get("not_burned") == 3 and nb.get("ok") == 0
+       and "另有 3 条没烧码" in out, json.dumps(nb, ensure_ascii=False))
+    cm = ((S.get("v-codemissing") or {}).get("code_read") or {}).get("stage2") or {}
+    ck("读码字段整个缺失：分母只数带字段的（1/1），缺的两条单独报、不算读错",
+       cm.get("judged") == 1 and cm.get("ok") == 1 and cm.get("missing_field") == 2
+       and "另有 2 条没有读码字段" in out, json.dumps(cm, ensure_ascii=False))
+    ck("A 组（阶段 3 关）也报阶段 2 读码率 —— 以前 A 组一个读码数都没有",
+       ((a1.get("code_read") or {}).get("stage2") or {}).get("judged") == 3
+       and (a1.get("code_read") or {}).get("stage3") is None,
+       json.dumps(a1.get("code_read"), ensure_ascii=False))
+    ck("阶段 2 失败的那次没有裁决文件：不报读码率，也不崩",
+       (S["v-s2fail"].get("code_read") or {}).get("stage2") is None and "Traceback" not in out,
+       json.dumps(S["v-s2fail"].get("code_read"), ensure_ascii=False))
     ck("耗时报 p90 与超 30 秒的次数", up["calls"]["stage2"]["elapsed_p90_ms"] == 10
        and up["calls"]["stage2"]["slow_over_30s"] == 0 and "p90" in out,
        json.dumps({"p90": up["calls"]["stage2"]["elapsed_p90_ms"]}))
@@ -317,6 +362,17 @@ def main() -> int:
         ("去掉「每张锚点两幅」（修订 4.6）",
          "        if photos is not None and jpegs is not None and jpegs != photos * 2:   # 修订 4.6：每张两幅\n",
          "        if False:\n", lambda S2: not S2["v-jpegs"]["void"]),
+        ("读码率只认阶段 3 的下划线键（阶段 2 的驼峰就全读不到了）",
+         'CODE_READ_KEYS = ("code_read_ok", "codeReadOk")', 'CODE_READ_KEYS = ("code_read_ok",)',
+         lambda S2: (S2["v-coderead"]["code_read"]["stage2"] or {}).get("judged") != 3),
+        ("读码率退回「照数所有记录」的老写法（缺字段、没烧码全混进分母）",
+         '    return {"judged": len(judged), "missing_field": len(missing), "not_burned": len(unburned),\n            "ok": sum(1 for x in judged if next(x[k] for k in CODE_READ_KEYS if k in x))}',
+         '    return {"judged": len(rows), "missing_field": 0, "not_burned": 0,\n            "ok": sum(1 for x in rows if x.get("code_read_ok") or x.get("codeReadOk"))}',
+         lambda S2: S2["v-codemissing"]["code_read"]["stage2"]["missing_field"] != 2),
+        ("烧没烧码不分了（compare.ts 里 codeReadOk 不烧码时恒为真 → 假的满分回来）",
+         '    return bool(x.get("codes_read") or x.get("codesRead") or x.get("code_a") or x.get("codeA"))',
+         '    return True',
+         lambda S2: S2["v-nocodes"]["code_read"]["stage2"]["judged"] != 0),
         ("阶段 3 锚点核 configured 而不是实发（修订 4.3 反着来）",
          '        sent3 = ((run.get("stage3") or {}).get("anchor_photos_sent") or 0)\n',
          '        sent3 = (ins.get("anchor_photos_configured") or 0)\n',

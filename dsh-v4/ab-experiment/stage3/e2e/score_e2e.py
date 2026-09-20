@@ -24,7 +24,8 @@ stage2-verdicts.json、stage3-verdicts.json。**判据写在看到数据之前**
   · **锚点核实发不核配置**（修订 4.3、4.6）：阶段 2 `anchor_photos_sent` = 10；B3 阶段 3 = 8，A/B1/B2 = 0
   · **组别按运行记录自己判**：config 里配了什么路径 → 应当是哪一组；stage3_inputs 记的是实际读到什么。
     两者对不上就是作废（修订 2.10），不是「按配置当成那一组算」
-  · 换人、不换的原因、双向一致率、读码率、contradiction、实际调用数、每次调用的图数、跨次一致性：照 §5.3 全报
+  · 换人、不换的原因、双向一致率、读码率、contradiction、实际调用数、每次调用的图数、跨次一致性：照 §5.3 全报。
+    **读码率逐次报，两个阶段分开**：合并成一个组内总数会把「某一次判官读错了一局」摊平成看不见
   · **每次的计划稳定性**：阶段 2 的判决会换掉一部分对局，所以每次运行报「与冻结对局表相同的段」
     以及**本次计划里有没有上行局**（挑战者是金标、在位不是）。没有上行局的那次，+1 结构上就够不着 ——
     不报这一项，单看「某次 +1」会被读成「阶段 3 能加分」
@@ -101,9 +102,11 @@ def read_run(d: Path) -> dict:
     run = json.loads((d / "run.json").read_text(encoding="utf-8"))
     calls = [json.loads(ln) for ln in (d / "calls.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()] \
         if (d / "calls.jsonl").exists() else []
+    v2 = json.loads((d / "stage2-verdicts.json").read_text(encoding="utf-8")) \
+        if (d / "stage2-verdicts.json").exists() else None
     v3 = json.loads((d / "stage3-verdicts.json").read_text(encoding="utf-8")) \
         if (d / "stage3-verdicts.json").exists() else None
-    return {"dir": d, "run": run, "calls": calls, "v3": v3}
+    return {"dir": d, "run": run, "calls": calls, "v2": v2, "v3": v3}
 
 
 def classify(run: dict) -> tuple[str, list]:
@@ -230,6 +233,38 @@ def frozen_pairs(duel_table: Path) -> dict:
     return {x["seg"]: (x["incumbent"], x["challenger"]) for x in f["duels"] if x["challenger"]}
 
 
+# 两个阶段的裁决文件写法不同：阶段 2 是 codeReadOk，阶段 3 是 code_read_ok。
+# 只认一种的话，另一种会全场读成 None → 报成「读码 0/60」，是个吓人的假数
+CODE_READ_KEYS = ("code_read_ok", "codeReadOk")
+
+
+def burned_in(x: dict) -> bool:
+    """这一局的图上到底烧了码没有。
+
+    compare.ts:398 是 `codeReadOk = !withCodes || 四个码位都抄对`——**不烧码时它恒为真**。
+    照抄就会报出「读码 10/10」这种假的满分（ranker/tests/test_calibration_scoring.py 为此立过守卫）。
+    烧了码才有 codes_read/codesRead 与 code_a/codeA，没烧码这些键根本不写。
+    """
+    return bool(x.get("codes_read") or x.get("codesRead") or x.get("code_a") or x.get("codeA"))
+
+
+def code_read_rate(v: dict | None) -> dict | None:
+    """一份裁决文件里判官把图上的码读对了几局。
+
+    分母只数**既带这个字段、又真烧了码**的记录，另外两种各自单独报，都不当成读码失败：
+    字段整个不在 = 裁决文件换了写法；没烧码 = 这个数对它恒为真，报出来就是假的满分。
+    （假警报会把人训练成忽略告警，假的满分会把人训练成相信一个没测过的数。）
+    """
+    if not v:
+        return None
+    rows = v.get("verdicts") or []
+    missing = [x for x in rows if not any(k in x for k in CODE_READ_KEYS)]
+    unburned = [x for x in rows if x not in missing and not burned_in(x)]
+    judged = [x for x in rows if x not in missing and x not in unburned]
+    return {"judged": len(judged), "missing_field": len(missing), "not_burned": len(unburned),
+            "ok": sum(1 for x in judged if next(x[k] for k in CODE_READ_KEYS if k in x))}
+
+
 def score_run(r: dict, gold: set, frozen: dict) -> dict:
     run, v3 = r["run"], r["v3"]
     group, inputs_bad = classify(run)
@@ -284,6 +319,8 @@ def score_run(r: dict, gold: set, frozen: dict) -> dict:
         "dec_unstated": sum(1 for x in dec if x["winner"] in ("tie", "inconsistent")),
         "dec_unjudged": sum(1 for x in dec if x["winner"] is None),
         "consistent": sum(1 for x in duels if x["consistent"]),
+        # 逐次读码率按**裁决文件**数（阶段 2 也有，阶段 3 的 code_read_ok 是按本次计划的局数）
+        "code_read": {"stage2": code_read_rate(r["v2"]), "stage3": code_read_rate(v3)},
         "code_read_ok": sum(1 for x in duels if x["code_read_ok"]),
         "contradiction": sum(1 for x in duels if x["contradiction"]),
         "duels": duels,
@@ -342,6 +379,16 @@ def main() -> int:
         fail = [ms for k in ("stage2", "stage3") for ms in s["calls"][k]["failed_elapsed_ms"]]
         if lat:
             print(f"        比较调用耗时：{lat}" + (f" · **失败那次 {max(fail) / 1000:.0f}s**" if fail else ""))
+        cr = []
+        for k in ("stage2", "stage3"):
+            c = s["code_read"][k]
+            if c:
+                cr.append(f"阶段 {k[-1]} {c['ok']}/{c['judged']}"
+                          + (f"（另有 {c['missing_field']} 条没有读码字段，没算进分母）" if c["missing_field"] else "")
+                          + (f"（另有 {c['not_burned']} 条没烧码，这个数对它们恒为真，没算进分母）"
+                             if c["not_burned"] else ""))
+        if cr:
+            print(f"        判官读码正确（按裁决文件逐次数）：{' · '.join(cr)}")
         for w in s["swaps"]:
             print(f"        段 {w['segment']}：{w['out']} → {w['in']}{'（换上的是金标）' if w['in_is_gold'] else ''}")
         for v in s["void"]:
