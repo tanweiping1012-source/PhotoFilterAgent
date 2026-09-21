@@ -284,8 +284,12 @@ def code_read_rate(v: dict | None) -> dict | None:
     missing = [x for x in rows if not any(k in x for k in CODE_READ_KEYS)]
     unburned = [x for x in rows if x not in missing and not burned_in(x)]
     judged = [x for x in rows if x not in missing and x not in unburned]
+    bad = [x for x in judged if not next(x[k] for k in CODE_READ_KEYS if k in x)]
     return {"judged": len(judged), "missing_field": len(missing), "not_burned": len(unburned),
-            "ok": sum(1 for x in judged if next(x[k] for k in CODE_READ_KEYS if k in x))}
+            "ok": len(judged) - len(bad),
+            # 没抄全**不等于**判错了一局：幻觉码那种整对作废、翻覆的那种本来就没赢家。
+            # 真正进了判决的只有定出赢家的那几局，这个数才是「读码失误的影响面」
+            "bad_with_winner": sum(1 for x in bad if x.get("winner") in ("a", "b", "neither"))}
 
 
 def score_run(r: dict, gold: set, frozen: dict) -> dict:
@@ -410,6 +414,8 @@ def main() -> int:
             c = s["code_read"][k]
             if c:
                 cr.append(f"阶段 {k[-1]} {c['ok']}/{c['judged']}"
+                          + (f"（没抄全的 {c['judged'] - c['ok']} 局里 {c['bad_with_winner']} 局仍定出了赢家）"
+                             if c["judged"] > c["ok"] else "")
                           + (f"（另有 {c['missing_field']} 条没有读码字段，没算进分母）" if c["missing_field"] else "")
                           + (f"（另有 {c['not_burned']} 条没烧码，这个数对它们恒为真，没算进分母）"
                              if c["not_burned"] else ""))
