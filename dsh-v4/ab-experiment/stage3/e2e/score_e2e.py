@@ -39,6 +39,7 @@ import argparse
 import hashlib
 import json
 import statistics
+from datetime import datetime, timezone
 import sys
 from collections import Counter, defaultdict
 from itertools import combinations
@@ -238,6 +239,28 @@ def frozen_pairs(duel_table: Path) -> dict:
 CODE_READ_KEYS = ("code_read_ok", "codeReadOk")
 
 
+def local_day(iso: str) -> str:
+    """运行开始那天，换算到**本机时区**。
+
+    started_at 记的是 UTC。这批运行都在本地白天跑，而 09-17T23:51Z 其实是本地 09-18 早上 —— 
+    按 UTC 切日期会凭空切出一个「09-17 那次」，读的人会以为那天单独跑过一次。
+    """
+    if not iso:
+        return "（无开始时间）"
+    t = datetime.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).astimezone()
+    return t.strftime("%m-%d")
+
+
+def failure_tag(err: str) -> str:
+    """失败形态。认不出来的**原样报出来**，不许进一个叫「其他」的桶 —— 那等于把新形态藏起来。"""
+    if "仅调用结构化工具" in err:
+        return "结构化输出违约"
+    head = err.split(" ", 1)[0]
+    if head.isdigit():
+        return f"HTTP {head}"
+    return err.strip()[:40] or "（没有错误文本）"
+
+
 def burned_in(x: dict) -> bool:
     """这一局的图上到底烧了码没有。
 
@@ -299,6 +322,9 @@ def score_run(r: dict, gold: set, frozen: dict) -> dict:
         "dir": r["dir"].name, "group": group, "void": void,
         "run_id": run.get("run_id"), "fingerprint": run.get("fingerprint"),
         "started_at": run.get("started_at"), "finished_at": run.get("finished_at"),
+        # 判官换没换过，是按日期看的：同一天的运行才是同一把尺子下的（2026-09-20 那条分界）
+        "day": local_day(run.get("started_at") or ""),
+        "failures": [failure_tag(str(c.get("error") or "")) for c in r["calls"] if c.get("ok") is False],
         "plan_md5": s3.get("plan_md5"), "stage3_status": s3.get("status"),
         "overlap2": len(set(d2) & gold), "overlap3": len(set(d3) & gold),
         "net": len(set(d3) & gold) - len(set(d2) & gold),
@@ -409,6 +435,12 @@ def main() -> int:
               f" · 最小 {min(o3)} 中位 {statistics.median(o3):g} 最大 {max(o3)} 均值 {statistics.mean(o3):.1f}")
         if g != "A":
             print(f"      阶段 3 净变化 {nets}（<0 共 {neg} 次，>0 共 {pos} 次 —— 不称为「提升」）→ 文档写作「{bucket}」")
+        days = defaultdict(list)
+        for s in rows:
+            days[s["day"]].append(s["overlap3"])
+        print(f"      按运行日期分段（本机时区）："
+              + " · ".join(f"{d} 交付₃ {days[d]}" for d in sorted(days))
+              + ("" if len(days) == 1 else "  ⚠️ 跨日：先看下面那张表，确认这几次是不是同一把尺子"))
         n = Counter()
         for s in rows:
             n.update({k: v for k, v in s["note"].items() if isinstance(v, int)})
@@ -483,6 +515,19 @@ def main() -> int:
             print(f"  {s['group']} {s['dir']}：{tag}"
                   + (f"（失败那次 {max(f) / 1000:.0f} 秒）" if f else "") + f" —— {'；'.join(s['void'])}")
     total = sum(s["calls"][k]["sent"] for s in scored for k in ("stage2", "stage3"))
+    # 判官行为按日期：分界线要能从数里读出来，而不是写死一个日期
+    print("\n判官行为按运行日期（本机时区；调用记在运行开始那天。0 次调用被挡在门外的不建目录，这里看不到）")
+    by_day = defaultdict(lambda: {"runs": 0, "cmp": 0, "fail": Counter()})
+    for s in scored:
+        d = by_day[s["day"]]
+        d["runs"] += 1
+        d["cmp"] += sum(s["calls"][k]["compare_sent"] for k in ("stage2", "stage3"))
+        d["fail"].update(s["failures"])
+    for day in sorted(by_day):
+        d = by_day[day]
+        tags = " · ".join(f"{k} ×{v}" for k, v in sorted(d["fail"].items())) or "无"
+        print(f"  {day}  运行 {d['runs']} 次 · 比较调用 {d['cmp']} 次 · 失败 {sum(d['fail'].values())} 次：{tags}")
+
     print(f"\n成本合计（运行记录里数出来的 sent）：{total} 次，其中有效 "
           f"{sum(s['calls'][k]['sent'] for s in valid for k in ('stage2', 'stage3'))} 次")
 

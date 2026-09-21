@@ -48,7 +48,7 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
              s3_jpegs=None, plan=None, plan_md5_override=None, verdict_plan_override=None,
              delivered_final=None, s2_anchor_photos=10, s3_anchor_photos=None,
              s2_jpegs_sent=None, drop_calls=0, s2_code_bad=1, s2_code_missing=0, s3_code_bad=0,
-             s2_burned=True):
+             s2_burned=True, started_at=None, s2_fail_error=None):
     """造一份运行记录。outcomes: {段号: winner}，缺省判擂主赢（'a'）。"""
     d = root / name
     d.mkdir(parents=True)
@@ -92,7 +92,7 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
                 "anchor_photos_sent": s3_photos, "anchor_jpegs_sent": s3_photos * 2, "note": note})
     run = {
         "run_id": name, "fingerprint": "5e9947ea9eae8391",
-        "started_at": f"2026-09-20T10:{sum(map(ord, name)) % 60:02d}:00.000Z",
+        "started_at": started_at or f"2026-09-20T10:{sum(map(ord, name)) % 60:02d}:00.000Z",
         "finished_at": "2026-09-20T10:30:00.000Z", "target": 20, "style": "quality",
         "config": {"stage2Vlm": True, "rubricFile": "/x/rubric2.txt", "anchorsFile": "/x/anchors2.json",
                    "allowNeither": True, "stage3Vlm": group != "A",
@@ -128,6 +128,8 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
             for dr in ("AB", "BA"):
                 rows.append({"stage": 3, "ts": 1, "elapsed_ms": 10, "route": "mock/mock-vision", "kind": "compare",
                              "i": i, "dir": dr, "a": row["a"], "b": row["b"], "jpegs": jp, "sent": True, "ok": True})
+    if s2_fail_error:                          # 最后一次比较发出去了但没收下（ok=false），和产品一致
+        rows[-1] = {**rows[-1], "ok": False, "error": s2_fail_error}
     (d / "calls.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     if stage2 == "ran":
         # 阶段 2 的裁决文件用**驼峰** codeReadOk（产品就是这么写的，与阶段 3 的下划线不同）；
@@ -192,6 +194,10 @@ def main() -> int:
     runs["v-codemissing"] = make_run(tmp, "v-codemissing", "B1", s2_code_bad=0, s2_code_missing=2)
     # 没烧码：codeReadOk 恒为真，照抄就是假的满分（compare.ts:398）
     runs["v-nocodes"] = make_run(tmp, "v-nocodes", "B1", s2_code_bad=0, s2_burned=False)
+    # 日期分界：UTC 深夜那次在本地已经是第二天（真实的 09-17T23:51Z 就是本地 09-18 早上）
+    runs["v-prose"] = make_run(tmp, "v-prose", "A", stage2="failed", started_at="2026-09-20T23:30:00.000Z",
+                               s2_fail_error="模型没有且仅调用结构化工具 submit_comparison；禁止解析纯文本。 现场：tool-call 0 个")
+    runs["day-next"] = make_run(tmp, "day-next", "B1", started_at="2026-09-21T02:00:00.000Z")
     shifted = [dict(x) for x in PLAN]
     shifted[0] = {**shifted[0], "segment": 99}          # 同一对挪到别的段号
     runs["plan-shift"] = make_run(tmp, "plan-shift", "B1", plan=shifted)
@@ -281,6 +287,17 @@ def main() -> int:
     ck("阶段 2 失败的那次没有裁决文件：不报读码率，也不崩",
        (S["v-s2fail"].get("code_read") or {}).get("stage2") is None and "Traceback" not in out,
        json.dumps(S["v-s2fail"].get("code_read"), ensure_ascii=False))
+    ck("跨日的运行按本机时区切：UTC 23:30 那次算本地第二天，不是凭空多出一天",
+       S["v-prose"]["day"] == "09-21" and S["day-next"]["day"] == "09-21", 
+       f'v-prose {S["v-prose"]["day"]} · day-next {S["day-next"]["day"]}')
+    ck("失败形态认得出来：结构化输出违约单独成一类，不混进 HTTP 码",
+       S["v-prose"]["failures"] == ["结构化输出违约"], json.dumps(S["v-prose"]["failures"], ensure_ascii=False))
+    ck("分组汇总按日期分段，跨日的那组要喊一声",
+       "按运行日期分段" in out and "09-20 交付₃" in out and "09-21 交付₃" in out and "⚠️ 跨日" in out,
+       [l.strip() for l in out.splitlines() if "按运行日期分段" in l][:2])
+    ck("判官行为按日期那张表：违约记在本地 09-21 那天",
+       any(l.strip().startswith("09-21") and "结构化输出违约 ×1" in l for l in out.splitlines()),
+       [l.strip() for l in out.splitlines() if "结构化输出违约" in l][:2])
     ck("耗时报 p90 与超 30 秒的次数", up["calls"]["stage2"]["elapsed_p90_ms"] == 10
        and up["calls"]["stage2"]["slow_over_30s"] == 0 and "p90" in out,
        json.dumps({"p90": up["calls"]["stage2"]["elapsed_p90_ms"]}))
@@ -373,6 +390,13 @@ def main() -> int:
          '    return bool(x.get("codes_read") or x.get("codesRead") or x.get("code_a") or x.get("codeA"))',
          '    return True',
          lambda S2: S2["v-nocodes"]["code_read"]["stage2"]["judged"] != 0),
+        ("日期按 UTC 切（UTC 深夜那次会被切到前一天）",
+         '    t = datetime.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).astimezone()',
+         '    t = datetime.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)',
+         lambda S2: S2["v-prose"]["day"] != "09-21"),
+        ("结构化输出违约不单独认（新形态被原文淹掉）",
+         '    if "仅调用结构化工具" in err:\n', '    if False:\n',
+         lambda S2: S2["v-prose"]["failures"] != ["结构化输出违约"]),
         ("阶段 3 锚点核 configured 而不是实发（修订 4.3 反着来）",
          '        sent3 = ((run.get("stage3") or {}).get("anchor_photos_sent") or 0)\n',
          '        sent3 = (ins.get("anchor_photos_configured") or 0)\n',
