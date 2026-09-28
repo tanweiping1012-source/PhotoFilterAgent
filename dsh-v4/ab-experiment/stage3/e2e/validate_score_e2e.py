@@ -137,7 +137,7 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
         # s2_code_missing 条连字段都没有 —— 那是格式变了，不该被当成读码失败
         s2v = []
         for i in range(3):
-            # 第一局判成翻覆：没抄全的局里「仍定出赢家」的才算真进了判决
+            # 第一局判成翻覆：没抄全的局里两个方向一致的（判甲/判乙/都不够格）才算真进了判决
             row = {"a": f"s2-{i}a.JPG", "b": f"s2-{i}b.JPG",
                    "winner": "inconsistent" if i == 0 else "a", "consistent": i != 0,
                    "contradiction": False}
@@ -275,16 +275,16 @@ def main() -> int:
     ck("逐次读码率：阶段 2 认驼峰键 1/3、阶段 3 认下划线键 7/10（两阶段键名不同，只认一种会全场变 0）",
        (cr.get("stage2") or {}).get("ok") == 1 and (cr.get("stage2") or {}).get("judged") == 3
        and (cr.get("stage3") or {}).get("ok") == 7 and (cr.get("stage3") or {}).get("judged") == 10
-       and "判官读码正确（按裁决文件逐次数）：阶段 2 1/3（没抄全的 2 局里 1 局仍定出了赢家）"
+       and "判官读码正确（按裁决文件逐次数）：阶段 2 1/3（没抄全的 2 局里 1 局仍进了判决）"
            " · 阶段 3 7/10" in out,
        json.dumps(cr, ensure_ascii=False))
     nb = ((S.get("v-nocodes") or {}).get("code_read") or {}).get("stage2") or {}
     ck("没烧码的局不进读码率分母：codeReadOk 恒为真，报成 3/3 就是假的满分",
        nb.get("judged") == 0 and nb.get("not_burned") == 3 and nb.get("ok") == 0
        and "另有 3 条没烧码" in out, json.dumps(nb, ensure_ascii=False))
-    ck("没抄全的局分开数：翻覆的那局没赢家，只有另一局真进了判决（2 局没抄全 → 1 局有赢家）",
-       (cr.get("stage2") or {}).get("bad_with_winner") == 1
-       and "没抄全的 2 局里 1 局仍定出了赢家" in out, json.dumps(cr.get("stage2"), ensure_ascii=False))
+    ck("没抄全的局分开数：翻覆的那局没赢家，只有另一局真进了判决（2 局没抄全 → 1 局进了判决）",
+       (cr.get("stage2") or {}).get("bad_with_verdict") == 1
+       and "没抄全的 2 局里 1 局仍进了判决" in out, json.dumps(cr.get("stage2"), ensure_ascii=False))
     cm = ((S.get("v-codemissing") or {}).get("code_read") or {}).get("stage2") or {}
     ck("读码字段整个缺失：分母只数带字段的（1/1），缺的两条单独报、不算读错",
        cm.get("judged") == 1 and cm.get("ok") == 1 and cm.get("missing_field") == 2
@@ -403,9 +403,9 @@ def main() -> int:
          '    return True',
          lambda S2: S2["v-nocodes"]["code_read"]["stage2"]["judged"] != 0),
         ("没抄全的局一律算成「影响了判决」（翻覆和作废的也算进去）",
-         '            "bad_with_winner": sum(1 for x in bad if x.get("winner") in ("a", "b", "neither"))}',
-         '            "bad_with_winner": len(bad)}',
-         lambda S2: S2["v-coderead"]["code_read"]["stage2"]["bad_with_winner"] != 1),
+         '            "bad_with_verdict": sum(1 for x in bad if x.get("winner") in ("a", "b", "neither"))}',
+         '            "bad_with_verdict": len(bad)}',
+         lambda S2: S2["v-coderead"]["code_read"]["stage2"]["bad_with_verdict"] != 1),
         ("作废理由照抄整段 error（判官散文漏进输出）",
          "        out.append(f\"阶段 2 未执行：{brief_error(s2.get('error'))}\")",
          "        out.append(f\"阶段 2 未执行：{s2.get('error')}\")",

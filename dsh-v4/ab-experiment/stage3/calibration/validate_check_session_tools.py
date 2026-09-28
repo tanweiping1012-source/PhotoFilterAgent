@@ -21,6 +21,7 @@ S 系列是评测那两遍（run_pair_eval），R 系列是第四轮端到端那
 退出码用 subprocess 直接拿，不经管道（管道会把 $? 换成 tail 的 0）。
 """
 import json, subprocess, sys, tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -33,7 +34,23 @@ SINCE = str(NOW - 60_000)                   # 发起运行前一分钟记下的�
 tmp = Path(tempfile.mkdtemp(prefix="check-session-tools-"))
 
 
-def session(name, calls, t=NOW, with_time=True, header_preset="cordis", picks=("photo-filter-v4",)):
+def iso_z(ms):
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def iso_plus8(ms):
+    return datetime.fromtimestamp(ms / 1000, timezone(timedelta(hours=8))).strftime("%Y-%m-%dT%H:%M:%S") + "+08:00"
+
+
+# 本机与 UTC 的时差：「把 Z 当本机时间读」这个错只在时差不为 0 的机器上看得出来，方向由时差的符号定
+LOCAL_OFFSET_S = datetime.now().astimezone().utcoffset().total_seconds()
+# 模型实际可见的 7 个工具，取自真实会话 7b433e67（B2-3）的 request/header
+VISIBLE7 = ["compare_within_groups", "evaluate_against_answer", "explain_ranking", "export_selection",
+            "rank_photos", "scan_folder", "set_my_favorites"]
+
+
+def session(name, calls, t=NOW, with_time=True, header_preset="cordis", picks=("photo-filter-v4",),
+            header_tools=None):
     d = tmp / name
     d.mkdir()
     header = {"type": "session", "seq": 0}
@@ -42,6 +59,9 @@ def session(name, calls, t=NOW, with_time=True, header_preset="cordis", picks=("
     recs = [header]
     for p in picks:
         recs.append({"type": "agent-preset/selected", "seq": len(recs), "data": {"agentPreset": p}})
+    if header_tools is not None:
+        recs.append({"type": "request/header", "seq": len(recs),
+                     "data": {"header": {"tools": [{"name": n, "description": "mock"} for n in header_tools]}}})
     # 非工具记录里故意带上字面词：确认不会被当成调用
     recs.append({"type": "assistant/chunk", "data": {"text": "固定执行顺序：scan_folder → rank_photos；compare_within_groups 唯一花钱"}})
     for i, (n, args) in enumerate(calls):
@@ -126,6 +146,15 @@ CASES = [
     ("R16 rank 模式却传了 --pairs", [SCAN, RANK20], RANK + ["--pairs", A1], 2, {"picks": (E2E_PRESET,)}),
     ("R17 rank 模式没给 --folder", [SCAN, RANK20], ["--mode", "rank"], 2, {}),
     ("R18 smoke 模式没给 --pairs", [GOOD], ["--mode", "smoke", "--expect-out", O1, "--out-under", ARCH], 2, {}),
+    # ── 模型实际可见的工具（request/header）与 --since 的几种写法 ─────────────
+    ("R21 会话带 request/header：打印模型实际可见的 7 个", [SCAN, RANK20], RANK, 0,
+     {"picks": (E2E_PRESET,), "header_tools": VISIBLE7}),
+    ("R22 --since 带 Z，早于会话一分钟", [SCAN, RANK20], RANK + ["--since", iso_z(NOW - 60_000)], 0,
+     {"picks": (E2E_PRESET,)}),
+    ("R23 --since 带 Z，晚于会话一分钟", [SCAN, RANK20], RANK + ["--since", iso_z(NOW + 60_000)], 2,
+     {"picks": (E2E_PRESET,)}),
+    ("R24 --since 带 +08:00，早于会话一分钟", [SCAN, RANK20], RANK + ["--since", iso_plus8(NOW - 60_000)], 0,
+     {"picks": (E2E_PRESET,)}),
 ]
 IDX = {label.split()[0]: i for i, (label, *_rest) in enumerate(CASES)}
 # 这些用例还要看输出：退出码对不够，得确认确实走进了那一条
@@ -137,6 +166,8 @@ MUST_PRINT = {
     "R18": ["需要 --pairs"],
     "R19": ["preset 就是分组"],
     "R20": ["需要 --preset"],
+    "R21": ["模型可见的工具 7 个（本会话 request/header）", "源码里定义、本会话没挂的", "'run_pair_eval'"],
+    "R1": ["会话里没有 request/header"],
     "R12": ["⚠️ 另外调了不花钱的工具", "'explain_ranking'"],
 }
 EFFECTIVE = '    effective = picks[-1] if picks else header.get("agentPreset")   # 守卫：最后一次选择说了算\n'
@@ -172,6 +203,11 @@ MUTANTS = [   # (名字, 原文, 替换, 结果应当变掉的用例编号)
     ("去掉「模式缺参数」守卫", "    if miss:   # 守卫：模式与参数配套\n", "    if False and miss:\n",
      (("R18", "需要 --pairs"),)),
     ("去掉「模式多给参数」守卫", "    if extra:\n", "    if False and extra:\n", ("R16",)),
+    ("工具那行退回源码清单（不看 request/header）", "    vis = visible_tools(recs)\n", "    vis = None\n",
+     (("R21", "模型可见的工具 7 个"),)),
+    # 时差为正（东八区）时「晚一分钟」那条会被读成早 8 小时 → 放行；为负时「早一分钟」那条会被读成晚 → 拦下
+    ("结尾的 Z 当本机时间读", '        s = s[:-1] + "+00:00"\n', "        s = s[:-1]\n",
+     ("R23",) if LOCAL_OFFSET_S > 0 else ("R22",) if LOCAL_OFFSET_S < 0 else ()),
 ]
 
 

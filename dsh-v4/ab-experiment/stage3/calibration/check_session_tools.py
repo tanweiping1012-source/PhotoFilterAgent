@@ -108,11 +108,39 @@ def tool_calls(recs: list[dict]) -> list[tuple[str, dict]]:
 
 
 def to_ms(s: str) -> int:
-    return int(s) if s.isdigit() else int(datetime.fromisoformat(s).timestamp() * 1000)
+    """--since：epoch 毫秒，或 ISO 时间。**带 Z 或 ±hh:mm 的按那个时区换算，不带的按本机时间。**
+
+    交接流程给的是 since-utc.txt 的值（带 Z），而 Python 3.9 的 fromisoformat 不认 Z ——
+    流程和工具打架，只能改传本机时间。这里把结尾的 Z 换成 +00:00，两种都收。
+    """
+    if s.isdigit():
+        return int(s)
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    return int(datetime.fromisoformat(s).timestamp() * 1000)
 
 
 def fmt_ms(ms: int | None) -> str:
     return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S") if ms is not None else "（无时间戳）"
+
+
+def visible_tools(recs: list) -> list | None:
+    """本会话模型实际看得见的工具：每条 request/header 里的 tools。
+
+    与 paid_tools() 从源码推出来的清单不是一回事 —— 源码里有、这个会话没挂的
+    （run_pair_eval 只在 profile 配了 evalPairsFile 时才注册）模型根本看不见。
+    两者打印时分开，不许混成一个「注册的工具」（09-28 owner 被「9 个」吓去查了一趟，其实模型只看得见 7 个）。
+    各次请求的清单不一样就逐份报；一条 request/header 都没有返回 None。
+    """
+    seen = []
+    for r in recs:
+        if r.get("type") != "request/header":
+            continue
+        tools = ((r.get("data") or {}).get("header") or {}).get("tools") or []
+        names = sorted({x.get("name") for x in tools if isinstance(x, dict) and x.get("name")})
+        if names not in seen:
+            seen.append(names)
+    return seen or None
 
 
 def main(argv=None) -> int:
@@ -152,7 +180,15 @@ def main(argv=None) -> int:
     names = Counter(n for n, _ in calls)
     print(f"会话 {a.session.name} · {fmt_ms(t0)} → {fmt_ms(t1)} · 记录 {len(recs)} 条")
     print(f"preset：实际 {preset!r}（头部 {header_preset!r}，切换记录 {picks}）")
-    print(f"注册的工具 {len(every)} 个；推出来会花钱的 {sorted(paid)}")
+    vis = visible_tools(recs)
+    if vis is None:
+        print(f"会话里没有 request/header —— 看不到模型实际可见的工具；判定按源码推出的花钱清单 {sorted(paid)}")
+    else:
+        for v in vis:
+            print(f"模型可见的工具 {len(v)} 个（本会话 request/header）：{v}；其中会花钱的 {sorted(set(v) & paid)}")
+        src_only = sorted(set(every) - {n for v in vis for n in v})
+        if src_only:
+            print(f"源码里定义、本会话没挂的 {src_only}：模型看不见。判定仍按源码推出的花钱清单，只会更严")
     print(f"本会话 tool/call {len(calls)} 次：{dict(names)}")
 
     stop, warn, note = [], [], []
