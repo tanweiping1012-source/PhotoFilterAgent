@@ -115,9 +115,22 @@ push)
     subs_push < "${PRESET_SRC}/${f}" > "${PRESET_DST}/${f}"
     printf '  → preset  %s\n' "${f}"
   done
+  # 锚点是作者本人的范例照片，别的机器上没有：装上去阶段 2 会在付费调用之前失败
+  # （判据与两种失败形态见 check_anchors.py）。所以逐张核齐了才装；
+  # 不齐时把以前 push 装过的那份改名停用（不删），否则它会一直留着、照样坏。
   if [[ -f "${ANCHORS_SRC}" ]]; then
-    subs_push < "${ANCHORS_SRC}" > "${ANCHORS_DST}"
-    printf '  → anchors\n'
+    anchors_tmp="$(mktemp)"
+    subs_push < "${ANCHORS_SRC}" > "${anchors_tmp}"
+    if anchors_miss="$(python3 "${ROOT}/dsh-v4/check_anchors.py" "${anchors_tmp}")"; then
+      cat "${anchors_tmp}" > "${ANCHORS_DST}"
+      printf '  → anchors\n'
+    elif [[ -f "${ANCHORS_DST}" ]]; then
+      mv "${ANCHORS_DST}" "${ANCHORS_DST}.disabled"
+      printf '  ⚠ anchors 本机不齐（缺 %s），已把之前装的改名为 anchors.json.disabled\n' "${anchors_miss}"
+    else
+      printf '  · anchors 不装：作者的范例照片本机不齐（缺 %s）。阶段 2 不带范例照常跑\n' "${anchors_miss}"
+    fi
+    rm -f "${anchors_tmp}"
   fi
   # 插件按包名解析，软链进 harness 维护的扁平模块层。
   mkdir -p "${DSH_HOME}/profiles/node_modules/@photo-filter-agent"

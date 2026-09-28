@@ -135,6 +135,13 @@ echo "═══ 3c. preset 与 profile 的同名键：profile 那份是不是死
 # 只报**值不同**的覆盖 —— 值相同的覆盖没有后果，报出来只会淹掉真信号。
 if "$RANKER_PY" "$REPO/dsh-v4/check_preset_shadow.py" "$DSH_HOME"; then :; else FAIL=1; fi
 
+echo "═══ 3d. 锚点：装了的话，本机的锚点照片齐不齐 ═══"
+# 以前的 push 不管齐不齐都装，留下的那份在别的机器上会让阶段 2 每次失败（见 check_anchors.py）。
+ANCHORS="$DSH_HOME/anchors.json"
+if [ ! -f "$ANCHORS" ]; then ok "没装锚点 —— 阶段 2 不带范例照常跑"
+elif ANCHORS_MISS=$(python3 "$REPO/dsh-v4/check_anchors.py" "$ANCHORS"); then ok "锚点照片在本机齐全"
+else bad "装了锚点但本机缺 $ANCHORS_MISS —— 阶段 2 会每次失败。重跑 dsh-v4/sync-config.sh push（会把它改名停用）"; fi
+
 echo "═══ 4. 运行中的 DSH：启动之后代码有没有再改 ═══"
 # 不要用 $ 锚点 —— 实际命令行可能以 --no-open 结尾。
 # 也要排除包着它的那层 bash -c，否则匹配到的是壳不是服务。

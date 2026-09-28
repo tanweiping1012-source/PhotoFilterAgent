@@ -39,6 +39,12 @@ DSH_HOME=~/.dsh-v4 PHOTOS=~/Desktop/你的照片目录 ./dsh-v4/sync-config.sh p
 > 仓库里根本没有，等于整轮 AB 实验无法从克隆复现。
 > 现在只有一个脚本、一套占位符，`doctor.sh` 第 3/3b 项会持续核对两边是否一致。
 
+**范例锚点只在本机有那些照片时才装。** `anchors-default.json` 是作者本人挑照片的范例，
+指向作者自己的照片目录（`@@PHOTOS@@/eval-people-309`）。`push` 会逐张核这些照片：齐了才装成
+`$DSH_HOME/anchors.json`；不齐就不装，以前装过的改名为 `anchors.json.disabled`。
+没有锚点时阶段 2 照常跑、只是不带范例。硬装上去反而会让阶段 2 每次失败：
+候选里有同名照片会被当成泄题拦下，否则找不到锚点目录。`doctor.sh` 第 3d 项核这一条。
+
 模型路由另外配一份（**不含密钥**，只有环境变量名）：
 
 ```bash
