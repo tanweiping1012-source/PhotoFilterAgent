@@ -599,19 +599,31 @@ p90       5.6 ~ 11.6 秒
 
 > 待补：文档措辞与 README 的开启说明，数据齐了再写。
 
-**收尾清单（全部跑完之后）**：
-1. 部署 `87e142c` 修好的 preset（web 会话的阶段 2 补上锚点与 allowNeither）
-2. 把 preset 的临时排除（10 张锚点）恢复，并记第三条 md5
-3. 删掉四份分组 preset `photo-filter-v4-e2e-*`
-4. README 写明怎么开 `stage3Vlm`（默认关），措辞按修订 2.4 的档位
-5. 修 `compare.ts:443` 翻覆时的 `reason` 文案（「判平局」→ 翻覆）与 `:23` / `:103` 两处写着 `tie` 的注释（§3.2）
-6. **别的用户装上之后阶段 2 必然失败 —— 要在第 1 项之前修好**（2026-09-28 收尾预演时查出，0 次调用）：
+**收尾清单（全部跑完、owner 与执行方都核完之后，按这个顺序）**：
+
+0. **先把实验期的排除清单存进归档**（`archive/round4-e2e/exclude-during-e2e.txt` + md5）。
+   `recompute_run.py` 的 `--exclude` 默认读**基线 preset** 的 `excludedRelativePaths`；第 2 步一恢复基线，
+   任何人再对归档运行做离线重算，候选池就变了、指纹对不上，全部有效运行都会「重算失败」（执行方查出）。
+   重算工具加 `--exclude-file`，并在基线 preset 里找不到那 10 张锚点时直接报「这是实验期之后的 preset，请显式给排除清单」
+1. **修「别的用户装上之后阶段 2 必然失败」**（2026-09-28 收尾预演查出，执行方独立核并补全，0 次调用）：
    `anchors-default.json` 的 `folder` 是 `@@PHOTOS@@/eval-people-309`，指向作者自己的照片；`sync-config.sh push`
-   对所有人都装这份锚点，而 headless profile 一直带着 `anchorsFile`、87e142c 又给 web preset 补上了。
-   别人的机器上没有这个目录 → 排序器出锚点图时报「目录不存在」（实测退出码 2）→ 阶段 2 失败、回落本地名单。
-   同一路径还有一个次要问题：泄题拦截按**文件名**比对，富士相机的 `DSCFnnnn.JPG` 在别人的文件夹里可能重名，会误拦。
-   建议：锚点目录与照片在本机不齐时 `push` 不装 `anchors.json`（没有锚点是这类用户的正确配置，不是配置错误），
-   `doctor.sh` 报一行；「装了锚点却取不全就整轮失败」保持不变。实验期间部署件冻结，所以放到收尾做
+   对所有人无条件装这份锚点，headless profile 一直带着 `anchorsFile`，87e142c 又给 web preset 补上了，
+   而阶段 2 **默认开着**（`stage2Vlm` 默认 `true`）。别人的机器上会有两个入口让阶段 2 失败、回落本地名单，都在付费调用之前：
+   - 文件夹里恰好有同名的 `DSCFnnnn.JPG`（富士相机的命名）→ 先触发**泄题拦截**（按文件名比对），
+     报「锚点照片也在候选池里」—— **诊断是错的**，用户会以为自己的照片有问题
+   - 否则 → 排序器出锚点图时报「目录不存在」（实测退出码 2）
+
+   修法：`push` 按它自己展开的 `PHOTOS` **逐张**核锚点照片，齐了才装；不齐时把已有的 `anchors.json` 改名为
+   `anchors.json.disabled`（旧 push 装过的不会自己消失；改名不删），`doctor.sh` 报一行。
+   没有锚点是这类用户的正确配置：`readAnchors` 返回 null、泄题拦截随之不触发。
+   「装了锚点却取不全就整轮失败」保持不变。作者本机锚点目录与 10 张照片齐全，装出来与现在逐字节相同
+2. 部署（`sync-config.sh push`）：预演过，只会改基线 preset 的 `agent.cordis.yml` —— 同时完成
+   「补上 anchorsFile / allowNeither / stage2Vlm」与「恢复那 10 张临时排除」，记第三条 md5；
+   5 份 profile、`anchors.json`、`preset.yml` 都与部署件相同
+3. 四份分组 preset `photo-filter-v4-e2e-*` 挪进 `archive/round4-e2e/`（不删）
+4. README 写明怎么开 `stage3Vlm`（默认关）：web 会话里要写在 **preset** 的插件 config 里，不是 profile；措辞按修订 2.4 的档位。
+   同时写明重算归档运行要显式给排除清单
+5. 修 `compare.ts:443` 翻覆时的 `reason` 文案（「判平局」→ 翻覆）与 `:23` / `:103` 两处写着 `tie` 的注释（§3.2）
 
 **后续改进（本轮不改 —— 改了会让已跑的运行不可比）**，按先后：
 1. 视觉调用接上重试（或 `comparePairs` 对 5xx 做有限重试）—— 本轮 13 次失败里的外部故障全落在这个缺口上（§3.2）
