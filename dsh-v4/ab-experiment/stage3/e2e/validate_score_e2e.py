@@ -48,7 +48,7 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
              s3_jpegs=None, plan=None, plan_md5_override=None, verdict_plan_override=None,
              delivered_final=None, s2_anchor_photos=10, s3_anchor_photos=None,
              s2_jpegs_sent=None, drop_calls=0, s2_code_bad=1, s2_code_missing=0, s3_code_bad=0,
-             s2_burned=True, started_at=None, s2_fail_error=None):
+             s2_burned=True, started_at=None, s2_fail_error=None, s2_error=None):
     """造一份运行记录。outcomes: {段号: winner}，缺省判擂主赢（'a'）。"""
     d = root / name
     d.mkdir(parents=True)
@@ -100,7 +100,8 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
                    "stage3AnchorsFile": "/x/anchors3.json" if want_anchors else ""},
         "stage2": {
             "status": "failed" if stage2 == "failed" else stage2,
-            **({"error": "mock 阶段 2 失败"} if stage2 == "failed" else {"route": "mock/mock-vision", "matches": 3}),
+            **({"error": s2_error or "mock 阶段 2 失败"} if stage2 == "failed"
+               else {"route": "mock/mock-vision", "matches": 3}),
             "anchor_photos_configured": 10, "anchor_photos_sent": s2_anchor_photos,
             "anchor_jpegs_sent": s2_anchor_photos * 2 if s2_jpegs_sent is None else s2_jpegs_sent,
             "comparisons": 6 - drop_calls, "preflights": 1,
@@ -197,7 +198,9 @@ def main() -> int:
     # 没烧码：codeReadOk 恒为真，照抄就是假的满分（compare.ts:398）
     runs["v-nocodes"] = make_run(tmp, "v-nocodes", "B1", s2_code_bad=0, s2_burned=False)
     # 日期分界：UTC 深夜那次在本地已经是第二天（真实的 09-17T23:51Z 就是本地 09-18 早上）
+    # 真实的违约报错后半截是判官散文（描述用户本人长相）：算分输出里一个字都不许出现
     runs["v-prose"] = make_run(tmp, "v-prose", "A", stage2="failed", started_at="2026-09-20T23:30:00.000Z",
+                               s2_error='模型没有且仅调用结构化工具 submit_comparison；禁止解析纯文本。 现场：tool-call 0 个，散文开头「PROSE-MARKER eyes open, standing by the shore」',
                                s2_fail_error="模型没有且仅调用结构化工具 submit_comparison；禁止解析纯文本。 现场：tool-call 0 个")
     runs["day-next"] = make_run(tmp, "day-next", "B1", started_at="2026-09-21T02:00:00.000Z")
     shifted = [dict(x) for x in PLAN]
@@ -296,6 +299,9 @@ def main() -> int:
     ck("跨日的运行按本机时区切：UTC 23:30 那次算本地第二天，不是凭空多出一天",
        S["v-prose"]["day"] == "09-21" and S["day-next"]["day"] == "09-21", 
        f'v-prose {S["v-prose"]["day"]} · day-next {S["day-next"]["day"]}')
+    ck("作废理由只留报错第一句：判官散文（用户本人的长相）不进算分输出",
+       "PROSE-MARKER" not in out and any("阶段 2 未执行：模型没有且仅调用结构化工具" in x for x in S["v-prose"]["void"]),
+       [x for x in S["v-prose"]["void"]][:1])
     ck("失败形态认得出来：结构化输出违约单独成一类，不混进 HTTP 码",
        S["v-prose"]["failures"] == ["结构化输出违约"], json.dumps(S["v-prose"]["failures"], ensure_ascii=False))
     ck("分组汇总按日期分段，跨日的那组要喊一声",
@@ -400,6 +406,10 @@ def main() -> int:
          '            "bad_with_winner": sum(1 for x in bad if x.get("winner") in ("a", "b", "neither"))}',
          '            "bad_with_winner": len(bad)}',
          lambda S2: S2["v-coderead"]["code_read"]["stage2"]["bad_with_winner"] != 1),
+        ("作废理由照抄整段 error（判官散文漏进输出）",
+         "        out.append(f\"阶段 2 未执行：{brief_error(s2.get('error'))}\")",
+         "        out.append(f\"阶段 2 未执行：{s2.get('error')}\")",
+         lambda S2: any("PROSE-MARKER" in x for x in S2["v-prose"]["void"])),
         ("日期按 UTC 切（UTC 深夜那次会被切到前一天）",
          '    t = datetime.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).astimezone()',
          '    t = datetime.strptime(iso[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)',

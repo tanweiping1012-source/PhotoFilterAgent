@@ -147,17 +147,27 @@ def classify(run: dict) -> tuple[str, list]:
     return group, bad
 
 
+def brief_error(err) -> str:
+    """阶段错误只留第一句。
+
+    结构化输出违约的 error 后半截是**模型散文的开头**（「现场：…散文开头「…」」），
+    而判官的散文描述的是用户本人的长相 —— 绝不能随算分输出流进报告或公开仓库。
+    第一句是产品自己的报错文案，够认出是哪种失败。
+    """
+    return str(err or "").split("。")[0][:80]
+
+
 def void_reasons(run: dict, group: str, inputs_bad: list) -> list:
     """修订 2.8 与 1.5：作废的五种。作废运行的调用照样记成本，但不进任何指标。"""
     out = list(inputs_bad)
     s2, s3 = run.get("stage2") or {}, run.get("stage3") or {}
     if s2.get("status") == "failed":
-        out.append(f"阶段 2 未执行：{s2.get('error')}")
+        out.append(f"阶段 2 未执行：{brief_error(s2.get('error'))}")
     elif s2.get("status") != "ran":
         out.append(f"阶段 2 状态是 {s2.get('status')!r} —— 本轮四组都开阶段 2，只有 ran 才算数")
     if group != "A":
         if s3.get("status") == "failed":
-            out.append(f"阶段 3 未执行：{s3.get('error')}")
+            out.append(f"阶段 3 未执行：{brief_error(s3.get('error'))}")
         elif s3.get("status") not in ("ran", "no_contests"):
             out.append(f"阶段 3 状态是 {s3.get('status')!r}")
         note = s3.get("note") or {}
