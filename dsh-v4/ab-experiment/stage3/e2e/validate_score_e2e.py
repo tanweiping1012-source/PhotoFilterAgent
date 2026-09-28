@@ -48,7 +48,8 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
              s3_jpegs=None, plan=None, plan_md5_override=None, verdict_plan_override=None,
              delivered_final=None, s2_anchor_photos=10, s3_anchor_photos=None,
              s2_jpegs_sent=None, drop_calls=0, s2_code_bad=1, s2_code_missing=0, s3_code_bad=0,
-             s2_burned=True, started_at=None, s2_fail_error=None, s2_error=None, s2_contra=0, s3_contra=0):
+             s2_burned=True, started_at=None, s2_fail_error=None, s2_error=None, s2_contra=0, s3_contra=0,
+             s2_first_winner="inconsistent"):
     """造一份运行记录。outcomes: {段号: winner}，缺省判擂主赢（'a'）。"""
     d = root / name
     d.mkdir(parents=True)
@@ -140,7 +141,7 @@ def make_run(root: Path, name: str, group: str, outcomes=None, *, reverse=(), st
         for i in range(3):
             # 第一局判成翻覆：没抄全的局里两个方向一致的（判甲/判乙/都不够格）才算真进了判决
             row = {"a": f"s2-{i}a.JPG", "b": f"s2-{i}b.JPG",
-                   "winner": "inconsistent" if i == 0 else "a", "consistent": i != 0,
+                   "winner": s2_first_winner if i == 0 else "a", "consistent": i != 0,
                    "contradiction": i < s2_contra}
             if s2_burned:                        # 没烧码时产品根本不写这几个键
                 row.update(codeA="JWHE", codeB="PNVR",
@@ -206,6 +207,8 @@ def main() -> int:
     runs["day-next"] = make_run(tmp, "day-next", "B1", started_at="2026-09-21T02:00:00.000Z")
     # 说甲却给乙的码：阶段 2 一局、阶段 3 两局 —— 两个阶段都要数到
     runs["v-contra"] = make_run(tmp, "v-contra", "B1", s2_contra=1, s3_contra=2)
+    # 没抄全的那局两次都答 tie：阶段 2 里 tie 是有信息的答案（挡整组淘汰），算进了判决
+    runs["v-codetie"] = make_run(tmp, "v-codetie", "B1", s2_code_bad=2, s2_first_winner="tie")
     shifted = [dict(x) for x in PLAN]
     shifted[0] = {**shifted[0], "segment": 99}          # 同一对挪到别的段号
     runs["plan-shift"] = make_run(tmp, "plan-shift", "B1", plan=shifted)
@@ -313,6 +316,10 @@ def main() -> int:
     ck("判官行为按日期那张表：违约记在本地 09-21 那天",
        any(l.strip().startswith("09-21") and "结构化输出违约 ×1" in l for l in out.splitlines()),
        [l.strip() for l in out.splitlines() if "结构化输出违约" in l][:2])
+    ct2 = ((S.get("v-codetie") or {}).get("code_read") or {}).get("stage2") or {}
+    ck("没抄全的局判成 tie 也算进了判决（阶段 2 的 tie 是「有人够格」，只有翻覆是弃权）",
+       ct2.get("judged") == 3 and ct2.get("ok") == 1 and ct2.get("bad_with_verdict") == 2,
+       json.dumps(ct2, ensure_ascii=False))
     ck("说甲给乙码逐次、两个阶段分开数（原先只数阶段 3、又没标阶段）",
        S["v-contra"].get("contradictions") == {"stage2": 1, "stage3": 2}
        and "说甲却给乙的码（按裁决文件逐次数，码说了算）：阶段 2 1 · 阶段 3 2" in out
@@ -415,13 +422,17 @@ def main() -> int:
          '    return True',
          lambda S2: S2["v-nocodes"]["code_read"]["stage2"]["judged"] != 0),
         ("没抄全的局一律算成「影响了判决」（翻覆和作废的也算进去）",
-         '            "bad_with_verdict": sum(1 for x in bad if x.get("winner") in ("a", "b", "neither"))}',
+         '            "bad_with_verdict": sum(1 for x in bad if x.get("winner") in ("a", "b", "tie", "neither"))}',
          '            "bad_with_verdict": len(bad)}',
          lambda S2: S2["v-coderead"]["code_read"]["stage2"]["bad_with_verdict"] != 1),
         ("作废理由照抄整段 error（判官散文漏进输出）",
          "        out.append(f\"阶段 2 未执行：{brief_error(s2.get('error'))}\")",
          "        out.append(f\"阶段 2 未执行：{s2.get('error')}\")",
          lambda S2: any("PROSE-MARKER" in x for x in S2["v-prose"]["void"])),
+        ("「进了判决」漏掉 tie（09-28 之前的口径）",
+         '            "bad_with_verdict": sum(1 for x in bad if x.get("winner") in ("a", "b", "tie", "neither"))}',
+         '            "bad_with_verdict": sum(1 for x in bad if x.get("winner") in ("a", "b", "neither"))}',
+         lambda S2: S2["v-codetie"]["code_read"]["stage2"]["bad_with_verdict"] != 2),
         ("说甲给乙码只数阶段 3（09-28 之前的样子）",
          '        "contradictions": {"stage2": contradiction_count(r["v2"]), "stage3": contradiction_count(v3)},',
          '        "contradictions": {"stage2": 0, "stage3": contradiction_count(v3)},',

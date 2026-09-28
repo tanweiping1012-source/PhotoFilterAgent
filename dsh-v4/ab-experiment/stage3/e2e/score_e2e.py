@@ -297,10 +297,12 @@ def code_read_rate(v: dict | None) -> dict | None:
     bad = [x for x in judged if not next(x[k] for k in CODE_READ_KEYS if k in x)]
     return {"judged": len(judged), "missing_field": len(missing), "not_burned": len(unburned),
             "ok": len(judged) - len(bad),
-            # 没抄全**不等于**判错了一局：幻觉码那种整对作废、翻覆的那种本来就没赢家。
-            # 真正进了判决的只有两个方向一致的那几局（判甲 / 判乙 / 都不够格），这个数才是「读码失误的影响面」。
-            # 「都不够格」没有赢家但照样进判决 —— 所以叫「进了判决」，不叫「定出赢家」
-            "bad_with_verdict": sum(1 for x in bad if x.get("winner") in ("a", "b", "neither"))}
+            # 没抄全**不等于**判错了一局：幻觉码那种整对作废（记成翻覆），翻覆在排序器里是弃权。
+            # 进了判决 = 排序器收到的是一个答案而不是弃权：a / b / tie / neither。
+            # tie 也算 —— 阶段 2 的整组淘汰里「tie 说两张都够格」是反证，能挡住淘汰；
+            # 只有 inconsistent 计为弃权（ranker/photofilter_rank/pipeline.py 274–291）。
+            # 阶段 3 四者一律「维持」、效果相同（stage3.py:205）。09-28 之前漏了 tie
+            "bad_with_verdict": sum(1 for x in bad if x.get("winner") in ("a", "b", "tie", "neither"))}
 
 
 def contradiction_count(v: dict | None) -> int | None:
