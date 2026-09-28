@@ -124,6 +124,11 @@ def fmt_ms(ms: int | None) -> str:
     return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S") if ms is not None else "（无时间戳）"
 
 
+# 判据修订 6.2：--since 之前只许这几种初始化记录。web UI 会复用一个早先建好的空白会话
+# （A-4：壳子建于 12:26:38，--since 12:40:42，此前只有这三条 + 会话头），那不是「给错了旧会话」
+INIT_TYPES = frozenset({"session", "permission/preset", "sandbox/mode", "approval/policy"})
+
+
 def visible_tools(recs: list) -> list | None:
     """本会话模型实际看得见的工具：每条 request/header 里的 tools。
 
@@ -193,8 +198,14 @@ def main(argv=None) -> int:
 
     stop, warn, note = [], [], []
     since_ms = to_ms(a.since)
-    if t0 is None or t0 < since_ms:   # 守卫：会话时间
-        stop.append(f"会话最早一条记录 {fmt_ms(t0)} 早于 --since {fmt_ms(since_ms)}（或没有时间戳）—— 这不是这次运行的会话")
+    early = sorted((int(r["time"]), r.get("type")) for r in recs
+                   if str(r.get("time", "")).isdigit() and int(r["time"]) < since_ms and r.get("type") not in INIT_TYPES)
+    if t0 is None or early:   # 守卫：会话时间（修订 6.2：--since 之前只许初始化记录）
+        stop.append(f"--since {fmt_ms(since_ms)} 之前有 {len(early)} 条对话或选择类记录"
+                    f"（最早 {fmt_ms(early[0][0]) if early else '—'}，类型 {sorted({k for _, k in early})}）"
+                    f"或会话没有时间戳 —— 这不是这次运行的会话")
+    elif t0 < since_ms:
+        note.append(f"会话壳子建于 {fmt_ms(t0)}，早于 --since；此前只有初始化记录（修订 6.2 允许：web UI 复用了空白会话）")
     want_preset = a.preset or PRESET
     if preset != want_preset:   # 守卫：preset
         stop.append(f"会话实际挂的 preset 是 {preset!r}，应为 {want_preset!r} —— **preset 就是分组**："

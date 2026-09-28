@@ -50,15 +50,19 @@ VISIBLE7 = ["compare_within_groups", "evaluate_against_answer", "explain_ranking
 
 
 def session(name, calls, t=NOW, with_time=True, header_preset="cordis", picks=("photo-filter-v4",),
-            header_tools=None):
+            header_tools=None, init_at=None, picks_at=None):
     d = tmp / name
     d.mkdir()
     header = {"type": "session", "seq": 0}
     if header_preset is not None:
         header["agentPreset"] = header_preset
     recs = [header]
+    if init_at is not None:   # A-4 形态：壳子（三条初始化记录）早就建好了
+        for k in ("permission/preset", "sandbox/mode", "approval/policy"):
+            recs.append({"type": k, "seq": len(recs), "data": {}, "time": str(init_at)})
     for p in picks:
-        recs.append({"type": "agent-preset/selected", "seq": len(recs), "data": {"agentPreset": p}})
+        recs.append({"type": "agent-preset/selected", "seq": len(recs), "data": {"agentPreset": p},
+                     **({"time": str(picks_at)} if picks_at is not None else {})})
     if header_tools is not None:
         recs.append({"type": "request/header", "seq": len(recs),
                      "data": {"header": {"tools": [{"name": n, "description": "mock"} for n in header_tools]}}})
@@ -71,7 +75,7 @@ def session(name, calls, t=NOW, with_time=True, header_preset="cordis", picks=("
                      "data": {"turn": 1, "step": i + 1, "name": n, "arguments": raw}})
     for j, r in enumerate(recs):
         if with_time:
-            r["time"] = str(t + j * 1000)
+            r.setdefault("time", str(t + j * 1000))   # 预先给了时间的（壳子、早切的 preset）不覆盖
     raw = "\n".join(json.dumps(r, ensure_ascii=False) for r in recs).encode()
     (d / "session.jsonl.zstd").write_bytes(
         subprocess.run([ZSTD, "-q", "-c"], input=raw, capture_output=True, check=True).stdout)
@@ -155,6 +159,11 @@ CASES = [
      {"picks": (E2E_PRESET,)}),
     ("R24 --since 带 +08:00，早于会话一分钟", [SCAN, RANK20], RANK + ["--since", iso_plus8(NOW - 60_000)], 0,
      {"picks": (E2E_PRESET,)}),
+    # 修订 6.2：壳子早于 --since 但此前只有初始化记录 → 放行并说明；preset 早就选好了 → 停
+    ("R25 A-4 形态：空壳早 14 分钟建好，preset 与对话都在 --since 之后", [SCAN, RANK20], RANK, 0,
+     {"picks": (E2E_PRESET,), "init_at": NOW - 14 * 60_000}),
+    ("R26 壳子里的 preset 在 --since 之前就选好了", [SCAN, RANK20], RANK, 2,
+     {"picks": (E2E_PRESET,), "init_at": NOW - 14 * 60_000, "picks_at": NOW - 10 * 60_000}),
 ]
 IDX = {label.split()[0]: i for i, (label, *_rest) in enumerate(CASES)}
 # 这些用例还要看输出：退出码对不够，得确认确实走进了那一条
@@ -168,6 +177,8 @@ MUST_PRINT = {
     "R20": ["需要 --preset"],
     "R21": ["模型可见的工具 7 个（本会话 request/header）", "源码里定义、本会话没挂的", "'run_pair_eval'"],
     "R1": ["会话里没有 request/header"],
+    "R25": ["会话壳子建于", "修订 6.2 允许"],
+    "R26": ["对话或选择类记录", "'agent-preset/selected'"],
     "R12": ["⚠️ 另外调了不花钱的工具", "'explain_ranking'"],
 }
 EFFECTIVE = '    effective = picks[-1] if picks else header.get("agentPreset")   # 守卫：最后一次选择说了算\n'
@@ -175,8 +186,15 @@ COUNT_GUARD = "        if names[tool] != 1:   # 守卫：该调的工具各正�
 MUTANTS = [   # (名字, 原文, 替换, 结果应当变掉的用例编号)
     ("花钱清单凭记忆写（只有 rank_photos）", "    paid, every = paid_tools()\n",
      "    paid, every = {'rank_photos', 'run_pair_eval'}, set()\n", ("S2", "S3")),
-    ("去掉会话时间守卫", "    if t0 is None or t0 < since_ms:   # 守卫：会话时间\n",
-     "    if False:\n", ("S13", "R14")),
+    ("去掉会话时间守卫", "    if t0 is None or early:   # 守卫：会话时间（修订 6.2：--since 之前只许初始化记录）\n",
+     "    if False:\n", ("S13", "R14", "R26")),
+    ("会话时间守卫退回「任何记录都不许早」（修订 6.2 之前）",
+     "    if t0 is None or early:   # 守卫：会话时间（修订 6.2：--since 之前只许初始化记录）\n",
+     "    if t0 is None or early or t0 < since_ms:\n", ("R25",)),
+    ("preset 选择也算初始化记录（早选的 preset 就放过去了）",
+     'INIT_TYPES = frozenset({"session", "permission/preset", "sandbox/mode", "approval/policy"})',
+     'INIT_TYPES = frozenset({"session", "permission/preset", "sandbox/mode", "approval/policy", "agent-preset/selected"})',
+     ("R26",)),
     ("去掉「out 就是归档文件」守卫",
      "            if out_res is None or out_res != a.expect_out.expanduser().resolve():   # 守卫：结果文件\n",
      "            if False:\n", ("S14",)),
