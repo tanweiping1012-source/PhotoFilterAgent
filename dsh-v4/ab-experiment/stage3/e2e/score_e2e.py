@@ -303,6 +303,18 @@ def code_read_rate(v: dict | None) -> dict | None:
             "bad_with_verdict": sum(1 for x in bad if x.get("winner") in ("a", "b", "neither"))}
 
 
+def contradiction_count(v: dict | None) -> int | None:
+    """一份裁决文件里「说甲却给乙的码」的局数；两个阶段的键名相同（contradiction）。
+
+    没有裁决文件返回 None，与「0 局」分开：没跑到的阶段不许报成 0。
+    原先只有组内汇总里一个数、只数阶段 3 的 duel，又没标阶段 —— 阶段 2 早有 5 局，
+    汇总却一直显示 0，连写这个脚本的人都被它骗过（09-28）。
+    """
+    if not v:
+        return None
+    return sum(1 for x in (v.get("verdicts") or []) if x.get("contradiction"))
+
+
 def score_run(r: dict, gold: set, frozen: dict) -> dict:
     run, v3 = r["run"], r["v3"]
     group, inputs_bad = classify(run)
@@ -362,6 +374,7 @@ def score_run(r: dict, gold: set, frozen: dict) -> dict:
         "consistent": sum(1 for x in duels if x["consistent"]),
         # 逐次读码率按**裁决文件**数（阶段 2 也有，阶段 3 的 code_read_ok 是按本次计划的局数）
         "code_read": {"stage2": code_read_rate(r["v2"]), "stage3": code_read_rate(v3)},
+        "contradictions": {"stage2": contradiction_count(r["v2"]), "stage3": contradiction_count(v3)},
         "code_read_ok": sum(1 for x in duels if x["code_read_ok"]),
         "contradiction": sum(1 for x in duels if x["contradiction"]),
         "duels": duels,
@@ -432,6 +445,9 @@ def main() -> int:
                              if c["not_burned"] else ""))
         if cr:
             print(f"        判官读码正确（按裁决文件逐次数）：{' · '.join(cr)}")
+        ct = [f"阶段 {k[-1]} {s['contradictions'][k]}" for k in ("stage2", "stage3") if s["contradictions"][k]]
+        if ct:
+            print(f"        说甲却给乙的码（按裁决文件逐次数，码说了算）：{' · '.join(ct)}")
         for w in s["swaps"]:
             print(f"        段 {w['segment']}：{w['out']} → {w['in']}{'（换上的是金标）' if w['in_is_gold'] else ''}")
         for v in s["void"]:
@@ -461,12 +477,18 @@ def main() -> int:
         n = Counter()
         for s in rows:
             n.update({k: v for k, v in s["note"].items() if isinstance(v, int)})
+        # 阶段 2 四组都跑，读码与「说甲给乙码」对每一组都报（A 组以前一个数都没有）
+        c2 = [s["code_read"]["stage2"] for s in rows if s["code_read"]["stage2"]]
+        k2 = [s["contradictions"]["stage2"] for s in rows if s["contradictions"]["stage2"] is not None]
+        if c2:
+            print(f"      阶段 2（按裁决文件）：读码全对 {sum(c['ok'] for c in c2)}/{sum(c['judged'] for c in c2)}"
+                  f" · 说甲给乙码 {sum(k2)} 局（{len(k2)} 次运行）")
         if g != "A":
             print(f"      不换的原因合计：擂主赢 {n['kept_a']} · 平局 {n['kept_tie']} · 都不够格 {n['kept_neither']}"
                   f" · 翻覆 {n['kept_inconsistent']} · 没跑 {n['missing']} · 破同组上限 {n['refused_family_cap']}"
                   f" · 换人 {n['swapped']}")
             duels_all = sum(s["contests"] for s in rows)
-            print(f"      双向一致 {sum(s['consistent'] for s in rows)}/{duels_all} · "
+            print(f"      阶段 3：双向一致 {sum(s['consistent'] for s in rows)}/{duels_all} · "
                   f"读码全对 {sum(s['code_read_ok'] for s in rows)}/{duels_all} · "
                   f"说甲给乙码 {sum(s['contradiction'] for s in rows)}/{duels_all}")
             cor = sum(s["dec_correct"] for s in rows)
