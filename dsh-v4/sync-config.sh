@@ -118,18 +118,32 @@ push)
   # 锚点是作者本人的范例照片，别的机器上没有：装上去阶段 2 会在付费调用之前失败
   # （判据与两种失败形态见 check_anchors.py）。所以逐张核齐了才装；
   # 不齐时把以前 push 装过的那份改名停用（不删），否则它会一直留着、照样坏。
+  # 核对**自己**失败（退出码既不是 0 也不是 3）时锚点一律不动：那不是「不齐」，
+  # 当成不齐就会停用作者本机好好的锚点。其余照常装完，最后再以失败退出。
+  anchors_check_failed=""
   if [[ -f "${ANCHORS_SRC}" ]]; then
     anchors_tmp="$(mktemp)"
     subs_push < "${ANCHORS_SRC}" > "${anchors_tmp}"
-    if anchors_miss="$(python3 "${ROOT}/dsh-v4/check_anchors.py" "${anchors_tmp}")"; then
-      cat "${anchors_tmp}" > "${ANCHORS_DST}"
-      printf '  → anchors\n'
-    elif [[ -f "${ANCHORS_DST}" ]]; then
-      mv "${ANCHORS_DST}" "${ANCHORS_DST}.disabled"
-      printf '  ⚠ anchors 本机不齐（缺 %s），已把之前装的改名为 anchors.json.disabled\n' "${anchors_miss}"
-    else
-      printf '  · anchors 不装：作者的范例照片本机不齐（缺 %s）。阶段 2 不带范例照常跑\n' "${anchors_miss}"
-    fi
+    anchors_rc=0
+    anchors_miss="$(python3 "${ROOT}/dsh-v4/check_anchors.py" "${anchors_tmp}")" || anchors_rc=$?
+    case "${anchors_rc}" in
+      0)
+        cat "${anchors_tmp}" > "${ANCHORS_DST}"
+        printf '  → anchors\n'
+        ;;
+      3)
+        if [[ -f "${ANCHORS_DST}" ]]; then
+          mv "${ANCHORS_DST}" "${ANCHORS_DST}.disabled"
+          printf '  ⚠ anchors 本机不齐（缺 %s），已把之前装的改名为 anchors.json.disabled\n' "${anchors_miss}"
+        else
+          printf '  · anchors 不装：作者的范例照片本机不齐（缺 %s）。阶段 2 不带范例照常跑\n' "${anchors_miss}"
+        fi
+        ;;
+      *)
+        anchors_check_failed="${anchors_rc}"
+        printf '  ✖ 锚点核对自己失败了（退出码 %s），已装的锚点没有改动\n' "${anchors_rc}"
+        ;;
+    esac
     rm -f "${anchors_tmp}"
   fi
   # 插件按包名解析，软链进 harness 维护的扁平模块层。
@@ -137,6 +151,7 @@ push)
   ln -sfn "${ROOT}/agent-v4" \
      "${DSH_HOME}/profiles/node_modules/@photo-filter-agent/dsh-photo-filter-v4"
   printf '\n已装配到：%s\n' "${DSH_HOME}"
+  [[ -z "${anchors_check_failed}" ]] || die "锚点核对自己失败了（退出码 ${anchors_check_failed}）—— 其余已装好，锚点没动；修好后重跑 push"
   ;;
 *)
   die "用法：$0 pull|push"

@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-"""锚点照片在本机齐不齐。齐了退出 0；不齐打印缺的项并退出 1。
+"""锚点照片在本机齐不齐。
 
     python3 check_anchors.py <已替换占位符的锚点 JSON>
+
+    退出 0   齐全
+    退出 3   不齐（打印缺的项）；文件读不了、不是预期的结构，也归这一类
+    其他     核对自己失败（崩溃、找不到解释器……）—— **不能当成不齐**：
+             调用方据「不齐」会停用已装的锚点，把「核对坏了」当「不齐」就会误停作者本机的锚点
+             （执行方 2026-09-28 用坏掉的 python3 桩子复现）
 
 锚点（anchors-default.json）是作者本人的范例：`folder` 指向作者自己的照片目录。
 别的机器上没有这些照片，装上去阶段 2 会在付费调用之前失败，而阶段 2 默认开着：
@@ -21,21 +27,26 @@ import os
 import sys
 
 
+NOT_COMPLETE = 3
+
+
 def missing(path: str) -> list[str]:
-    """本机缺的锚点项：目录不在就只报目录，否则逐张报缺的照片。读不了文件也算不齐。"""
+    """本机缺的锚点项：目录不在就只报目录，否则逐张报缺的照片。读不了、结构不对也算不齐。"""
     try:
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
     except (OSError, ValueError) as e:      # 文件坏了：运行时 readAnchors 也会返回 null，这里按不齐处理
         return [f"读不了锚点文件（{e.__class__.__name__}）"]
+    if not isinstance(d, dict) or not isinstance(d.get("photos"), list):
+        return ["锚点文件不是预期的结构（顶层要是对象，photos 要是列表）"]
     folder = str(d.get("folder") or "")
     if not os.path.isdir(folder):
         return [f"目录 {folder}"]
-    return [p for p in d.get("photos") or [] if not os.path.isfile(os.path.join(folder, str(p)))]
+    return [p for p in d["photos"] if not os.path.isfile(os.path.join(folder, str(p)))]
 
 
 if __name__ == "__main__":
     miss = missing(sys.argv[1])
     if miss:
         print("、".join(miss[:5]) + (f" 等 {len(miss)} 项" if len(miss) > 5 else ""))
-        sys.exit(1)
+        sys.exit(NOT_COMPLETE)

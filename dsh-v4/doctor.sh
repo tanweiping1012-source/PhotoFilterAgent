@@ -137,10 +137,18 @@ if "$RANKER_PY" "$REPO/dsh-v4/check_preset_shadow.py" "$DSH_HOME"; then :; else 
 
 echo "═══ 3d. 锚点：装了的话，本机的锚点照片齐不齐 ═══"
 # 以前的 push 不管齐不齐都装，留下的那份在别的机器上会让阶段 2 每次失败（见 check_anchors.py）。
+# 退出码三路：0 齐全、3 不齐、其他是核对脚本自己失败（见 check_anchors.py），后两种不能混报。
 ANCHORS="$DSH_HOME/anchors.json"
 if [ ! -f "$ANCHORS" ]; then ok "没装锚点 —— 阶段 2 不带范例照常跑"
-elif ANCHORS_MISS=$(python3 "$REPO/dsh-v4/check_anchors.py" "$ANCHORS"); then ok "锚点照片在本机齐全"
-else bad "装了锚点但本机缺 $ANCHORS_MISS —— 阶段 2 会每次失败。重跑 dsh-v4/sync-config.sh push（会把它改名停用）"; fi
+else
+  ANCHORS_RC=0
+  ANCHORS_MISS=$("$RANKER_PY" "$REPO/dsh-v4/check_anchors.py" "$ANCHORS") || ANCHORS_RC=$?
+  case "$ANCHORS_RC" in
+    0) ok "锚点照片在本机齐全" ;;
+    3) bad "装了锚点但本机缺 $ANCHORS_MISS —— 阶段 2 会每次失败。重跑 dsh-v4/sync-config.sh push（会把它改名停用）" ;;
+    *) bad "锚点核对脚本自己失败了（退出码 $ANCHORS_RC）—— 这一项没核成" ;;
+  esac
+fi
 
 echo "═══ 4. 运行中的 DSH：启动之后代码有没有再改 ═══"
 # 不要用 $ 锚点 —— 实际命令行可能以 --no-open 结尾。
