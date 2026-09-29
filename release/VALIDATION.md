@@ -22,7 +22,8 @@ Platform tested: macOS arm64, Node 24.15.0. Other platforms are not certified.
 | Restart | PASS | Resume persisted sessions; in-memory shortlist and pending ticket do not survive |
 | Swift build from tarball | PASS | Packaged sources and test-target directory compile independently |
 | Real-photo model quality | NOT RUN | No private dataset or paid model requests in this acceptance |
-| Public npm publication | PENDING | Namespace ownership and repository license not yet confirmed |
+| Cold dependency installation | PASS | New Python 3.12 venv, actual CLIP/pyiqa/torch imports, pip check, Swift build via installed setup command |
+| Public npm publication | PENDING | npm whoami returned ENEEDAUTH; namespace ownership and repository license not yet confirmed |
 
 ## Reproduce
 
@@ -47,6 +48,7 @@ The dedicated GitHub workflow runs build, tests, package installation and full r
 - A preset revision is shared across Agents. Mutable shortlist/ticket state now belongs to the calling Session.
 - Cancellation used to reject before child close, racing temporary-file deletion. The bridge now waits for close and escalates a stalled SIGTERM to SIGKILL.
 - Swift's package manifest references a test target. Omitting its directory from the npm tarball prevents compilation; the release file list now includes it.
+- Fresh cloud runners lack pnpm, which the npm DSH CLI requires. The source installer and verifier now use pinned pnpm from development dependencies.
 - An early tool-only smoke disabled Web startup and could finish before required-service diagnostics. The final verifier starts the complete Web surface and waits for its services.
 
 ## Scope

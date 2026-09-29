@@ -1,7 +1,7 @@
 // Usage: node scripts/verify-dsh-release.mjs /absolute/path/to/dsh/lib/bin.js /absolute/package.tgz
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve, dirname } from 'node:path'
+import { join, resolve, dirname, delimiter } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 const [runtime, tarball] = process.argv.slice(2)
@@ -9,7 +9,7 @@ if (!runtime || !tarball) throw new Error('Pass the DSH bin.js and packed .tgz p
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..')
 const home=mkdtempSync(join(tmpdir(),'photofilter-release-'))
 const photos=join(home,'photos'), exports=join(home,'exports')
-const env={...process.env,DSH_HOME:home,PHOTOFILTER_SMOKE_PHOTOS:photos,PHOTOFILTER_SMOKE_EXPORTS:exports}
+const env={...process.env,PATH:join(root,'node_modules','.bin')+delimiter+(process.env.PATH||''),DSH_HOME:home,PHOTOFILTER_SMOKE_PHOTOS:photos,PHOTOFILTER_SMOKE_EXPORTS:exports}
 function run(args, label) {
   const r=spawnSync(process.execPath,[resolve(runtime),...args],{env,encoding:'utf8',timeout:120000,maxBuffer:8*1024*1024})
   writeFileSync(join(home,label+'.log'),((r.stdout||'')+(r.stderr||'')).replace(/token=[A-Za-z0-9_-]+/g,'token=[redacted]'))

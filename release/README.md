@@ -6,6 +6,8 @@ This is a photo-shortlisting assistant, not a validated replacement for your fin
 
 ## Install a candidate tarball
 
+The npm-installed DSH CLI needs pnpm on PATH; the source installer supplies a pinned local copy. The DSH Desktop bundled command manages its own runtime.
+
 Use an existing DSH Web/Desktop profile (`web` or `desktop`):
 
 ```sh

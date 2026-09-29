@@ -47,8 +47,8 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.3",
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-agent-preset-registry": "0.2.0-rc.2"
+    "@deepseek-ai/dsh-agent-preset-registry": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-tools": {
@@ -67,6 +67,7 @@
     "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@types/node": "^24.0.0",
     "esbuild": "^0.25.0",
+    "pnpm": "11.7.0",
     "typescript": "~5.9.3"
   },
   "scripts": {

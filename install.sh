@@ -14,6 +14,7 @@ if [[ ! -f "${DSH_HOME:-$HOME/.dsh}/profiles/$PROFILE/package.json" ]]; then
   fi
 fi
 npm ci
+export PATH="$ROOT/node_modules/.bin:$PATH"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/photofilter-package.XXXXXX")"
 npm pack --pack-destination "$OUT"
 npx --yes "@deepseek-ai/dsh@${DSH_VERSION}" plugin --profile "$PROFILE" add "$OUT/photo-filter-agent-dsh-photo-filter-v4-0.4.0-rc.1.tgz"
