@@ -1,3 +1,5 @@
+> 本目录保留旧版实验配置。DSH 0.2 新安装请用 [标准发布包](../release/README.md)，不要继续复制 `.agent-presets`。
+
 # 把 v4 装进 DeepSeek Harness
 
 这里是 v4 agent 的 DSH 配置模板。复制到你自己的 `$DSH_HOME` 就能跑。

@@ -19,3 +19,8 @@ node_modules
 *.tiff
 *.dng
 *.raf
+
+lib/
+*.tgz
+__pycache__/
+.pytest_cache/
