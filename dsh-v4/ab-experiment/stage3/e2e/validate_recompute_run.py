@@ -88,6 +88,26 @@ def recompute(script: Path, run_dir: Path, engine: str, scen=None) -> tuple[int,
     return p.returncode, p.stdout + p.stderr
 
 
+ANCHORS = json.loads((REPO / "dsh-v4/anchors-default.json").read_text(encoding="utf-8"))["photos"]
+DIRS = ["me-pick", "20260221开拓小屋线+防潮坝/me/me-pick", "20260221开拓小屋线+防潮坝/景色pick"]
+
+
+def write_preset(path: Path, entries: list[str]) -> Path:
+    """只写排除清单那一段 —— recompute_run.py 读默认清单时只认这一段。"""
+    path.write_text("- id: photo-filter-v4\n  config:\n    excludedRelativePaths:\n"
+                    + "".join(f'      - "{e}"\n' for e in entries) + "    workdir: /x\n", encoding="utf-8")
+    return path
+
+
+def recompute_x(script: Path, run_dir: Path, engine: str, extra: list[str]) -> tuple[int, str]:
+    """不自动带 --exclude：走默认清单那条路（或由 extra 显式给）。"""
+    p = subprocess.run([sys.executable, str(script), "--run", str(run_dir), "--folder", "/photos",
+                        "--engine", engine, "--python", sys.executable,
+                        "--ranker-dir", str(FAKE_RANKER), "--cache-dir", "/tmp/fake-cache", *extra],
+                       capture_output=True, text=True)
+    return p.returncode, p.stdout + p.stderr
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="recompute-val-"))
     engine = sys.executable                      # 引擎存在即可，假排序器不看它
@@ -123,6 +143,58 @@ def main() -> int:
     rc, out = recompute(SCRIPT, make_run(tmp, "ranker-fails"), engine, scen={"force_mismatch": True})
     ck("排序器非 0 退出（计划 md5 对不上）→ 停手并带上原因",
        rc == 2 and "排序器退出码 2" in out and "Traceback" not in out, f"exit {rc} | {out.splitlines()[-1][:120]}")
+
+    # ── 默认排除清单的守卫与 --exclude-file（收尾第 0 项）────────────────────
+    # 实验期的基线 preset 带着 10 张锚点排除；实验结束恢复 preset 后它们会被拿掉，
+    # 拿恢复后的 preset 重算归档运行，候选池会变、③ 的指纹对不上（真引擎实测：6/10，指纹 ca88… vs 5e99…）
+    during = write_preset(tmp / "during.yml", DIRS + ANCHORS)
+    restored = write_preset(tmp / "restored.yml", DIRS)
+    partial = write_preset(tmp / "partial.yml", DIRS + ANCHORS[:-1])
+    xfile = tmp / "exclude-during-e2e.txt"
+    xfile.write_text("# 注释行不算\n\n" + "".join(e + "\n" for e in DIRS + ANCHORS) + "# 结尾注释\n", encoding="utf-8")
+    g_run = make_run(tmp, "guard")
+    G = {
+        "G1": ["--preset", str(during)],
+        "G2": ["--preset", str(restored)],
+        "G3": ["--preset", str(partial)],
+        "G4": ["--preset", str(restored), "--exclude-file", str(xfile)],
+        "G5": ["--exclude", "a", "--exclude-file", str(xfile)],
+    }
+    rc, out = recompute_x(SCRIPT, g_run, engine, G["G1"])
+    ck("G1 实验期的 preset、不给清单 → 默认路径照常，排除 13 条", rc == 0 and "排除 13 条（preset" in out, out[-160:])
+    rc, out = recompute_x(SCRIPT, g_run, engine, G["G2"])
+    ck("G2 恢复后的 preset、不给清单 → 停，指明用 --exclude-file，排序器没跑",
+       rc == 2 and "找不到实验期临时排除的 10 张锚点" in out and "--exclude-file" in out and "项成立" not in out,
+       f"exit {rc} | {out[-160:]}")
+    rc, out = recompute_x(SCRIPT, g_run, engine, G["G3"])
+    ck("G3 只剩 9 张锚点 → 也停（缺一张就不是实验期那份）",
+       rc == 2 and "找不到实验期临时排除的 1 张锚点" in out, f"exit {rc} | {out[-160:]}")
+    rc, out = recompute_x(SCRIPT, g_run, engine, G["G4"])
+    ck("G4 恢复后的 preset + --exclude-file → 照常，排除 13 条（注释与空行不算）",
+       rc == 0 and "排除 13 条（--exclude-file" in out, out[-160:])
+    rc, out = recompute_x(SCRIPT, g_run, engine, G["G5"])
+    ck("G5 --exclude 与 --exclude-file 同时给 → argparse 拒绝", rc == 2 and "not allowed with" in out, f"exit {rc}")
+
+    src_g = SCRIPT.read_text(encoding="utf-8")
+    GMUT = [
+        ("去掉默认清单守卫", "        if gone:   # 守卫：preset 已经不是实验期那份\n", "        if False:\n",
+         "G2", lambda rc, out: rc == 0 and "项成立" in out),
+        ("守卫只在 10 张全没了才停", "        if gone:   # 守卫：preset 已经不是实验期那份\n",
+         "        if len(gone) == len(experiment_anchors()):\n",
+         "G3", lambda rc, out: rc == 0 and "项成立" in out),
+        ("清单文件不滤注释行", '            if ln.strip() and not ln.strip().startswith("#")]',
+         "            if ln.strip()]",
+         "G4", lambda rc, out: "排除 15 条（--exclude-file" in out),
+    ]
+    for name, needle, repl, case, changed in GMUT:
+        n = src_g.count(needle)
+        if n != 1:
+            ck(f"变异「{name}」打不准（原文 {n} 次）", False)
+            continue
+        mut = tmp / "mutant-guard.py"
+        mut.write_text(src_g.replace(needle, repl), encoding="utf-8")
+        rc, out = recompute_x(mut, g_run, engine, G[case])
+        ck(f"变异「{name}」下 {case} 的结果变了", changed(rc, out) and "Traceback" not in out, f"exit {rc} | {out[-120:]}")
 
     src = SCRIPT.read_text(encoding="utf-8")
     MUT = [

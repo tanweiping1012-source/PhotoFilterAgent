@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """拿运行记录把一次端到端运行**离线重算一遍**。0 次付费调用（只跑本机排序器）。
 
-    python3 recompute_run.py --run <运行记录目录> --folder <本轮扫描目录> [--engine …] [--exclude …]
+    python3 recompute_run.py --run <运行记录目录> --folder <本轮扫描目录> [--engine …]
+                             [--exclude … | --exclude-file <清单文件>] [--preset <preset 文件>]
 
 为什么要有这一步：交付名单、运行记录、摘要都长在 agent 的闭包里，测试只能覆盖到被想到的那些形态。
 把两份裁决喂回排序器重算一遍，是**逐次运行**的核对 —— 每一次运行都自己证明一遍接线没断：
@@ -16,7 +17,10 @@
 
 几个必须说清的前提：
   · **必须带 --engine**：不带的话闭眼资格门不生效，名单会不一样（排序器会在 warnings 里明说，但结果已经不同了）
-  · 排除清单默认从 preset 读（实验期临时加了 10 张锚点）。它不进运行记录，所以这里给错了只能靠 ③ 的指纹拦
+  · 排除清单默认从基线 preset 读（实验期临时加了 10 张锚点）。它不进运行记录，给错了只能靠 ③ 的指纹拦 ——
+    而指纹对不上报出来像是**运行记录坏了**。实验结束恢复 preset 之后默认值就不对了，所以默认路径有一道守卫：
+    preset 里找不到那 10 张锚点就停，要求用 `--exclude-file` 显式给实验期那份清单
+    （归档在 archive/round4-e2e/exclude-during-e2e.txt，推送恢复 preset 之前原样导出）
   · 标注默认为空：这一轮的指令不调 set_my_favorites。真调了的话 ① 就会红，那时把 --labels 补上
   · 阶段 2 的 verdicts 文件就在运行记录里（修订 4.5 之后不再有按指纹命名的那份）
 
@@ -39,6 +43,9 @@ PROFILE = HOME / ".dsh-v4/profiles/photo-v4/cordis.patch.yml"
 PRESET = HOME / ".dsh-v4/.agent-presets/photo-filter-v4/agent.cordis.yml"
 RANKER_DIR = HOME / "deepseek-harness/PhotoFilterAgent/ranker"
 PYTHON = HOME / ".dsh-v4/ranker-venv/bin/python"
+# 实验期临时加进排除清单的就是这 10 张阶段 2 锚点。基线 preset 里还有它们，说明还是实验期那份
+ANCHORS = HOME / "deepseek-harness/PhotoFilterAgent/dsh-v4/anchors-default.json"
+EXCLUDE_ARCHIVE = HOME / ".dsh-v4/photo-filter-v4/archive/round4-e2e/exclude-during-e2e.txt"
 
 
 def plan_md5(pairs: list) -> str:
@@ -65,6 +72,17 @@ def preset_excludes(path: Path) -> list[str]:
         elif line.strip() and not line.strip().startswith("#"):
             break
     return out
+
+
+def read_exclude_file(path: Path) -> list[str]:
+    """排除清单文件：一行一条，空行与 # 开头的行不算。顺序原样保留。"""
+    return [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines()
+            if ln.strip() and not ln.strip().startswith("#")]
+
+
+def experiment_anchors() -> list[str]:
+    """实验期临时排除的那 10 张（阶段 2 锚点）。"""
+    return [str(x) for x in json.loads(ANCHORS.read_text(encoding="utf-8"))["photos"]]
 
 
 def run_pick(folder: str, target, style, engine: str, excludes: list[str], labels: Path | None,
@@ -97,7 +115,11 @@ def main() -> int:
     ap.add_argument("--run", type=Path, required=True, help="运行记录目录 <workdir>/runs/<…>")
     ap.add_argument("--folder", required=True, help="本轮扫描目录（运行记录里没记，必须显式给）")
     ap.add_argument("--engine", help="本地分析引擎；默认取 photo-v4 profile 里的 engineBinary")
-    ap.add_argument("--exclude", nargs="*", help="排除清单；默认取 preset 的 excludedRelativePaths")
+    ex = ap.add_mutually_exclusive_group()
+    ex.add_argument("--exclude", nargs="*", help="排除清单；默认取 preset 的 excludedRelativePaths")
+    ex.add_argument("--exclude-file", type=Path,
+                    help=f"排除清单文件（一行一条）。实验结束恢复 preset 之后重算归档运行用它：{EXCLUDE_ARCHIVE}")
+    ap.add_argument("--preset", type=Path, default=PRESET, help="默认排除清单从哪份 preset 读（默认基线 preset）")
     ap.add_argument("--labels", type=Path, help="标注清单（这一轮默认没有）")
     ap.add_argument("--python", type=Path, default=PYTHON)
     ap.add_argument("--ranker-dir", type=Path, default=RANKER_DIR)
@@ -112,12 +134,23 @@ def main() -> int:
     s2, s3 = run.get("stage2") or {}, run.get("stage3") or {}
     engine = a.engine or from_yaml(PROFILE, "engineBinary")
     cache = a.cache_dir or from_yaml(PROFILE, "cacheDir")
-    excludes = a.exclude if a.exclude is not None else preset_excludes(PRESET)
+    if a.exclude is not None:
+        excludes, source = a.exclude, "--exclude"
+    elif a.exclude_file is not None:
+        excludes, source = read_exclude_file(a.exclude_file), f"--exclude-file {a.exclude_file}"
+    else:
+        excludes, source = preset_excludes(a.preset), f"preset {a.preset}"
+        gone = [x for x in experiment_anchors() if x not in excludes]
+        if gone:   # 守卫：preset 已经不是实验期那份
+            raise SystemExit(
+                f"{a.preset} 里找不到实验期临时排除的 {len(gone)} 张锚点（如 {' '.join(gone[:3])}）—— "
+                f"这是实验结束后恢复过的 preset，拿它重算第四轮的运行，候选池会变、③ 的指纹对不上。"
+                f"请显式给实验期那份清单：--exclude-file {EXCLUDE_ARCHIVE}")
     if not engine or not Path(engine).exists():
         raise SystemExit(f"没有可用的 --engine（{engine!r}）—— 不带引擎跑出来的名单和运行时不是一回事")
 
     print(f"运行记录 {a.run.name} · 指纹 {run.get('fingerprint')} · target {run.get('target')} · style {run.get('style')}")
-    print(f"排除 {len(excludes)} 条（preset）· 引擎 {engine}")
+    print(f"排除 {len(excludes)} 条（{source}）· 引擎 {engine}")
     checks: list[tuple[str, bool, str]] = []
 
     def ck(name, ok, detail=""):
