@@ -2,6 +2,8 @@
 
 判据 [CRITERIA-E2E.md](CRITERIA-E2E.md)：修订 1–5 **写在第一次有效运行之前**；修订 6 是 A-4 之后加的，只改会话检查的口径（见它的「性质」）。**主指标、措辞档位与作废清单从头到尾一个字没改。**
 本文的每个数字都能从 `~/.dsh-v4/photo-filter-v4/archive/round4-e2e/runs/*/run/` 的运行记录重算出来。
+实验结束后部署已恢复基线 preset，离线重算要显式给实验期的排除清单：
+`recompute_run.py --exclude-file ~/.dsh-v4/photo-filter-v4/archive/round4-e2e/exclude-during-e2e.txt`（不给会被守卫拦下）。
 
 > ✅ **数据齐了：20 次有效运行（四组各 5 次），最后一次 2026-09-28 B3-5。**
 > 四组终值由算分脚本算出，owner 与执行方各自独立复算、逐项对上（判据 §9 第 7 步）。
@@ -449,7 +451,8 @@ B1-5 那一次是**阶段 3 的第一次**，也说明违约不只出现在阶�
 `tool_name` 这个字面量**我们代码里没有**（`agent-v4/src` 与 `ranker` 全仓库零命中），
 我们发出去的工具名只有 `submit_comparison`（`compare.ts:137`，唯一一处）。
 
-**09-20 那天仍是异常集中**（日期按本机时区，只数比较调用，含作废运行）：
+**09-20 那天仍是异常集中**（日期按本机时区；分母是**全部发出的**比较调用，含作废运行，
+其中 6 次没有回复 —— 09-18 五次、09-21 一次；3 次违约都有回复，按「有回复的」算是 3/3243、其余四天 1/3171）：
 
 ```
 09-18  1105 次  0 违约        合并      3/3249 = 0.092%   95%CI [0.019%, 0.270%]
@@ -699,7 +702,7 @@ B3 + rubric + 锚点   5 次里 1 次换下精选：B3-2 段 1 DSCF8896 → DSCF
 
 **收尾清单（全部跑完、owner 与执行方都核完之后，按这个顺序）**：
 
-0. **先把实验期的排除清单存进归档**（`archive/round4-e2e/exclude-during-e2e.txt` + md5）。
+0. ✅ **已做（d327207，执行方）** —— **先把实验期的排除清单存进归档**（`archive/round4-e2e/exclude-during-e2e.txt` + md5）。
    `recompute_run.py` 的 `--exclude` 默认读**基线 preset** 的 `excludedRelativePaths`；第 2 步一恢复基线，
    任何人再对归档运行做离线重算，候选池就变了、指纹对不上，全部有效运行都会「重算失败」（执行方查出）。
    重算工具加 `--exclude-file`，并在基线 preset 里找不到那 10 张锚点时直接报「这是实验期之后的 preset，请显式给排除清单」
@@ -717,11 +720,12 @@ B3 + rubric + 锚点   5 次里 1 次换下精选：B3-2 段 1 DSCF8896 → DSCF
    「装了锚点却取不全就整轮失败」保持不变。作者本机锚点目录与 10 张照片齐全，装出来与现在逐字节相同。
    执行方审时又复现一处：核对脚本**自己**失败（崩溃、找不到 python3）也被当成「不齐」，会停用作者本机的锚点 ——
    f175377 把退出码分成三路（0 齐全 / 3 不齐 / 其他 = 核对失败，锚点不动、其余装完、最后以失败退出）
-2. 部署（`sync-config.sh push`）：预演过，只会改基线 preset 的 `agent.cordis.yml` —— 同时完成
+2. ✅ **已做（2026-09-29，新 md5 `e8cb16a6…`，与预演逐字节相同）** —— 部署（`sync-config.sh push`）：预演过，只会改基线 preset 的 `agent.cordis.yml` —— 同时完成
    「补上 anchorsFile / allowNeither / stage2Vlm」与「恢复那 10 张临时排除」，记第三条 md5；
    5 份 profile、`anchors.json`、`preset.yml` 都与部署件相同
-3. 四份分组 preset `photo-filter-v4-e2e-*` 挪进 `archive/round4-e2e/`（不删）
-4. README 写明怎么开 `stage3Vlm`（默认关）：web 会话里要写在 **preset** 的插件 config 里，不是 profile；措辞按修订 2.4 的档位。
+3. ✅ **已做** —— 四份分组 preset `photo-filter-v4-e2e-*` 挪进 `archive/round4-e2e/retired-presets/`（不删）；
+   四份分组 profile `photo-v4-e2e-*`（修订 5 之后就不起作用）一并挪进 `retired-profiles/`
+4. ✅ **已做** —— README 写明怎么开 `stage3Vlm`（默认关）：web 会话里要写在 **preset** 的插件 config 里，不是 profile；措辞按修订 2.4 的档位。
    同时写明重算归档运行要显式给排除清单。顺带：`doctor.sh` 在 ranker venv 不在时开头报一句、
    跳过依赖它的几项（现在会各报一个 127，看起来像几处互不相干的故障）
 5. 修 `compare.ts:443` 翻覆时的 `reason` 文案（「判平局」→ 翻覆）与 `:23` / `:103` 两处写着 `tie` 的注释（§3.2）
@@ -731,6 +735,8 @@ B3 + rubric + 锚点   5 次里 1 次换下精选：B3-2 段 1 DSCF8896 → DSCF
 2. 一对失败不再让整段阶段 2 作废，改成这一对记未表态并继续
 3. 阶段 3 的裁决文件也存四个码位原文（阶段 2 的有 `codesRead`），矛盾局才查得到抄成了什么（§3.1d）
 4. LLM 服务定义与各 adapter 加 `toolChoice`，才谈得上「强制调工具」（§3.1c）
+5. `doctor.sh` 3c 对 ab / calib / eval 这几份实验用 profile 一直报 ❌（它们本来就有 preset 没写的键），
+   整体结论因此总是「有问题」—— 这是会把人训练成忽略告警的那一类，要么把这几份移出检查范围，要么降成提示
 
 ---
 

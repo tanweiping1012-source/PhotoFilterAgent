@@ -84,6 +84,28 @@ DSH_HOME=~/.dsh-v4 pnpm dsh --profile photo-v4
 DSH_HOME=~/.dsh-v4 pnpm dsh --profile photo-v4-headless "从 <目录> 挑 20 张最好的人像"
 ```
 
+## 阶段 3：让视觉大模型复核第三步（默认关）
+
+第三步挑完之后，可以让视觉大模型在每个时间段里比一次「已入选 vs 候补」，候补正反两次都赢才换人。
+**实测没有把名单变好**：2026-09-28 的端到端 A/B（四组各 5 次）三种配置都有把精选换下去的情况，
+测不出它有用，加标准、加范例也测不出区别 —— 所以默认关。数据见
+[端到端 A/B 报告](ab-experiment/stage3/REPORT-E2E.md)。
+
+想自己试，在插件 config 里打开：
+
+```yaml
+    stage3Vlm: true
+    # 可选：阶段 3 自己的判据与范例，和阶段 2 的 rubricFile / anchorsFile 是两份，不会互相回落
+    stage3RubricFile: /path/to/你的判据.txt
+    stage3AnchorsFile: /path/to/你的范例.json   # 格式同 anchors-default.json；配了却读不出来会直接报错
+```
+
+**写在哪一份里很关键**：web 会话用的是 **preset**
+（`$DSH_HOME/.agent-presets/photo-filter-v4/agent.cordis.yml`）里那份插件 config，
+profile 里同一插件的键在 web 会话里不起作用；headless 没有 preset，写在 `photo-v4-headless` 这个 profile 里。
+每次运行多花约 21 次视觉调用（10 局 × 正反两次 + 1 次预检）。
+实验用的判据与范例是作者本人的，没有放进仓库（报告里记着它们的 md5）。
+
 ## 两个 profile 的差别
 
 `photo-v4` 用 `dsh-web-app` bundle，persona 从 preset 加载。

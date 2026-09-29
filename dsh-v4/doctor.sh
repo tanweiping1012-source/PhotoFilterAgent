@@ -55,6 +55,14 @@ FAIL=0
 ok()   { printf '  ✅ %s\n' "$1"; }
 bad()  { printf '  ❌ %s\n' "$1"; FAIL=1; }
 warn() { printf '  ⚠️  %s\n' "$1"; }
+# ranker venv 不在时，下面每个用 $RANKER_PY 的检查都会各报一个 127，看起来像几处互不相干的故障。
+# 所以开头报一次，依赖它的几项跳过并各记「未核」。
+VENV_OK=1
+if [ ! -x "$RANKER_PY" ]; then
+  VENV_OK=0
+  echo "═══ 0. ranker venv ═══"
+  bad "ranker venv 不在（$RANKER_PY）—— 先跑 install.sh；下面依赖它的几项跳过"
+fi
 mtime() { stat -f %m "$1" 2>/dev/null || echo 0; }
 newest() { find "$1" -type f -name "$2" -exec stat -f %m {} \; 2>/dev/null | sort -rn | head -1; }
 # 把一份「已装配」的文件还原成模板形态，用来和仓库里的模板比。
@@ -133,13 +141,15 @@ done
 echo "═══ 3c. preset 与 profile 的同名键：profile 那份是不是死的 ═══"
 # 判据与踩坑经过写在 check_preset_shadow.py 的 docstring 里。
 # 只报**值不同**的覆盖 —— 值相同的覆盖没有后果，报出来只会淹掉真信号。
-if "$RANKER_PY" "$REPO/dsh-v4/check_preset_shadow.py" "$DSH_HOME"; then :; else FAIL=1; fi
+if [ "$VENV_OK" -eq 0 ]; then warn "未核：ranker venv 不在"
+elif "$RANKER_PY" "$REPO/dsh-v4/check_preset_shadow.py" "$DSH_HOME"; then :; else FAIL=1; fi
 
 echo "═══ 3d. 锚点：装了的话，本机的锚点照片齐不齐 ═══"
 # 以前的 push 不管齐不齐都装，留下的那份在别的机器上会让阶段 2 每次失败（见 check_anchors.py）。
 # 退出码三路：0 齐全、3 不齐、其他是核对脚本自己失败（见 check_anchors.py），后两种不能混报。
 ANCHORS="$DSH_HOME/anchors.json"
 if [ ! -f "$ANCHORS" ]; then ok "没装锚点 —— 阶段 2 不带范例照常跑"
+elif [ "$VENV_OK" -eq 0 ]; then warn "未核：ranker venv 不在"
 else
   ANCHORS_RC=0
   ANCHORS_MISS=$("$RANKER_PY" "$REPO/dsh-v4/check_anchors.py" "$ANCHORS") || ANCHORS_RC=$?
