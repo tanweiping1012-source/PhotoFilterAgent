@@ -44,7 +44,7 @@ const LEGACY_KEYS = ['a', 'b', 'answer', 'kind', 'local_correct', 'group',
  */
 const CODE_KEYS = ['code_a', 'code_b', 'code_read_ok', 'contradiction', 'codes_read']
 
-function mockHarness(opts: { throwAt?: number; preflightFail?: 'local' | 'sent' } = {}) {
+function mockHarness(opts: { throwAt?: number; preflightFail?: 'local' | 'sent'; answer?: 'JIA' | 'TIE' } = {}) {
   const store = new Map<string, string>()
   const perCallImages: number[] = []
   let seq = 0
@@ -85,8 +85,10 @@ function mockHarness(opts: { throwAt?: number; preflightFail?: 'local' | 'sent' 
                 .filter((c) => c.type === 'image')
                 .map((c) => store.get(c.attachment.attachmentId)!)
               perCallImages.push(tags.length)
-              args = { winner: 'JIA', reason: 'mock' }
-              if (tool.parameters.properties.code_jia) {
+              args = { winner: opts.answer ?? 'JIA', reason: 'mock' }
+              if (opts.answer === 'TIE') {
+                // 平局没有 winner_code：它说的是「分不出」，不指向任何一张
+              } else if (tool.parameters.properties.code_jia) {
                 // 像模型看图一样把码「读」出来：最后两幅整幅图依次是甲、乙（无脸照片也成立）
                 const fulls = tags.filter((t) => t.startsWith('full:'))
                 const codeOf = (t: string) => t.split(':')[1]!
@@ -343,6 +345,23 @@ for (const how of ['sent', 'local'] as const) {
     assert.equal(h.perCallImages.length, 0, '预检失败时一次比较调用都不能发')
     assert.ok(!existsSync(partialPathOf(s.outPath)) && !existsSync(s.outPath), '没有逐对行，也没有结果文件')
   } finally { rmSync(s.dir, { recursive: true, force: true }) }
+}
+
+// ── 9. 翻覆与平局：winner 分开，自动生成的 reason 也要分开 ──
+// 两个方向都答「排前那张」= 位置偏好 → 翻覆；两个方向都主动答分不出 → 平局。
+// reason 以前对两者都写「判平局」，照着它读会把翻覆当成平局（2026-09-21 执行方查出，09-29 修）。
+for (const [answer, winner, says, never] of [
+  ['JIA', 'inconsistent', /翻覆/, /平局/],
+  ['TIE', 'tie', /平局/, /翻覆/],
+] as const) {
+  const h = mockHarness({ answer })
+  const got: PairVerdict[] = []
+  const previews = Object.fromEntries(['p1.JPG', 'p2.JPG'].map((n) => [n, img(`full::${n}`)]))
+  await comparePairs([['p1.JPG', 'p2.JPG']], previews, {}, null, null, false,
+    undefined, h.services, EXEC, { onPair: (_d, _t, v) => { got.push(v) } })
+  assert.equal(got[0]!.winner, winner, `两个方向都答 ${answer} 时 winner 应为 ${winner}`)
+  assert.match(got[0]!.reason ?? '', says, `winner=${winner} 的 reason 要这样说`)
+  assert.doesNotMatch(got[0]!.reason ?? '', never, `winner=${winner} 的 reason 不能说成另一种`)
 }
 
 console.log('pairEval.test.ts: 全部通过')

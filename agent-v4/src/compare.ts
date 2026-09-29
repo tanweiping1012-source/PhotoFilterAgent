@@ -20,8 +20,8 @@
  *
  * 1. **只发无元数据的 512px 小图**，由 Python 侧从降采样缓存再缩一次生成
  *    （实测 33–35KB，EXIF 字段 0 个、无 GPS）。原图不出本机。
- * 2. **AB/BA 双向问**：同一对正反各问一次。两次答案不一致就判平局 ——
- *    位置偏好是真实存在的，单向结果不可信。
+ * 2. **AB/BA 双向问**：同一对正反各问一次。两次答案不一致就记为翻覆（`inconsistent`），不定赢家 ——
+ *    位置偏好是真实存在的，单向结果不可信。翻覆与两次都主动答平局（`tie`）是两回事，见 `PairVerdict.winner`。
  * 3. **模型路由继承当前会话**，不允许静默回落到别的模型。
  */
 
@@ -100,7 +100,10 @@ export interface AnchorBlock {
 export interface PairVerdict {
   a: string
   b: string
-  /** 归一化回 a/b 语义后的赢家；两个方向不一致时为 'tie'。 */
+  /**
+   * 归一化回 a/b 语义后的判决。'a' / 'b' / 'neither' 要求两个方向给出同一个答案；
+   * 两个方向都主动答分不出时为 'tie'；两个方向不一致（翻覆）时为 'inconsistent'。
+   */
   winner: 'a' | 'b' | 'tie' | 'neither' | 'inconsistent'
   /** AB 和 BA 两个方向是否给出了一致的答案。 */
   consistent: boolean
@@ -440,7 +443,9 @@ export async function comparePairs(
       contradiction: abR.contradiction || baR.contradiction,
       // 保留 reason 供既有的展示逻辑用；不一致时它是模板句，
       // 要看原文一律去 reasonAb / reasonBa。
-      reason: consistent ? (ab.reason || ba.reason) : `两个方向不一致（AB=${ab.w} / BA=${ba.w}），判平局`,
+      reason: consistent ? (ab.reason || ba.reason)
+        : bothTie ? '两个方向都答分不出，判平局'
+        : `两个方向不一致（AB=${ab.w} / BA=${ba.w}），记为翻覆、不定赢家`,
     })
   }
   return { verdicts: out, route: `${route.provider}/${route.model}` }
