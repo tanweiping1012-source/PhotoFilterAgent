@@ -1,130 +1,117 @@
-# 把 v4 装进 DeepSeek Harness
+# agent 在 DeepSeek Harness 里的配置
 
-这里是 v4 agent 的 DSH 配置模板。复制到你自己的 `$DSH_HOME` 就能跑。
+这里说明 agent 装进 DSH 之后长什么样、常改的配置在哪、怎么换模型、DSH 版本升级要注意什么。只想装好用起来，看 [README 的「快速上手」](../README.md#快速上手)；想看代码结构，看[给开发者的说明](../docs/DEVELOPER.md)。
 
-## 为什么要用独立的 DSH_HOME
+## DSH 版本
 
-DSH 的全部状态 —— profiles、presets、sessions、凭据、缓存 —— 都在 `$DSH_HOME` 下，
-默认 `~/.dsh`。换一个 home 就能和别的版本完全隔离，互不干扰：
+本项目在 **DSH 0.2.0-rc.1**（2026-09-28 发布的预览版）上验证。`install.sh` 会克隆这个版本（tag `dsh-v0.2.0-rc.1`），不跟着 master 走：DSH 还在预览期，版本之间有破坏性变更。如果 `~/deepseek-harness` 里已经有一份别的版本，`install.sh` 会停下来告诉你怎么办，不会动它。
+
+## 装好之后有什么
+
+`install.sh` 把所有东西装进 `DSH_HOME`（默认 `~/.dsh-photo-filter`）。DSH 的全部状态都在这个目录下，和你别的 DSH 用法互不影响。
 
 ```
-~/.dsh       v3（视觉模型打分那版）
-~/.dsh-v4    v4（本地排序那版）
+~/.dsh-photo-filter/
+  profiles/photo-v4/            web 界面用的 profile
+  profiles/photo-v4-headless/   命令行一次性任务用的 profile
+  ranker-venv/                  排序器的 Python 环境
+  photo-filter-v4/              匿名编号对照表、每次运行的记录（runs/）
+  .credentials.yaml             在网页「设置 → 模型」里填的 API Key（DSH 自己管，不进仓库）
+  sessions/ …                   DSH 的会话记录
 ```
 
-harness 的代码本身是只读共享的，两边都不改它。
+排序器的缩略图与特征缓存放在 `~/.cache/photofilter-rank`，可以随时删，删了下次重建。
 
-## 装
+## 两个 profile
+
+| | `photo-v4` | `photo-v4-headless` |
+|---|---|---|
+| 用法 | `pnpm dsh --profile photo-v4`，浏览器里对话 | `pnpm dsh --profile photo-v4-headless "任务"`，跑完就退出 |
+| 人设写在哪 | profile 里 `preset-photo-filter-v4` 那一条的 `persona` | profile 里 `system-prompt` 的 `personaPrefix` |
+| 插件配置写在哪 | 同一个 preset 的 `plugins` 里 `photo-filter-v4` 那一条 | profile 顶层 `photo-filter-v4` 那一条 |
+
+两份人设逐字相同，改一份就要同步另一份（`ranker/tests/test_repo_hygiene.py` 会核）。web 版的插件配置**只有 preset 里那一份**：DSH 0.1 时 preset 和 profile 各有一份，web 会话只认 preset 那份，曾经因此白跑过 121 次调用。
+
+两个 profile 都关掉了 DSH 自带的通用工具（shell、文件读写、网页、子 agent、工作流等），模型只看得到 7 个照片工具。原因是通用工具能绕过「只发剥掉元数据的小图」这条约束：`read_image` 能把原图（全分辨率、带 EXIF 与 GPS）直接读进对话，`glob` / `grep` 会泄露真实文件名。web 版还关掉了 DSH 自带的四个 preset，免得误选一个带 shell 的。
+
+## 常改的配置
+
+改仓库里的模板（`profiles/<名字>/cordis.patch.yml`），再装一次、重启 DSH：
 
 ```bash
-# 一条命令搞定：harness、Swift 引擎、Python 环境、profile、preset、插件软链
-PHOTOS=~/Desktop/你的照片目录 ./install.sh
+PHOTOS=~/Pictures/我的旅行照片 bash dsh-v4/sync-config.sh push
 ```
 
-`install.sh` 是幂等的，重复跑只补缺的部分。它内部调用：
+也可以直接改 `$DSH_HOME/profiles/<名字>/cordis.patch.yml`，改完用 `sync-config.sh pull` 同步回仓库。注意 `push` 会整份覆盖部署的 profile，你在网页设置里改过的界面选项（比如关掉「预览版说明」）会回到默认。
 
-```bash
-DSH_HOME=~/.dsh-v4 PHOTOS=~/Desktop/你的照片目录 ./dsh-v4/sync-config.sh push
+| 配置项 | 默认 | 说明 |
+|---|---|---|
+| `allowedRoots` | 安装时的 `PHOTOS` | agent 只能处理这些目录里的照片，别的目录直接拒绝 |
+| `allowedExportRoots` | `~/Downloads` | 只能把照片复制到这些目录下；安装时用 `EXPORT_ROOT` 改 |
+| `defaultTarget` | 20 | 用户没说挑几张时挑几张 |
+| `stage2Vlm` | `true` | 阶段 2 是否请视觉模型复核。关掉就一张图都不发出去，排序全在本机、结果每次相同 |
+| `stage3Vlm` | `false` | 阶段 3 是否请视觉模型复核，见下面 |
+| `anchorsFile` | `$DSH_HOME/anchors.json` | 可选的范例照片，见下面。文件不存在就不用 |
+| `excludedRelativePaths` | 作者的答案目录 | 扫描时跳过的子目录。作者用它把自己挑的「标准答案」挡在候选池外；你的照片里没有这些目录就不起作用 |
+
+全部配置项及其含义在 `agent-v4/src/index.ts` 的 `Config` 注释里。
+
+### 阶段 3 视觉复核（默认关）
+
+第三步挑完之后，可以让视觉模型在每个时间段里比一次「已入选 vs 候补」，候补正反两次都赢才换人。**实测没有把名单变好**：2026-09-28 的端到端 A/B（四组各 5 次）三种配置都有把精选换下去的情况，测不出它有用，加标准、加范例也测不出区别，所以默认关。数据见[端到端 A/B 报告](ab-experiment/stage3/REPORT-E2E.md)。想自己试，在插件配置里加：
+
+```yaml
+stage3Vlm: true
+# 可选：阶段 3 自己的判据与范例，和阶段 2 的 rubricFile / anchorsFile 是两份
+stage3RubricFile: /path/to/你的判据.txt
+stage3AnchorsFile: /path/to/你的范例.json   # 格式同 anchors-default.json；配了却读不出来会直接报错
 ```
 
-这一步把仓库里的模板装进 `$DSH_HOME`，同时替换占位符。**反向也能跑**：
+每次运行多花约 21 次调用（10 局 × 正反两次 + 1 次预检）。
 
-```bash
-./dsh-v4/sync-config.sh pull      # 改了 $DSH_HOME 里的配置，同步回仓库
-```
+### 范例照片（锚点）：不需要
 
-> 以前这里写的是 `cp -R` 加一段手写 `sed`。那正是漂移的来源 ——
-> 五个 profile 里只有三个进过仓库，其中 `photo-v4-ab` 那份还带着
-> `/Users/…` 的绝对路径推到了公开仓库，另外两个（eval / eval-web）
-> 仓库里根本没有，等于整轮 AB 实验无法从克隆复现。
-> 现在只有一个脚本、一套占位符，`doctor.sh` 第 3/3b 项会持续核对两边是否一致。
+锚点是「这个人以前怎么挑的」几组示例照片，阶段 2 复核时连同说明一起给裁判看。**你不需要提供**：实测给不给范例，交出来的照片完全一样（[第二步 A/B 报告](ab-experiment/REPORT-RUBRIC-ANCHORS.md)）。
 
-**范例锚点只在本机有那些照片时才装。** `anchors-default.json` 是作者本人挑照片的范例，
-指向作者自己的照片目录（`@@PHOTOS@@/eval-people-309`）。`push` 会逐张核这些照片：齐了才装成
-`$DSH_HOME/anchors.json`；不齐就不装，以前装过的改名为 `anchors.json.disabled`。
-没有锚点时阶段 2 照常跑、只是不带范例。硬装上去反而会让阶段 2 每次失败：
-候选里有同名照片会被当成泄题拦下，否则找不到锚点目录。`doctor.sh` 第 3d 项核这一条。
+仓库里的 `anchors-default.json` 是作者本人的范例，指向作者自己的照片。`sync-config.sh push` 会逐张核这些照片在不在本机：都在才装成 `$DSH_HOME/anchors.json`，否则不装（以前装过的改名为 `anchors.json.disabled`）。所以别人装的时候不会有锚点，阶段 2 照常运行。
 
-模型路由另外配一份（**不含密钥**，只有环境变量名）：
+## 换模型
 
-```bash
-cp dsh-v4/settings.example.yaml ~/.dsh-v4/settings.yaml
-```
+默认模型是 MiniMax-M3（`minimax-cn` 提供方），配置在 profile 的 `llm-pi-ai` 与 `agent-default-model` 两条里。对话和阶段 2 的视觉裁判用的是同一个模型，所以**换上去的模型必须能看图**；不能看图的话，阶段 2 会在预检时停下、退回本地排序，并在结果里说明。本项目的全部实验都是在 MiniMax-M3 上做的，换了模型，实验里的数字就不适用了。
 
-密钥不进仓库，二选一：`export MINIMAX_CN_API_KEY=…`，
-或写进 `~/.dsh-v4/.credentials.yaml`（`chmod 600`）。
+换法：在网页「设置 → 模型」里添加提供方、填 Key，再在对话框右下角选模型；或者改 profile 里那两条（写法见 DSH 的 `packages/llm/llm-pi-ai` 说明）。
 
 ## 占位符
 
-| 占位符 | 换成 | 装的时候由谁给 |
+仓库里的 profile 模板用占位符代替本机路径，`sync-config.sh push` 装的时候替换，`pull` 的时候换回去：
+
+| 占位符 | 换成 | 由谁给 |
 |---|---|---|
 | `@@REPO@@` | 这个仓库的绝对路径 | 脚本自动取 |
-| `@@DSH_HOME@@` | 隔离的 DSH home | `DSH_HOME`，默认 `~/.dsh-v4` |
-| `@@CACHE@@` | 排序器缓存目录（放降采样图和向量，可随时删） | `CACHE` |
-| `@@PHOTOS@@` | 允许处理的照片根目录 | `PHOTOS` |
-| `@@EXPORT@@` | 允许导出到的目录；留空则禁止导出 | `EXPORT_ROOT`，默认 `~/Downloads` |
-| `@@SCRATCH@@` | 评测考题与结果的中间目录 | `SCRATCH` |
+| `@@DSH_HOME@@` | agent 的 DSH home | `DSH_HOME`，默认 `~/.dsh-photo-filter` |
+| `@@CACHE@@` | 排序器缓存目录 | `CACHE`，默认 `~/.cache/photofilter-rank` |
+| `@@PHOTOS@@` | 允许处理的照片根目录 | `PHOTOS`，必填 |
+| `@@EXPORT@@` | 允许导出到的目录 | `EXPORT_ROOT`，默认 `~/Downloads` |
+| `@@SCRATCH@@` | 评测考题与结果的中间目录（只有实验 profile 用） | `SCRATCH` |
 
-**这一套词汇是唯一的一套。** `sync-config.sh` 和 `doctor.sh` 用的是同一张表，
-别再发明第二套 —— 漏替一个占位符，`doctor.sh` 就会假报「不一致」。
+`sync-config.sh` 和 `doctor.sh` 用同一张表。漏替一个占位符，`doctor.sh` 就会报「不一致」。
 
-`allowedRoots` 和 `allowedExportRoots` 是**结构约束** ——
-不在范围内的目录，工具会直接拒绝，不靠 agent 自觉。
-
-## 跑
+## 自检
 
 ```bash
-cd /path/to/deepseek-harness
-
-# Web 界面
-DSH_HOME=~/.dsh-v4 pnpm dsh --profile photo-v4
-# 浏览器打开 http://127.0.0.1:3080，会话里选 "Photo Filter v4" preset
-
-# 一次性任务（本项目的验证跑的就是这个）
-DSH_HOME=~/.dsh-v4 pnpm dsh --profile photo-v4-headless "从 <目录> 挑 20 张最好的人像"
+bash dsh-v4/doctor.sh
 ```
 
-## 阶段 3：让视觉大模型复核第三步（默认关）
+逐层核对：DSH 加载的插件是不是仓库这份、Swift 引擎是不是最新编译的、部署的 profile 和仓库模板对不对得上（只比模板里写了的条目，DSH 或网页设置自己加的条目不算）、锚点照片齐不齐、DSH 启动之后代码有没有再改。
 
-第三步挑完之后，可以让视觉大模型在每个时间段里比一次「已入选 vs 候补」，候补正反两次都赢才换人。
-**实测没有把名单变好**：2026-09-28 的端到端 A/B（四组各 5 次）三种配置都有把精选换下去的情况，
-测不出它有用，加标准、加范例也测不出区别 —— 所以默认关。数据见
-[端到端 A/B 报告](ab-experiment/stage3/REPORT-E2E.md)。
+## 从 DSH 0.1 迁到 0.2 改了什么
 
-想自己试，在插件 config 里打开：
+以前按 0.1 装过的，重跑一次 `install.sh`：它装进新的 `DSH_HOME`，不动旧的；`~/deepseek-harness` 还是旧版的话，它会停下来提示你换个目录（`HARNESS=~/dsh-0.2 ./install.sh`）或把那份切到新版本。改动如下，升级 DSH 时可以对照：
 
-```yaml
-    stage3Vlm: true
-    # 可选：阶段 3 自己的判据与范例，和阶段 2 的 rubricFile / anchorsFile 是两份，不会互相回落
-    stage3RubricFile: /path/to/你的判据.txt
-    stage3AnchorsFile: /path/to/你的范例.json   # 格式同 anchors-default.json；配了却读不出来会直接报错
-```
-
-**写在哪一份里很关键**：web 会话用的是 **preset**
-（`$DSH_HOME/.agent-presets/photo-filter-v4/agent.cordis.yml`）里那份插件 config，
-profile 里同一插件的键在 web 会话里不起作用；headless 没有 preset，写在 `photo-v4-headless` 这个 profile 里。
-每次运行多花约 21 次视觉调用（10 局 × 正反两次 + 1 次预检）。
-实验用的判据与范例是作者本人的，没有放进仓库（报告里记着它们的 md5）。
-
-## 两个 profile 的差别
-
-`photo-v4` 用 `dsh-web-app` bundle，persona 从 preset 加载。
-`photo-v4-headless` 用 `dsh-headless` bundle，**persona 直接覆盖 `system-prompt` 的 persona 字段** ——
-因为 headless 没有 preset 选择机制，而用 `@deepseek-ai/dsh-persona` 插件会和 base 的
-`system-prompt` 抢同一个 `deployment:persona` section，启动直接报错。
-
-## 关掉的工具，以及为什么
-
-profile 里禁用了 `tool-bash` / `tool-fs` / `tool-fs-search` / `skill-filesystem` /
-`tool-str-replace-editor` / `tool-web`。
-
-v4 的排序链路本身一张照片都不外发，但这些通用工具会绕过这个结构：
-`read_image` 把**原图**（全分辨率、带 EXIF 和 GPS）直接读进对话，
-`glob`/`grep` 泄露真实文件名。v3 实测模型确实尝试过前两条。
-
-**这是结构约束，不是靠 agent 自觉。**
-
-## 实际跑起来是什么样
-
-四次真实运行的完整记录 —— 包括一次测量错误是怎么被发现和修掉的 ——
-见 [V4 在 DSH 上的真实运行](../docs/versions/V4-DSH-RUN-2026-08-30.md)。
+- **preset 写进 profile**。0.2 不再读 `$DSH_HOME/.agent-presets/`，改为在 profile 里声明 `@deepseek-ai/dsh-agent-preset` 条目，并用 `agent-preset-registry` 的 `default` 指定默认 preset。
+- **人设的键改名**：`dsh-persona` 的 `text` → `prefix`；`system-prompt` 的 `persona` → `personaPrefix`。
+- **没有 `settings.yaml` 了**：模型提供方写在 profile 的 `llm-pi-ai` 条目里，默认模型写在 `agent-default-model` 条目里。
+- **插件要作为 profile 的依赖安装**：profile 的 `package.json` 里写 `link:` 依赖，在 profile 目录里 `pnpm install`。0.2 不再给手工软链进来的插件解析 `@deepseek-ai/*`。插件在 `peerDependencies` 里声明支持的 DSH 版本范围。
+- **插件源码按 Node 原生方式加载**：不支持参数属性（`constructor(private x: string)`）等需要编译的 TypeScript 写法。
+- **新增的内置工具要关掉**：`tool-pwsh`、`tool-jobs`、`tool-skill`、`plan-mode`、子 agent 与工作流、`tool-todo`、`tool-goal`；`tool-str-replace-editor` 在 0.2 里已经没有了。
+- **网页设置会写回 profile**：DSH 会把界面选项写进 `cordis.patch.yml` 并重新排版整个文件，所以 `doctor.sh` 改为按条目比较，不再逐字节比较。
