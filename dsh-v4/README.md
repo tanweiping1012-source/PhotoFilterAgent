@@ -49,7 +49,7 @@ PHOTOS=~/Pictures/我的旅行照片 bash dsh-v4/sync-config.sh push
 | `allowedRoots` | 安装时的 `PHOTOS` | agent 只能处理这些目录里的照片，别的目录直接拒绝 |
 | `allowedExportRoots` | `~/Downloads` | 只能把照片复制到这些目录下；安装时用 `EXPORT_ROOT` 改 |
 | `defaultTarget` | 20 | 用户没说挑几张时挑几张 |
-| `stage2Vlm` | `true`（插件本身默认 `false`，这两个 profile 显式打开） | 阶段 2 是否请视觉模型复核。关掉就一张图都不发出去，排序全在本机、结果每次相同 |
+| `stage2Vlm` | `false` | 阶段 2 是否请视觉模型复核。默认关：实测没让结果变好（同一批 299 张，开着跑 5 次得 7·5·7·7·6，纯本地 7），却每次多花约 120 次调用、10 分钟。打开后按组从大到小逐组打擂台，最多 60 局，名单每次会不同 |
 | `stage3Vlm` | `false` | 阶段 3 是否请视觉模型复核，见下面 |
 | `anchorsFile` | `$DSH_HOME/anchors.json` | 可选的范例照片，见下面。文件不存在就不用 |
 | `excludedRelativePaths` | 作者的答案目录 | 扫描时跳过的子目录。作者用它把自己挑的「标准答案」挡在候选池外；你的照片里没有这些目录就不起作用 |
@@ -77,7 +77,7 @@ stage3AnchorsFile: /path/to/你的范例.json   # 格式同 anchors-default.json
 
 ## 换模型
 
-默认模型是 MiniMax-M3（`minimax-cn` 提供方），配置在 profile 的 `llm-pi-ai` 与 `agent-default-model` 两条里。对话和阶段 2 的视觉裁判用的是同一个模型，所以**换上去的模型必须能看图**；不能看图的话，阶段 2 会在预检时停下、退回本地排序，并在结果里说明。本项目的全部实验都是在 MiniMax-M3 上做的，换了模型，实验里的数字就不适用了。
+默认模型是 MiniMax-M3（`minimax-cn` 提供方），配置在 profile 的 `llm-pi-ai` 与 `agent-default-model` 两条里。对话用这个模型；打开视觉复核时，裁判也用它，那时**它必须能看图**，不能看图的话会在预检时停下、退回本地排序，并在结果里说明。视觉复核默认关，所以只聊天的话，不能看图的模型也行。本项目的全部实验都是在 MiniMax-M3 上做的，换了模型，实验里的数字就不适用了。
 
 换法：在网页「设置 → 模型」里添加提供方、填 Key，再在对话框右下角选模型；或者改 profile 里那两条（写法见 DSH 的 `packages/llm/llm-pi-ai` 说明）。
 

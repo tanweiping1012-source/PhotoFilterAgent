@@ -107,3 +107,11 @@ def test_交付路径上不留跨运行共享的裁决文件():
     assert "verdicts-${res.fingerprint}.json" not in INDEX
     assert re.search(r"const runVf = join\(runDir, 'stage2-verdicts\.json'\)", INDEX)
     assert re.search(r"exec\.signal, runVf,\n", INDEX), "阶段 2 重排必须用运行记录里那份"
+
+
+def test_总用时的起点在第一次本地排序之前():
+    """摘要里「本次 rank_photos 总用时」要包住第一次 ranker.rank：起点曾放在它之后，实测报出「本地排序 1.6s · 总用时 0 秒」。"""
+    body = INDEX[INDEX.index("name: 'rank_photos'"):]
+    body = body[body.index("async execute(args, exec) {"):]
+    assert body.index("const startedMs = Date.now()") < body.index("await ranker.rank("), \
+        "startedMs 必须在第一次 ranker.rank 之前取"

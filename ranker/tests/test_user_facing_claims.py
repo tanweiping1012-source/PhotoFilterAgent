@@ -34,6 +34,9 @@ USER_FACING = [
     # 人设：web 版在 photo-v4 的 preset 里，命令行版在 photo-v4-headless 的 system-prompt 里。
     ROOT / "profiles" / "photo-v4" / "cordis.patch.yml",
     ROOT / "profiles" / "photo-v4-headless" / "cordis.patch.yml",
+    # 用户读的第一份文档。2026-09-30 查出它还在说「模型确实存在偏爱第一张的倾向」，而它自己的文末写着「排除」。
+    ROOT / "README.md",
+    ROOT / "docs" / "DEVELOPER.md",
 ]
 
 
@@ -45,7 +48,7 @@ def test_被推翻的位置偏好说法不许再出现():
     """标定实测 72% / 72%，位置偏好不成立。措辞必须跟着证据走。"""
     # 不只查一种说法：人设里「（位置偏好真实存在）」少一个「是」，逐字匹配放过了它，一直留到 2026-09-29。
     # 注释行不算：代码注释里记着「以前这里错说过什么」，那是写给维护者的，不会说给用户。
-    banned = re.compile(r"位置偏好(是)?真实存在")
+    banned = re.compile(r"位置偏好(是)?真实存在|确实存在.{0,3}偏爱第一张")
     for p, t in texts():
         said = "\n".join(ln for ln in t.splitlines() if not ln.lstrip().startswith(("//", "*", "/*", "#")))
         m = banned.search(said)
@@ -93,3 +96,16 @@ def test_组内比较不许把都不够格算成维持原判():
     assert "v.winner === 'inconsistent'" in t, (
         "判定翻覆要直接看取值，不要匹配 reason 里的「不一致」三个字"
     )
+
+
+def test_不许说阶段2只比咬得紧的少数几组():
+    """阶段 2 的复核计划是 pipeline.py 的 tournament_plan：所有至少两张的组按组从大到小逐组打满，到 refine_max_matches 为止。
+
+    「只比冠军会进名单、本地分咬得很紧的少数几组」是已删掉的 refine_plan。2026-09-30 查出 README、DEVELOPER、
+    preset 描述、两份人设、rank_photos 的工具说明都还这么说 —— 说给用户的「哪些照片会发出去、花多少钱」因此是错的。
+    """
+    banned = re.compile(r"咬得很紧|咬得紧|少数几(组|对)")
+    for p, t in texts():
+        said = "\n".join(ln for ln in t.splitlines() if not ln.lstrip().startswith(("//", "*", "/*", "#")))
+        m = banned.search(said)
+        assert m is None, f"{p.name} 里还在说「{m.group(0) if m else ''}」—— 阶段 2 按组从大到小逐组打，不挑「咬得紧」的组"

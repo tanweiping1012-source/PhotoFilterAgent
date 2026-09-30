@@ -155,3 +155,13 @@ def test_占位符只有一套():
         "出现了 sync-config.sh 不认识的占位符（漏替 → doctor.sh 会假报不一致）：\n"
         + "\n".join(f"  {k}: {v}" for k, v in unknown.items())
     )
+
+
+@pytest.mark.parametrize("prof", ("photo-v4", "photo-v4-headless"))
+def test_安装的profile默认关视觉复核(prof):
+    """owner 2026-09-30 定：视觉复核默认关（第四轮 A 组开着跑 5 次 7·5·7·7·6，同池纯本地 7）。
+    插件 schema 默认也是 false，但 profile 显式写着才是 web 会话的真相来源，写回 true 就是悄悄改了产品决定。"""
+    text = (ROOT / "profiles" / prof / "cordis.patch.yml").read_text(encoding="utf-8")
+    vals = re.findall(r"^\s*(stage2Vlm|stage3Vlm):\s*(\S+)", text, re.M)
+    assert ("stage2Vlm", "false") in vals and ("stage2Vlm", "true") not in vals, vals
+    assert ("stage3Vlm", "true") not in vals, vals

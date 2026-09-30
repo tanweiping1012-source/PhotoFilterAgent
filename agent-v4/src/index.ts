@@ -10,8 +10,9 @@
  *
  *   v4 —— 排序在本机算，对话模型一张照片都不看。面向用户的工具 7 个，
  *          agent 负责的是「听懂意图、选参数、解释结果」，不负责打分。
- *          唯一的视觉模型调用是阶段 2 的组内复核（stage2Vlm；插件默认关，profiles/photo-v4* 显式打开）：
- *          只比少数几组，把剥掉元数据的小图与人脸特写发给裁判模型；阶段 3 同理（stage3Vlm，默认关）。
+ *          视觉模型复核都默认关：阶段 2（stage2Vlm）打开后按组从大到小逐组打擂台，
+ *          最多 refine_max_matches 局，把剥掉元数据的小图与人脸特写发给裁判模型；阶段 3（stage3Vlm）同理。
+ *          compare_within_groups 只在用户要求时调用。
  *
  * 本地排序是确定性函数，用单元测试就能验证（ranker/tests/）；v3 那一整套让模型打分可信的机制
  * 在这里都不需要。
@@ -159,6 +160,7 @@ interface RunState {
 
 /** 毫秒 → 「9 分 30 秒」/「42 秒」。 */
 function formatDuration(ms: number): string {
+  if (ms < 1000) return '不到 1 秒'
   const s = Math.round(ms / 1000)
   return s < 60 ? `${s} 秒` : `${Math.floor(s / 60)} 分 ${s % 60} 秒`
 }
@@ -348,14 +350,15 @@ export function apply(ctx: Context, config: Config): void {
     description:
       '对已扫描的目录排序并挑出最好的 N 张。本地排序免费、不联网。' +
       (config.stage2Vlm || config.stage3Vlm
-        ? `阶段 ${[config.stage2Vlm && 2, config.stage3Vlm && 3].filter(Boolean).join(' 和 ')} ` +
-          '会对少数几对照片请视觉模型复核（发剥掉元数据的小图，要花调用、要几分钟），' +
-          '实际调用次数以返回值为准，每次都要告诉用户。'
-        : '视觉复核已关闭：零模型调用，不发送任何照片。') +
+        ? '会请视觉模型复核（发剥掉元数据的小图，要花调用、要几分钟）：' +
+          [config.stage2Vlm && '阶段 2 按组从大到小逐组打擂台，最多约 120 次调用',
+            config.stage3Vlm && '阶段 3 每个时间段比一次边缘名额，约 21 次调用'].filter(Boolean).join('；') +
+          '。实际调用次数以返回值为准，每次都要告诉用户。模型的答案每次会有出入，名单不保证逐次相同。'
+        : '视觉复核已关闭：零模型调用，不发送任何照片，结果是确定性的。') +
       '用户没说风格就用 quality 直接跑 —— **不要卡住问**，' +
       '让用户看着真实结果说「不是这个感觉」，比让他凭空回答一个分类问题容易得多。' +
       '出结果后用一句话提供切换到 mood 即可。' +
-      '闭眼照会被资格门挡在名单外。同一场景组默认最多入选 2 张。结果是确定性的。',
+      '闭眼照会被资格门挡在名单外。同一场景组默认最多入选 2 张。',
     parameters: {
       target: { type: 'number', description: `要挑几张（默认 ${config.defaultTarget}）` },
       style: {
@@ -380,6 +383,8 @@ export function apply(ctx: Context, config: Config): void {
       render: (_a, v) => [{ type: 'text', text: v.summary }],
     },
     async execute(args, exec) {
+      // 总用时从这里算起，要包住第一次本地排序：曾经从它之后算，摘要出现「本地排序 1.6s · 总用时 0 秒」。
+      const startedMs = Date.now()
       const state = stateFor(exec)
       if (!state.folder) throw new Error('请先调用 scan_folder。')
       const target = args.target ?? config.defaultTarget
@@ -394,10 +399,10 @@ export function apply(ctx: Context, config: Config): void {
 
         // ── 阶段 2 的 VLM 复核 ──────────────────────────────────
         //
-        // 排序器先用本地分跑完一遍（免费、瞬时），同时产出一份「复核计划」：
-        // 哪几组的冠军进了最终名单、而且本地分前两名咬得很紧。
-        // 只有这些组值得花钱 —— 全池打完擂台是 157~170 局（314+ 次调用、
-        // 约 26 分钟），而绝大多数局根本不影响交给用户的那 20 张。
+        // 排序器先用本地分跑完一遍（免费、瞬时），同时产出一份「复核计划」（pipeline.py 的 tournament_plan）：
+        // 所有至少 2 张的组，按组从大到小，逐组打满擂台（每组最多 stage2_cap 张），
+        // 总局数到 refine_max_matches 为止。不按「会不会进名单」「咬得紧不紧」挑组 ——
+        // 那版 refine_plan 的筛选规则没验证过，已删掉，理由见 tournament_plan 的 docstring。
         //
         // 模型跑在这一侧（TS），排序器在 Python 侧拿不到它，
         // 所以是「出计划 → 这里跑 → 裁决回传 → 排序器重放」三步。
@@ -406,7 +411,6 @@ export function apply(ctx: Context, config: Config): void {
         // 运行记录：阶段 2 或阶段 3 真要调模型时才建。两个都不调时一个文件都不写。
         const runDir = (config.stage2Vlm && plan.length) || config.stage3Vlm ? openRunDir() : null
         const startedAt = new Date().toISOString()
-        const startedMs = Date.now()
         // 调用账**从回调里数**，不按对数算、也不从裁决反推。
         //
         // 原来阶段 2 记的是 `plan.length * 2`，只在成功之后赋值：中途被 429 打断的那次
@@ -872,12 +876,13 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
 
-  // ── 工具 6：组内成对比较（rank_photos 之外额外花钱）──────────
+  // ── 工具 6：组内成对比较（会花钱；默认配置下唯一调视觉模型的工具）──
   ctx.tools.register(defineTool({
     name: 'compare_within_groups',
     description:
       '用视觉模型比较**同一场景组内**难分高下的照片对，据此重排组内顺序。' +
-      '在 rank_photos 的阶段 2 复核之外**额外花钱**：每对花 2 次调用（正反各一次）。' +
+      '这是会花钱的工具：每对花 2 次调用（正反各一次）' +
+      (config.stage2Vlm ? '，在 rank_photos 的阶段 2 复核之外另算。' : '。') +
       '为什么需要它：本地打分测的是拍摄技术质量，看不见表情、眼神、互动 —— ' +
       '而同一瞬间的连拍里，差别恰恰只在这些。实测本地打分的组内排序命中率 65%（随机 47%）。' +
       '只在用户明确要求「再精细一点」或对边界结果不满意时调用，并且**必须先说明要花多少次调用**。',

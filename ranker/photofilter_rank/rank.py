@@ -257,10 +257,8 @@ def rank_folder(
     elif stage3_verdicts is not None:
         raise Stage3VerdictsError("给了阶段 3 裁决，但 time_segments=0：没有段配额就没有阶段 3 对决。")
 
-    # VLM 复核计划：哪些对局值得花钱让模型再判一次。
-    #
-    # 只挑「冠军进了最终名单」且「本地分前两名咬得紧」的组 ——
-    # 全打是 157~170 局（314+ 次调用、26 分钟），而绝大多数局不影响交付。
+    # VLM 复核计划：所有至少 2 张的组按组从大到小逐组打满擂台，总局数到 refine_max_matches 为止
+    # （不按「会不会进名单」挑组，理由见 tournament_plan 的 docstring）。
     # 这一步只出计划，不调用模型；模型跑在 TS 侧，结果通过 --verdicts 回放。
     plan = tournament_plan(
         names, list(families), {names[i]: float(final[i]) for i in range(len(names))},
