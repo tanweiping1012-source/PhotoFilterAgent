@@ -10,7 +10,7 @@
  *
  *   v4 —— 排序在本机算，对话模型一张照片都不看。面向用户的工具 7 个，
  *          agent 负责的是「听懂意图、选参数、解释结果」，不负责打分。
- *          唯一的视觉模型调用是阶段 2 的组内复核（stage2Vlm，默认开）：
+ *          唯一的视觉模型调用是阶段 2 的组内复核（stage2Vlm；插件默认关，profiles/photo-v4* 显式打开）：
  *          只比少数几组，把剥掉元数据的小图与人脸特写发给裁判模型；阶段 3 同理（stage3Vlm，默认关）。
  *
  * 本地排序是确定性函数，用单元测试就能验证（ranker/tests/）；v3 那一整套让模型打分可信的机制
@@ -90,7 +90,7 @@ export interface Config {
    * 它来自 47 对的 run_pair_eval 评测路径（每次 18 幅图），**不是这条生产路径**。
    * 生产路径每次发 24 幅，超出 harness 附件上限 20，2026-09-04 修掉之前
    * 一直静默回落到本地分 —— 一次都没真正调用过，所以生产档没有历史实测值。
-   * 默认开启是产品决定，不是数据支持的结论。agent 必须在报告里如实说明。
+   * 发布版默认关闭；用户显式开启后，agent 必须报告实际调用次数与限制。
    */
   stage2Vlm: boolean
   /**
@@ -137,7 +137,7 @@ export const Config: z<Config> = z.object({
   anchorsFile: z.string().default(''),
   rubricFile: z.string().default(''),
   allowNeither: z.boolean().default(false),
-  stage2Vlm: z.boolean().default(true),
+  stage2Vlm: z.boolean().default(false),
   stage3Vlm: z.boolean().default(false),
   stage3RubricFile: z.string().default(''),
   stage3AnchorsFile: z.string().default(''),
@@ -176,7 +176,15 @@ export function apply(ctx: Context, config: Config): void {
     config.python, config.rankerDir, config.cacheDir, config.rankerTimeoutMs,
     config.engineBinary || undefined,
   )
-  const state: RunState = { labels: [], style: 'quality' }
+  // DSH 0.2 presets share an instance across Agents. Never share a shortlist or ticket.
+  const states = new WeakMap<object, RunState>()
+  const testOwner = {}
+  function stateFor(exec: { agent?: { session?: object } }): RunState {
+    const owner = exec.agent?.session ?? exec.agent ?? testOwner
+    let state = states.get(owner)
+    if (!state) { state = { labels: [], style: 'quality' }; states.set(owner, state) }
+    return state
+  }
 
   /** 目录必须落在授权根目录内。这是结构约束，不靠 agent 自觉。 */
   const loadAnchors = () => readAnchors(config.anchorsFile)
@@ -269,7 +277,7 @@ export function apply(ctx: Context, config: Config): void {
     throw e
   }
 
-  function requireRanked(): { res: RankResult; ids: IdentityMap } {
+  function requireRanked(state: RunState): { res: RankResult; ids: IdentityMap } {
     if (!state.last || !state.ids) throw new Error('还没有排序结果，请先调用 rank_photos。')
     return { res: state.last, ids: state.ids }
   }
@@ -296,6 +304,7 @@ export function apply(ctx: Context, config: Config): void {
       render: (_a, v) => [{ type: 'text', text: v.summary }],
     },
     async execute(args, exec) {
+      const state = stateFor(exec)
       const folder = assertAllowed(args.folder, config.allowedRoots, '照片')
       try {
         const scan = await ranker.scan(folder, config.excludedRelativePaths, exec.signal)
@@ -305,6 +314,8 @@ export function apply(ctx: Context, config: Config): void {
         state.fingerprint = scan.fingerprint
         state.ids = ids
         state.last = undefined
+        state.exportTicket = undefined
+        state.labels = []
         // 只报这个目录里真有的：排除清单是装机时配的，别的目录里多半没有这些子目录，
         // 照单全报会让 agent 对用户说「已排除 me-pick」—— 用户根本没有这个目录。
         const excludedHere = config.excludedRelativePaths.filter((p) => existsSync(join(folder, p)))
@@ -363,6 +374,7 @@ export function apply(ctx: Context, config: Config): void {
       render: (_a, v) => [{ type: 'text', text: v.summary }],
     },
     async execute(args, exec) {
+      const state = stateFor(exec)
       if (!state.folder) throw new Error('请先调用 scan_folder。')
       const target = args.target ?? config.defaultTarget
       try {
@@ -589,6 +601,7 @@ export function apply(ctx: Context, config: Config): void {
         state.ids = ids
         state.fingerprint = res.fingerprint
         state.last = res
+        state.exportTicket = undefined
 
         let stage3Text = ''
         if (config.stage3Vlm) {
@@ -698,8 +711,9 @@ export function apply(ctx: Context, config: Config): void {
       },
       render: (_a, v) => [{ type: 'text', text: v.summary }],
     },
-    async execute(args) {
-      const { res, ids } = requireRanked()
+    async execute(args, exec) {
+      const state = stateFor(exec)
+      const { res, ids } = requireRanked(state)
       const rank = new Map(res.ranking.map((n, i) => [n, i + 1]))
       const selectedSet = new Set(res.selected)
       const famMembers = new Map<number, string[]>()
@@ -763,7 +777,8 @@ export function apply(ctx: Context, config: Config): void {
       },
       render: (_a, v) => [{ type: 'text', text: v.summary }],
     },
-    async execute(args) {
+    async execute(args, exec) {
+      const state = stateFor(exec)
       if (!state.ids) throw new Error('请先调用 scan_folder。')
       const r = state.ids.resolve(args.ids)
       if (r.unknown.length) {
@@ -806,6 +821,7 @@ export function apply(ctx: Context, config: Config): void {
       render: (_a, v) => [{ type: 'text', text: v.summary }],
     },
     async execute(args, exec) {
+      const state = stateFor(exec)
       if (!state.folder) throw new Error('请先调用 scan_folder。')
       if (!existsSync(args.gold_file)) throw new Error(`答案文件不存在：${args.gold_file}`)
       const target = args.target ?? config.defaultTarget
@@ -874,7 +890,8 @@ export function apply(ctx: Context, config: Config): void {
       render: (_a, v) => [{ type: 'text', text: v.summary }],
     },
     async execute(args, exec) {
-      const { res, ids } = requireRanked()
+      const state = stateFor(exec)
+      const { res, ids } = requireRanked(state)
       const maxPairs = Math.max(1, Math.min(args.max_pairs ?? 12, 40))
 
       // 只比较**影响名单**的对：入选边界附近、且同组的。
@@ -1006,8 +1023,9 @@ export function apply(ctx: Context, config: Config): void {
       },
       render: (_a, v) => [{ type: 'text', text: v.summary }],
     },
-    async execute(args) {
-      const { res, ids } = requireRanked()
+    async execute(args, exec) {
+      const state = stateFor(exec)
+      const { res, ids } = requireRanked(state)
       if (!config.allowedExportRoots.length) throw new Error('未配置导出授权目录，导出被禁止。')
       const dest = resolvePath(args.dest)
       const ok = config.allowedExportRoots.some((r) => {
@@ -1130,6 +1148,7 @@ export function apply(ctx: Context, config: Config): void {
         render: (_a, v) => [{ type: 'text', text: v.summary }],
       },
       async execute(args, exec) {
+        const state = stateFor(exec)
         // 换考题只能按**文件名**在 evalPairsDir 里找。
         // 不接受 / 和 ..：这是评测工具，不是通用的读文件工具。
         let pairsFile = config.evalPairsFile
@@ -1221,6 +1240,7 @@ export function apply(ctx: Context, config: Config): void {
         render: (_a, v) => [{ type: 'text', text: v.summary }],
       },
       async execute(args, exec) {
+        const state = stateFor(exec)
         const phase = String(args.phase ?? '')
         if (!['probe', 'matrix', 'aa', 'sanity'].includes(phase)) {
           throw new Error(`phase 只能是 probe/matrix/aa/sanity，收到：${phase}`)

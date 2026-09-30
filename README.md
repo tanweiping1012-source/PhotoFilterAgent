@@ -60,6 +60,8 @@ bash dsh-v4/doctor.sh
 - 不想发任何图出去：把 profile 里的 `stage2Vlm` 改成 `false`（见 [dsh-v4/README.md](dsh-v4/README.md#常改的配置)），或者不用 agent、直接用[命令行排序器](#只用命令行排序器)。
 - 不需要你先给它一批「我喜欢的照片」当例子。实测给了例子也没让结果变好，所以默认不要。
 
+另有一种装法：把 agent 打成 DSH 的标准插件包，装进你已有的 DSH 网页 profile（视觉复核默认关，还没发布到 npm），见 [release/README.md](release/README.md)。
+
 ---
 
 ## 它能帮你到什么程度

@@ -68,3 +68,26 @@ async function argvOf(engine: string | undefined, withFace: boolean): Promise<st
 }
 
 console.log('ranker.test.ts: 全部通过')
+
+// Cancellation waits for a child that deliberately delays SIGTERM, then cleans its output.
+{
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const work = mkdtempSync(join(tmpdir(), 'pf-cancel-'))
+  const pkg = join(work, 'photofilter_rank'); mkdirSync(pkg)
+  writeFileSync(join(pkg, '__init__.py'), '')
+  writeFileSync(join(pkg, 'cli.py'), `import os,sys,time,signal\nfrom pathlib import Path\np=Path(sys.argv[sys.argv.index('--json')+1])\ndef stop(*a):\n time.sleep(.15)\n Path('exited').write_text(str(p))\n sys.exit(0)\nsignal.signal(signal.SIGTERM,stop)\nPath('ready').write_text(str(os.getpid()))\nwhile True: time.sleep(.02)\n`)
+  const controller = new AbortController()
+  const r = new Ranker(process.env.PHOTOFILTER_TEST_PYTHON || 'python3', work, work, 5000)
+  const pending = assert.rejects(r.scan(work, [], controller.signal), /abort/i)
+  for (let i=0; !existsSync(join(work,'ready')) && i<100; i++) await new Promise(resolve=>setTimeout(resolve,20))
+  assert.ok(existsSync(join(work,'ready')), 'child started')
+  controller.abort()
+  await pending
+  assert.ok(existsSync(join(work,'exited')), 'child finished before cancellation returned')
+  assert.ok(!existsSync(readFileSync(join(work,'exited'),'utf8')), 'temporary result removed after exit')
+  assert.throws(()=>process.kill(Number(readFileSync(join(work,'ready'),'utf8')),0))
+  rmSync(work,{recursive:true,force:true})
+}
+console.log('ranker cancellation: passed')

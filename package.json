@@ -1,0 +1,83 @@
+{
+  "name": "@photo-filter-agent/dsh-photo-filter-v4",
+  "version": "0.4.0-rc.1",
+  "description": "PhotoFilter: local photo shortlisting for macOS, with opt-in visual review",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./tools": "./lib/tools.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "photofilter-setup": "lib/setup.js"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "ranker/photofilter_rank",
+    "ranker/requirements.txt",
+    "engine/Package.swift",
+    "engine/Sources",
+    "release/README.md",
+    "release/icon.svg",
+    "engine/Tests"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "os": [
+    "darwin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tanweiping1012-source/PhotoFilterAgent.git"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "photofilter",
+    "photo"
+  ],
+  "icon": "release/icon.svg",
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.3",
+    "@deepseek-ai/dsh-agent-preset-registry": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent-preset-registry": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.18.2",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "~4.0.3",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "pnpm": "11.7.0",
+    "typescript": "~5.9.3"
+  },
+  "scripts": {
+    "build": "node scripts/build-release.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node scripts/test-release.mjs",
+    "prepack": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  }
+}

@@ -37,6 +37,7 @@ engine/（Swift，苹果 Vision 框架）  人脸、睁眼程度、头部俯仰�
 | 路径 | 是什么 |
 |---|---|
 | `install.sh` | 从零装好一切：DSH（固定到验证过的版本）、Swift 引擎、Python 环境、profile |
+| `release/`、根目录 `package.json` | 另一种装法：打成 DSH 标准插件包（`npm pack` → `dsh plugin add`），自带一个精简人设、视觉复核默认关；CI 在 `.github/workflows/dsh-release.yml` |
 | `agent-v4/src/index.ts` | 插件入口：配置项（`Config`，每项有注释）与 7 个工具 |
 | `agent-v4/src/ranker.ts` | 调 Python 排序器的子进程封装 |
 | `agent-v4/src/compare.ts` | 阶段 2 的成对比较：提示词、正反两问、解析答案 |

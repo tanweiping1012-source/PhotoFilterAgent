@@ -49,7 +49,7 @@ PHOTOS=~/Pictures/我的旅行照片 bash dsh-v4/sync-config.sh push
 | `allowedRoots` | 安装时的 `PHOTOS` | agent 只能处理这些目录里的照片，别的目录直接拒绝 |
 | `allowedExportRoots` | `~/Downloads` | 只能把照片复制到这些目录下；安装时用 `EXPORT_ROOT` 改 |
 | `defaultTarget` | 20 | 用户没说挑几张时挑几张 |
-| `stage2Vlm` | `true` | 阶段 2 是否请视觉模型复核。关掉就一张图都不发出去，排序全在本机、结果每次相同 |
+| `stage2Vlm` | `true`（插件本身默认 `false`，这两个 profile 显式打开） | 阶段 2 是否请视觉模型复核。关掉就一张图都不发出去，排序全在本机、结果每次相同 |
 | `stage3Vlm` | `false` | 阶段 3 是否请视觉模型复核，见下面 |
 | `anchorsFile` | `$DSH_HOME/anchors.json` | 可选的范例照片，见下面。文件不存在就不用 |
 | `excludedRelativePaths` | 作者的答案目录 | 扫描时跳过的子目录。作者用它把自己挑的「标准答案」挡在候选池外；你的照片里没有这些目录就不起作用 |

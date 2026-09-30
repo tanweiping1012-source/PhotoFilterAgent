@@ -1,0 +1,8 @@
+- insert:
+    - id: photofilter
+      name: '@photo-filter-agent/dsh-photo-filter-v4'
+      config:
+        allowedRoots: []
+        allowedExportRoots: []
+        stage2Vlm: false
+        stage3Vlm: false
