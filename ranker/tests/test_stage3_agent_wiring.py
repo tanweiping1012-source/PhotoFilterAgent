@@ -1,4 +1,4 @@
-"""agent 侧阶段 3 接线的调用点守卫（index.ts / ranker.ts / preset）。
+"""agent 侧阶段 3 接线的调用点守卫（index.ts / ranker.ts / web profile）。
 
 行为由 agent-v4/src/stage3.test.ts 真跑钉住；这里守的是 rank_photos 闭包里**调用点本身** ——
 那段逻辑长在闭包里测不到，2026-09-14 index.ts:688 的参数错位就是在调用点上漏过去的。
@@ -9,7 +9,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 INDEX = (ROOT / "agent-v4" / "src" / "index.ts").read_text(encoding="utf-8")
 RANKER = (ROOT / "agent-v4" / "src" / "ranker.ts").read_text(encoding="utf-8")
-PRESET = (ROOT / "dsh-v4" / "preset-photo-filter-v4" / "agent.cordis.yml").read_text(encoding="utf-8")
 # 「代码里没有」要在**代码**上断言：注释里引用旧写法（比如讲清楚以前错在哪）不算复发。
 INDEX_CODE = "\n".join(
     ln for ln in INDEX.splitlines() if not ln.lstrip().startswith(("//", "*", "/*")))
@@ -17,11 +16,6 @@ INDEX_CODE = "\n".join(
 
 def test_阶段3默认关闭():
     assert "stage3Vlm: z.boolean().default(false)," in INDEX
-
-
-def test_preset不定义阶段3的键_否则profile里的开关是死的():
-    for key in ("stage3Vlm", "stage3RubricFile", "stage3AnchorsFile"):
-        assert not re.search(rf"^\s*{key}\s*:", PRESET, re.M), f"preset 定义了 {key}，profile 里设的值会被覆盖"
 
 
 def test_阶段3重排时带上阶段2的裁决():

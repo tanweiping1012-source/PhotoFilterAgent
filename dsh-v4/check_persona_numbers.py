@@ -17,7 +17,8 @@ import pathlib
 import re
 import sys
 
-PRESET = pathlib.Path.home() / ".dsh-v4/.agent-presets/photo-filter-v4/agent.cordis.yml"
+# 人设正文在 web 与 headless 两份 profile 模板里逐字相同（ranker/tests/test_repo_hygiene.py 核），查 web 那份即可。
+PRESET = pathlib.Path(__file__).resolve().parents[1] / "profiles" / "photo-v4" / "cordis.patch.yml"
 
 # 这些数字是**历史定值**，指的是已经封版的旧版本，不该跟着当前实测走。
 HISTORICAL = {"0.497", "997", "7.28", "6.72", "0.13"}

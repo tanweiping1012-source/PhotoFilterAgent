@@ -115,6 +115,8 @@ interface Scen {
   throwAtCompare?: number
   overrides?: Record<string, string>
   fake?: Record<string, unknown>
+  /** 照片目录里建一个 me-pick 子目录（排除清单里配着它）。 */
+  mePick?: boolean
 }
 
 async function run(s: Scen) {
@@ -123,6 +125,7 @@ async function run(s: Scen) {
   const files = join(work, 'files')
   mkdirSync(photos)
   mkdirSync(files)
+  if (s.mePick) mkdirSync(join(photos, 'me-pick'))
   const put = (n: string, body: string) => { const p = join(files, n); writeFileSync(p, body); return p }
   const rubric2 = s.rubric2 ? put('rubric2.txt', '阶段二判据：同组连拍里挑眼神好的\n') : ''
   const anchors2 = s.anchors2 ? put('anchors2.json', JSON.stringify({
@@ -156,7 +159,7 @@ async function run(s: Scen) {
   }
   apply(ctx as never, config as never)
   const exec = { agent: { options: { provider: 'mock', model: 'mock-vision' } } }
-  await tools.get('scan_folder').execute({ folder: photos }, exec)
+  const scanSummary: string = (await tools.get('scan_folder').execute({ folder: photos }, exec)).summary
   let summary: string | null = null
   let error: string | null = null
   try {
@@ -168,7 +171,7 @@ async function run(s: Scen) {
   const read = (p: string) => (existsSync(p) ? readFileSync(p, 'utf8') : null)
   const argv = (read(process.env.FAKE_LOG) ?? '').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
   return {
-    s, work, summary, error, runs, runDir,
+    s, work, scanSummary, summary, error, runs, runDir,
     runJson: runDir && read(join(runDir, 'run.json')) ? JSON.parse(read(join(runDir, 'run.json'))!) : null,
     rows: runDir && read(join(runDir, 'calls.jsonl'))
       ? read(join(runDir, 'calls.jsonl'))!.trim().split('\n').map((l) => JSON.parse(l)) : [],
@@ -200,6 +203,7 @@ const SCENARIOS: Scen[] = [
   { name: 's3-mismatch', stage2: true, stage3: true, rubric2: true, anchors2: 'ok', fake: { force_mismatch: true } },
   { name: 'no-contests', stage2: true, stage3: true, rubric2: true, anchors2: 'ok', fake: { no_stage3_plan: true } },
   { name: 's2-skipped', stage2: true, stage3: true, fake: { t2: [] } },
+  { name: 'me-pick-present', stage2: false, stage3: false, mePick: true },
 ]
 
 for (const s of SCENARIOS) {
@@ -218,6 +222,10 @@ for (const s of SCENARIOS) {
   check(n, '摘要报的付费调用数 = calls.jsonl 里 sent 的行数（含预检）',
     paid === undefined ? sentRows.length === 0 : Number(paid) === sentRows.length,
     `摘要 ${paid ?? '（0 次那一支）'}，记录 ${sentRows.length}`)
+
+  // 排除清单是装机时配的；扫描摘要只报这个目录里真有的，否则 agent 会对用户说「已排除 me-pick」
+  check(n, '扫描摘要只报目录里真有的排除项',
+    r.scanSummary.includes('已在枚举阶段排除：me-pick') === !!s.mePick, r.scanSummary)
 
   switch (n) {
     case 'off':

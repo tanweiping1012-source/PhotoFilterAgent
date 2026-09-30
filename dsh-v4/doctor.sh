@@ -4,16 +4,17 @@
 # 为什么需要这个：DSH 有五层，只有一层是天然最新的。
 # 剩下四层每一层我都真实踩过 ——
 #   · Swift 引擎改了没重新 build，跑的还是旧二进制
-#   · preset 改了没重启 DSH，agent 读的还是旧人设
-#   · preset 有两份（运行的和仓库模板），改一份忘另一份
+#   · profile（人设与插件配置）改了没重启 DSH，agent 读的还是旧人设
+#   · profile 有两份（部署的和仓库模板），改一份忘另一份
 #   · 引擎输出多了字段，但缓存按数据集指纹分片、不认 schema 变化，读到的还是旧结构
 #
-# 用法：DSH_HOME=~/.dsh-v4 REPO=~/deepseek-harness/PhotoFilterAgent bash doctor.sh
+# 用法：DSH_HOME=~/.dsh-photo-filter REPO=~/PhotoFilterAgent bash doctor.sh
 set -uo pipefail
-DSH_HOME="${DSH_HOME:-$HOME/.dsh-v4}"
+DSH_HOME="${DSH_HOME:-$HOME/.dsh-photo-filter}"
 # 这一份带 PyYAML；系统 python3 不一定有。要在下面读 preset 之前就绪。
 RANKER_PY="${RANKER_PY:-$DSH_HOME/ranker-venv/bin/python}"
-REPO="${REPO:-$HOME/deepseek-harness/PhotoFilterAgent}"
+REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+PROFILES="${PROFILES:-photo-v4 photo-v4-headless}"
 CACHE="${CACHE:-$HOME/.cache/photofilter-rank}"
 # 占位符替换用。词汇以 dsh-v4/README.md 的表为准，sync-config.sh 用的是同一套。
 # 以前这里把标注者的私人照片目录写死成默认值 —— 私人路径不该进公开仓库，
@@ -27,7 +28,7 @@ CACHE="${CACHE:-$HOME/.cache/photofilter-rank}"
 # 所以不猜，**从部署的 preset 里把 allowedRoots 读出来**。
 # 读不到才退回通用默认值，并明说这一层的结果不可信。
 _photos_from_preset() {
-  "$RANKER_PY" - "$DSH_HOME/.agent-presets/photo-filter-v4/agent.cordis.yml" <<'PY' 2>/dev/null
+  "$RANKER_PY" - "$DSH_HOME/profiles/photo-v4-headless/cordis.patch.yml" <<'PY' 2>/dev/null
 import sys, yaml
 try:
     doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
@@ -75,13 +76,16 @@ tpl_of() {
 }
 
 echo "═══ 1. 插件代码：DSH 加载的是不是仓库那份 ═══"
-LINK="$DSH_HOME/profiles/node_modules/@photo-filter-agent/dsh-photo-filter-v4"
-if [ -L "$LINK" ]; then
-  T=$(readlink "$LINK")
-  [ "$T" = "$REPO/agent-v4" ] && ok "符号链接 → $T" || bad "链接指向 $T，不是 $REPO/agent-v4"
-else
-  bad "不是符号链接 —— 可能是拷贝，改了代码不会生效"
-fi
+# DSH 0.2 起插件是每个 profile 的 link: 依赖（sync-config.sh push 时 pnpm 建的链接）。
+for prof in $PROFILES; do
+  LINK="$DSH_HOME/profiles/$prof/node_modules/@photo-filter-agent/dsh-photo-filter-v4"
+  if [ -L "$LINK" ]; then
+    T=$(cd "$LINK" 2>/dev/null && pwd -P)
+    [ "$T" = "$(cd "$REPO/agent-v4" && pwd -P)" ] && ok "$prof → 仓库的 agent-v4" || bad "$prof 的插件链接指向 $T，不是 $REPO/agent-v4"
+  else
+    bad "$prof 里没有插件链接 —— 跑 dsh-v4/sync-config.sh push"
+  fi
+done
 
 echo "═══ 2. Swift 引擎：二进制比源码新吗 ═══"
 BIN="$REPO/engine/.build/release/photofilter"
@@ -109,40 +113,35 @@ print(','.join(sorted(need-have)))" 2>/dev/null)
   [ -z "$FIELDS" ] && ok "输出字段齐全" || warn "缺字段 $FIELDS（也可能是这批照片没人脸）"
 fi
 
-echo "═══ 3. Agent preset：运行的那份 == 仓库模板吗 ═══"
-LIVE="$DSH_HOME/.agent-presets/photo-filter-v4/agent.cordis.yml"
-TPL="$REPO/dsh-v4/preset-photo-filter-v4/agent.cordis.yml"
-if [ -f "$LIVE" ] && [ -f "$TPL" ]; then
-  # 占位符必须**全部**替换 —— 少一个就会误报「不同步」。
-  # 踩过：只替换了 REPO/DSH_HOME/CACHE，漏了照片目录和导出目录。
-  if diff -q <(tpl_of "$LIVE") "$TPL" >/dev/null 2>&1
-  then ok "两份一致"
-  else bad "运行的 preset 与仓库模板不一致 —— 改了一份忘了另一份"; fi
-else bad "preset 或模板缺失"; fi
-
-echo "═══ 3b. Profile：运行的那五份 == 仓库模板吗 ═══"
-# 这一层以前根本没检查 —— 因为五个 profile 里有两个仓库里压根没有，
-# 另外三个是手工 cp 的副本，其中 photo-v4-ab 还带着绝对路径进了公开仓库。
-# profile 决定判据文件、allowNeither、两道图片上限、headless 的 persona，
+echo "═══ 3. Profile：运行的那几份 == 仓库模板吗 ═══"
+# profile 决定人设、判据文件、allowNeither、图片上限、关掉哪些工具（DSH 0.2 起 web 的 preset 也在里面），
 # 它漂了，跑出来的就不是仓库里描述的那个 agent。
+# cordis.patch.yml 按条目、按内容比（见 check_profile_drift.py：DSH 0.2 会把界面设置写回这个文件并重排格式，
+# 逐字节比会在用户每改一次设置后都假报不一致）；其余三个文件 DSH 不写，仍逐字节比。
 PROF_BAD=0
-for prof in photo-v4 photo-v4-ab photo-v4-eval photo-v4-eval-web photo-v4-headless; do
+SUBS=$(mktemp)
+printf '{"@@REPO@@":"%s","@@DSH_HOME@@":"%s","@@CACHE@@":"%s","@@PHOTOS@@":"%s","@@SCRATCH@@":"%s","@@EXPORT@@":"%s"}' \
+  "$REPO" "$DSH_HOME" "$CACHE" "$PHOTOS_ROOT" "$SCRATCH" "$EXPORT_ROOT" > "$SUBS"
+for prof in $PROFILES; do
   for f in package.json cordis.yml cordis.patch.yml pnpm-workspace.yaml; do
     L="$DSH_HOME/profiles/$prof/$f"; T="$REPO/profiles/$prof/$f"
     [ -f "$T" ] || continue
     if [ ! -f "$L" ]; then bad "$prof/$f 没装到 \$DSH_HOME（跑 dsh-v4/sync-config.sh push）"; PROF_BAD=1
+    elif [ "$f" = cordis.patch.yml ]; then
+      if [ "$VENV_OK" -eq 0 ]; then warn "$prof/$f 未核：ranker venv 不在"
+      elif ! DRIFT=$("$RANKER_PY" "$REPO/dsh-v4/check_profile_drift.py" "$L" "$T" "$SUBS"); then
+        bad "$prof/$f 与仓库模板不一致：$DRIFT"; PROF_BAD=1
+      elif [ -n "$DRIFT" ]; then printf '     %s\n' "$DRIFT"
+      fi
     elif ! diff -q <(tpl_of "$L") "$T" >/dev/null 2>&1; then
       bad "$prof/$f 与仓库模板不一致"; PROF_BAD=1
     fi
   done
 done
-[ "$PROF_BAD" -eq 0 ] && ok "五个 profile 与仓库模板一致"
-
-echo "═══ 3c. preset 与 profile 的同名键：profile 那份是不是死的 ═══"
-# 判据与踩坑经过写在 check_preset_shadow.py 的 docstring 里。
-# 只报**值不同**的覆盖 —— 值相同的覆盖没有后果，报出来只会淹掉真信号。
-if [ "$VENV_OK" -eq 0 ]; then warn "未核：ranker venv 不在"
-elif "$RANKER_PY" "$REPO/dsh-v4/check_preset_shadow.py" "$DSH_HOME"; then :; else FAIL=1; fi
+rm -f "$SUBS"
+[ "$PROF_BAD" -eq 0 ] && ok "profile（$PROFILES）与仓库模板一致"
+# DSH 0.1 时期这里还有一项「preset 与 profile 的同名键」（check_preset_shadow.py）：
+# 那时 preset 放在 .agent-presets 目录里、插件配置有两份。0.2 起 preset 写进 profile，只剩一份，这一项不再需要。
 
 echo "═══ 3d. 锚点：装了的话，本机的锚点照片齐不齐 ═══"
 # 以前的 push 不管齐不齐都装，留下的那份在别的机器上会让阶段 2 每次失败（见 check_anchors.py）。
@@ -167,9 +166,9 @@ PID=$(pgrep -f "bin.ts --profile photo-v4" | head -1)
 if [ -z "$PID" ]; then warn "DSH web 没在跑"
 else
   BOOT=$(ps -o lstart= -p "$PID" | xargs -I{} date -j -f "%a %b %d %T %Y" "{}" +%s 2>/dev/null)
-  NEWEST=$(printf '%s\n' "$(newest "$REPO/agent-v4/src" '*.ts')" "$(mtime "$LIVE")" | sort -rn | head -1)
+  NEWEST=$(printf '%s\n' "$(newest "$REPO/agent-v4/src" '*.ts')" "$(mtime "$DSH_HOME/profiles/photo-v4/cordis.patch.yml")" | sort -rn | head -1)
   if [ -n "$BOOT" ] && [ "$BOOT" -ge "${NEWEST:-0}" ]; then ok "启动于代码最后修改之后"
-  else bad "启动之后 TS 代码或 preset 改过 —— 需要重启 DSH 才生效"; fi
+  else bad "启动之后 TS 代码或 profile 改过 —— 需要重启 DSH 才生效"; fi
 fi
 
 echo "═══ 5. 引擎结果缓存：schema 跟得上引擎吗 ═══"

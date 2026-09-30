@@ -8,11 +8,13 @@
  *          实测这些分数的重评噪声 σ=7.28，而照片之间的真实差异只有 σ=6.72，
  *          所以整套机制建在噪声上，最终 AUC 0.497（= 掷硬币）。
  *
- *   v4 —— 排序是本机的确定性函数，模型一张照片都不看。工具只有 5 个，
+ *   v4 —— 排序在本机算，对话模型一张照片都不看。面向用户的工具 7 个，
  *          agent 负责的是「听懂意图、选参数、解释结果」，不负责打分。
+ *          唯一的视觉模型调用是阶段 2 的组内复核（stage2Vlm，默认开）：
+ *          只比少数几组，把剥掉元数据的小图与人脸特写发给裁判模型；阶段 3 同理（stage3Vlm，默认关）。
  *
- * 因为排序确定，v3 那一整套让噪声可信的机制在这里都不需要 ——
- * 确定性函数用单元测试就能验证（ranker/tests/，28 个，1.5 秒）。
+ * 本地排序是确定性函数，用单元测试就能验证（ranker/tests/）；v3 那一整套让模型打分可信的机制
+ * 在这里都不需要。
  *
  * 三条边界与 v3 一致：原图只读、照片不外泄、结果可复现。
  * @module @photo-filter-agent/dsh-photo-filter-v4
@@ -38,7 +40,7 @@ import type { HarnessVisionExecution, HarnessVisionServices } from './harness-vi
 import { Ranker, RankerError, type RankResult, describeRankerFailure } from './ranker.ts'
 
 export const name = 'photo-filter-v4'
-// llm/attachments 只被 compare_within_groups 用到 —— 那是整条链路里唯一花钱的工具。
+// llm/attachments 只在调用视觉模型时用到：rank_photos 的阶段 2/3 复核与 compare_within_groups。
 export const inject = ['tools', 'llm', 'attachments']
 
 export interface Config {
@@ -303,8 +305,11 @@ export function apply(ctx: Context, config: Config): void {
         state.fingerprint = scan.fingerprint
         state.ids = ids
         state.last = undefined
-        const excluded = config.excludedRelativePaths.length
-          ? `已在枚举阶段排除：${config.excludedRelativePaths.join(' , ')}\n`
+        // 只报这个目录里真有的：排除清单是装机时配的，别的目录里多半没有这些子目录，
+        // 照单全报会让 agent 对用户说「已排除 me-pick」—— 用户根本没有这个目录。
+        const excludedHere = config.excludedRelativePaths.filter((p) => existsSync(join(folder, p)))
+        const excluded = excludedHere.length
+          ? `已在枚举阶段排除：${excludedHere.join(' , ')}\n`
           : ''
         return {
           n_photos: scan.n_photos,
@@ -324,8 +329,13 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'rank_photos',
     description:
-      '在本机对已扫描的目录排序并挑出最好的 N 张。完全免费、零模型调用、不发送任何照片。' +
-      '用户没说风格就用 quality 直接跑 —— **不要卡住问**，排序 1.5 秒且不花钱，' +
+      '对已扫描的目录排序并挑出最好的 N 张。本地排序免费、不发送任何照片。' +
+      (config.stage2Vlm || config.stage3Vlm
+        ? `阶段 ${[config.stage2Vlm && 2, config.stage3Vlm && 3].filter(Boolean).join(' 和 ')} ` +
+          '会对少数几对照片请视觉模型复核（发剥掉元数据的小图，要花调用、要几分钟），' +
+          '实际调用次数以返回值为准，每次都要告诉用户。'
+        : '视觉复核已关闭，零模型调用。') +
+      '用户没说风格就用 quality 直接跑 —— **不要卡住问**，' +
       '让用户看着真实结果说「不是这个感觉」，比让他凭空回答一个分类问题容易得多。' +
       '出结果后用一句话提供切换到 mood 即可。' +
       '闭眼照会被资格门挡在名单外。同一场景组默认最多入选 2 张。结果是确定性的。',
@@ -837,12 +847,12 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
 
-  // ── 工具 6：组内成对比较（唯一花钱的工具）────────────────────
+  // ── 工具 6：组内成对比较（rank_photos 之外额外花钱）──────────
   ctx.tools.register(defineTool({
     name: 'compare_within_groups',
     description:
       '用视觉模型比较**同一场景组内**难分高下的照片对，据此重排组内顺序。' +
-      '这是整个工具集里**唯一花钱**的一个：每对花 2 次调用（正反各一次）。' +
+      '在 rank_photos 的阶段 2 复核之外**额外花钱**：每对花 2 次调用（正反各一次）。' +
       '为什么需要它：本地打分测的是拍摄技术质量，看不见表情、眼神、互动 —— ' +
       '而同一瞬间的连拍里，差别恰恰只在这些。实测本地打分的组内排序命中率 65%（随机 47%）。' +
       '只在用户明确要求「再精细一点」或对边界结果不满意时调用，并且**必须先说明要花多少次调用**。',

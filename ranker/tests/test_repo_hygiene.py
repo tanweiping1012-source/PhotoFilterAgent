@@ -82,11 +82,38 @@ def test_v4_profile_在仓库里(prof):
     assert missing == [], f"{prof} 缺文件：{missing}"
 
 
+def _persona(profile: str, key: str) -> str:
+    """取 profile 模板里 `key: |-` 那一段块文本（去掉缩进）。"""
+    lines = (ROOT / "profiles" / profile / "cordis.patch.yml").read_text(encoding="utf-8").splitlines()
+    start = next(i for i, ln in enumerate(lines) if re.fullmatch(rf"\s*{key}: \|-", ln))
+    body, indent = [], None
+    for ln in lines[start + 1:]:
+        if ln.strip():
+            cur = len(ln) - len(ln.lstrip())
+            indent = cur if indent is None else indent
+            if cur < indent:
+                break
+        body.append(ln[indent:] if ln.strip() else "")
+    return "\n".join(body).rstrip()
+
+
 def test_web_persona_在仓库里():
-    """preset 决定 web 版的人设。以前只有 README 里一句 cp -R，没有脚本装它。"""
-    d = ROOT / "dsh-v4" / "preset-photo-filter-v4"
-    for f in ("preset.yml", "agent.cordis.yml"):
-        assert (d / f).is_file(), f"缺 {f} —— web 版会没有人设"
+    """DSH 0.2 起 web 版的 preset 写在 photo-v4 这个 profile 里，人设是其中 persona 那一条。"""
+    assert len(_persona("photo-v4", "prefix")) > 1000, "photo-v4 的 preset 里没有人设 —— web 版会没有人设"
+
+
+def test_web与headless的人设逐字相同():
+    """两份以前各改各的：web 那份改成「一次典型运行 100~120 次付费调用」时，
+    headless 那份还在说「排序全程 0 次付费模型调用」，而 headless 的 stage2Vlm 同样开着。"""
+    assert _persona("photo-v4", "prefix") == _persona("photo-v4-headless", "personaPrefix"), \
+        "web 与 headless 的人设不一致 —— 改一份就要同步另一份"
+
+
+def test_web_profile里插件配置只有一份():
+    """DSH 0.1 时 preset 一份、profile 一份，web 会话只认 preset 那份，profile 里的键是死的，
+    白跑过 121 次调用才发现。0.2 起插件只挂在 preset 里；profile 顶层再挂一份就又回到两份。"""
+    text = (ROOT / "profiles" / "photo-v4" / "cordis.patch.yml").read_text(encoding="utf-8")
+    assert len(re.findall(r"name: '@photo-filter-agent/dsh-photo-filter-v4'", text)) == 1
 
 
 def test_锚点在仓库里且不含本机路径():

@@ -1,7 +1,9 @@
 {
   "name": "dsh-profile-photo-v4-headless",
   "private": true,
-  "dependencies": {},
+  "dependencies": {
+    "@photo-filter-agent/dsh-photo-filter-v4": "link:@@REPO@@/agent-v4"
+  },
   "dsh": {
     "profile": {
       "bundles": [

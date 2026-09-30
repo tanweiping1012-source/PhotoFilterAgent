@@ -18,7 +18,12 @@ export class IdentityMap {
   private toName = new Map<string, string>()
   private toId = new Map<string, string>()
 
-  private constructor(private readonly file: string) {}
+  private readonly file: string
+
+  // 不用参数属性（`private readonly file`）：Node 的原生类型剥离不支持它，而 DSH 0.2 起按原生方式加载插件源码。
+  private constructor(file: string) {
+    this.file = file
+  }
 
   static load(workdir: string, fingerprint: string): IdentityMap {
     mkdirSync(workdir, { recursive: true })

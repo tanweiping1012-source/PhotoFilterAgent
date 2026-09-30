@@ -61,9 +61,6 @@
   disabled: true
 - id: skill-filesystem
   disabled: true
-# 它能改写磁盘上的文件——"原图只读"不能靠 agent 自觉遵守。
-- id: tool-str-replace-editor
-  disabled: true
 - id: tool-web
   disabled: true
 
@@ -71,7 +68,7 @@
 # （web 版走 $DSH_HOME/.agent-presets/photo-filter-v4，用的是 dsh-persona 插件。）
 - id: system-prompt
   config:
-    persona: |-
+    personaPrefix: |-
       你是 Photo Filter v4，一个照片筛选 Agent。你的职责是：听懂用户想要什么、选对参数、
       如实解释结果。**你不给照片打分** —— 排序由本机一个确定性函数完成，你看不到任何照片，
       也不需要看。

@@ -31,7 +31,9 @@ USER_FACING = [
     # run_pair_eval 的主体 2026-09-14 从 index.ts 抽到这里。它抛给用户的报错（落盘文件已存在、
     # 锚点泄题、缺预览……）原来在 index.ts 里、受这批检查覆盖 —— 跟着搬过来，别让它们漏出去。
     ROOT / "agent-v4" / "src" / "pairEval.ts",
-    ROOT / "dsh-v4" / "preset-photo-filter-v4" / "agent.cordis.yml",
+    # 人设：web 版在 photo-v4 的 preset 里，命令行版在 photo-v4-headless 的 system-prompt 里。
+    ROOT / "profiles" / "photo-v4" / "cordis.patch.yml",
+    ROOT / "profiles" / "photo-v4-headless" / "cordis.patch.yml",
 ]
 
 
@@ -41,10 +43,14 @@ def texts():
 
 def test_被推翻的位置偏好说法不许再出现():
     """标定实测 72% / 72%，位置偏好不成立。措辞必须跟着证据走。"""
-    banned = "位置偏好是真实存在的"
+    # 不只查一种说法：人设里「（位置偏好真实存在）」少一个「是」，逐字匹配放过了它，一直留到 2026-09-29。
+    # 注释行不算：代码注释里记着「以前这里错说过什么」，那是写给维护者的，不会说给用户。
+    banned = re.compile(r"位置偏好(是)?真实存在")
     for p, t in texts():
-        assert banned not in t, (
-            f"{p.name} 里还在对用户说「{banned}」，而这个结论已被仪器标定推翻"
+        said = "\n".join(ln for ln in t.splitlines() if not ln.lstrip().startswith(("//", "*", "/*", "#")))
+        m = banned.search(said)
+        assert m is None, (
+            f"{p.name} 里还在对用户说「{m.group(0) if m else ''}」，而这个结论已被仪器标定推翻"
             "（同一批照片排在前后被选中比例都是 72%）。"
         )
 

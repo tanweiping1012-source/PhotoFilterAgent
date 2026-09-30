@@ -238,7 +238,7 @@ export function resolvePick(
 /**
  * 对一批照片对做 AB/BA 双向比较。
  *
- * 每对花 2 次模型调用。调用方负责控制对数 —— 这是整条链路里唯一花钱的地方。
+ * 每对花 2 次模型调用。调用方负责控制对数：阶段 2、阶段 3（stage3.ts）与 compare_within_groups 都从这里发出。
  */
 export async function comparePairs(
   pairs: ReadonlyArray<readonly [string, string]>,
@@ -369,7 +369,12 @@ export async function comparePairs(
         //
         // 实测：47 对的那轮 400 勉强够（没中断），换成体检题就撞上了。
         // 边界这么近说明本来就该放宽，不是运气问题。
-        maxTokens: 2000,
+        //
+        // 2000 → 4000（2026-09-29）：DSH 0.1 上 2000 跑了约 3000 次比较没撞过上限；
+        // 升到 DSH 0.2 后第一次实跑，38 次里撞了 1 次（那次耗时 23 秒，中位 3.6 秒），整轮阶段 2 中断。
+        // 根因没有证实（可能是 0.2 依赖的 pi-ai 升级改了 MiniMax 思考 token 的计法）；
+        // 工具调用本身只输出一百来个 token，这个上限只是给思考留的空间，放宽不改判决口径。
+        maxTokens: 4000,
       }, exec.signal, { pair: k, dir, a, b }),
     )
     const ab = await ask('AB', ja, fa, jb, fb)

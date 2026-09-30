@@ -137,9 +137,12 @@ export interface EvalResult {
 
 /** 排序器进程失败时抛这个，携带 stderr 尾部，便于把真实原因报给用户而不是猜。 */
 export class RankerError extends Error {
-  constructor(message: string, readonly detail: string) {
+  readonly detail: string
+
+  constructor(message: string, detail: string) {
     super(message)
     this.name = 'RankerError'
+    this.detail = detail
   }
 }
 
@@ -165,14 +168,21 @@ export function describeRankerFailure(e: unknown): string {
 }
 
 export class Ranker {
-  constructor(
-    private readonly python: string,
-    private readonly rankerDir: string,
-    private readonly cacheDir: string,
-    private readonly timeoutMs: number,
-    /** Swift 本地分析引擎，用于闭眼资格门。空则资格门不生效，排序器会如实报告。 */
-    private readonly engineBinary?: string,
-  ) {}
+  private readonly python: string
+  private readonly rankerDir: string
+  private readonly cacheDir: string
+  private readonly timeoutMs: number
+  /** Swift 本地分析引擎，用于闭眼资格门。空则资格门不生效，排序器会如实报告。 */
+  private readonly engineBinary?: string
+
+  // 不用参数属性：Node 的原生类型剥离不支持它，而 DSH 0.2 起按原生方式加载插件源码（见 identity.ts）。
+  constructor(python: string, rankerDir: string, cacheDir: string, timeoutMs: number, engineBinary?: string) {
+    this.python = python
+    this.rankerDir = rankerDir
+    this.cacheDir = cacheDir
+    this.timeoutMs = timeoutMs
+    this.engineBinary = engineBinary
+  }
 
   /** 资格门参数。不给引擎时不加 --engine，排序器会把「没生效」写进 warnings。 */
   private gate(): string[] {

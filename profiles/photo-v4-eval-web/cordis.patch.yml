@@ -86,8 +86,5 @@
   disabled: true
 - id: skill-filesystem
   disabled: true
-# 它能改写磁盘上的文件——"原图只读"不能靠 agent 自觉遵守。
-- id: tool-str-replace-editor
-  disabled: true
 - id: tool-web
   disabled: true
