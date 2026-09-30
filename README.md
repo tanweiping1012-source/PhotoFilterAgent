@@ -27,7 +27,7 @@ cd PhotoFilterAgent
 PHOTOS=~/Pictures/我的旅行照片 ./install.sh
 ```
 
-`PHOTOS` 是允许 agent 读取的照片根目录，它只能处理这个目录里的照片。`install.sh` 会装好 DSH（固定到本项目验证过的 0.2.0-rc.1，不用你另外下载）、编译本地分析程序、建 Python 环境，再把 agent 的配置装进 `~/.dsh-photo-filter`。每一步都先检查，已经做好的就跳过，可以放心重复运行。
+`PHOTOS` 是允许 agent 读取的照片根目录，它只能处理这个目录里的照片。`install.sh` 会装好 DSH（固定到本项目验证过的 0.2.0-rc.2，不用你另外下载）、编译本地分析程序、建 Python 环境，再把 agent 的配置装进 `~/.dsh-photo-filter`。每一步都先检查，已经做好的就跳过，可以放心重复运行。
 
 ### 跑
 

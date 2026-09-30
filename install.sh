@@ -25,7 +25,7 @@ PHOTOS="${PHOTOS:-}"
 
 # 本项目验证过的 DSH 版本。DSH 还在预览期，版本之间会有破坏性变更（0.1 → 0.2 的变化见 dsh-v4/README.md），
 # 所以这里**真的切到这个版本**，不跟着 master 走。
-HARNESS_TAG="dsh-v0.2.0-rc.1"
+HARNESS_TAG="dsh-v0.2.0-rc.2"
 HARNESS_REPO="https://github.com/deepseek-ai/deepseek-harness.git"
 
 say() { printf '\n\033[1m▸ %s\033[0m\n' "$1"; }

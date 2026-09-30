@@ -13,14 +13,16 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="${TMPDIR:-/tmp}/photo-filter-agent-v4-test"
 DEPS=(
   typescript@5.9 @types/node
-  @deepseek-ai/cordis@4.0.4 @deepseek-ai/dsh-tools@0.2.0-rc.1 @deepseek-ai/schemastery@3.18.4
+  @deepseek-ai/cordis@4.0.4 @deepseek-ai/dsh-tools@0.2.0-rc.2 @deepseek-ai/schemastery@3.18.4
 )
 
 mkdir -p "${WORK}"
 rsync -a --delete --exclude node_modules --exclude package-lock.json "${HERE}/" "${WORK}/"
 cd "${WORK}"
 if [[ "$(cat node_modules/.deps 2>/dev/null)" != "${DEPS[*]}" ]]; then
-  npm install --silent --no-save --no-package-lock "${DEPS[@]}"
+  # 版本变了就整个重装：在旧依赖上原地升级，npm 会拿旧版的 peer 去解新版，报冲突。
+  rm -rf node_modules
+  npm install --loglevel=error --no-fund --no-audit --no-save --no-package-lock "${DEPS[@]}"
   echo "${DEPS[*]}" > node_modules/.deps
 fi
 

@@ -4,7 +4,7 @@
 
 ## DSH 版本
 
-本项目在 **DSH 0.2.0-rc.1**（2026-09-28 发布的预览版）上验证。`install.sh` 会克隆这个版本（tag `dsh-v0.2.0-rc.1`），不跟着 master 走：DSH 还在预览期，版本之间有破坏性变更。如果 `~/deepseek-harness` 里已经有一份别的版本，`install.sh` 会停下来告诉你怎么办，不会动它。
+本项目在 **DSH 0.2.0-rc.2**（2026-09-29 发布的预览版，npm 上的 `latest`）上验证。`install.sh` 会克隆这个版本（tag `dsh-v0.2.0-rc.2`），不跟着 master 走：DSH 还在预览期，版本之间有破坏性变更。如果 `~/deepseek-harness` 里已经有一份别的版本，`install.sh` 会停下来告诉你怎么办，不会动它。
 
 ## 装好之后有什么
 

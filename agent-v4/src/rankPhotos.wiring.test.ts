@@ -218,6 +218,9 @@ for (const s of SCENARIOS) {
   const paid = /\*\*付费模型调用 (\d+) 次\*\*/.exec(r.summary ?? '')?.[1]
   check(n, 'rank_photos 没有抛错', r.error === null, r.error ?? '')
   if (r.error) continue
+  // 只给排序器秒数时，agent 把它当整次运行的用时报给用户
+  check(n, '摘要分开写本地排序用时与整次总用时',
+    /本地排序 [\d.]+s · 本次 rank_photos 总用时 \d+ (秒|分 \d+ 秒)/.test(r.summary ?? ''), r.summary ?? '')
   const sentRows = r.rows.filter((x: { sent: boolean }) => x.sent)
   check(n, '摘要报的付费调用数 = calls.jsonl 里 sent 的行数（含预检）',
     paid === undefined ? sentRows.length === 0 : Number(paid) === sentRows.length,

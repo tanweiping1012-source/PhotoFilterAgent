@@ -79,7 +79,7 @@ jobs:
   # 第一次真检查抓到两个运行时真 bug（见 agent-v4/tsconfig.json 的注释），都已修掉。
   #
   # 步骤全在 agent-v4/test.sh 里，本机与 CI 跑同一套：依赖装在临时拷贝里，
-  # 三个 @deepseek-ai 包钉到与 install.sh 固定的 DSH（0.2.0-rc.1）一致的版本。
+  # 三个 @deepseek-ai 包钉到与 install.sh 固定的 DSH（0.2.0-rc.2）一致的版本。
   # 不钉的话，npm 上一出新版，CI 就在检查一个用户装不到的组合。
   #
   # **不要用 continue-on-error 把它变绿** —— 那就又造了一个看起来在跑的假守卫。

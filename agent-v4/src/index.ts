@@ -157,6 +157,12 @@ interface RunState {
   exportTicket?: { code: string; dest: string; names: string[]; runnerUps?: string[] }
 }
 
+/** 毫秒 → 「9 分 30 秒」/「42 秒」。 */
+function formatDuration(ms: number): string {
+  const s = Math.round(ms / 1000)
+  return s < 60 ? `${s} 秒` : `${Math.floor(s / 60)} 分 ${s % 60} 秒`
+}
+
 /** 读锚点配置。文件不存在或格式不对就返回 null —— 锚点是增强，不是必需。 */
 function readAnchors(file: string):
   { folder: string; text: string; photos: string[]; labels: Record<string, string> } | null {
@@ -340,12 +346,12 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'rank_photos',
     description:
-      '对已扫描的目录排序并挑出最好的 N 张。本地排序免费、不发送任何照片。' +
+      '对已扫描的目录排序并挑出最好的 N 张。本地排序免费、不联网。' +
       (config.stage2Vlm || config.stage3Vlm
         ? `阶段 ${[config.stage2Vlm && 2, config.stage3Vlm && 3].filter(Boolean).join(' 和 ')} ` +
           '会对少数几对照片请视觉模型复核（发剥掉元数据的小图，要花调用、要几分钟），' +
           '实际调用次数以返回值为准，每次都要告诉用户。'
-        : '视觉复核已关闭，零模型调用。') +
+        : '视觉复核已关闭：零模型调用，不发送任何照片。') +
       '用户没说风格就用 quality 直接跑 —— **不要卡住问**，' +
       '让用户看着真实结果说「不是这个感觉」，比让他凭空回答一个分类问题容易得多。' +
       '出结果后用一句话提供切换到 mood 即可。' +
@@ -400,6 +406,7 @@ export function apply(ctx: Context, config: Config): void {
         // 运行记录：阶段 2 或阶段 3 真要调模型时才建。两个都不调时一个文件都不写。
         const runDir = (config.stage2Vlm && plan.length) || config.stage3Vlm ? openRunDir() : null
         const startedAt = new Date().toISOString()
+        const startedMs = Date.now()
         // 调用账**从回调里数**，不按对数算、也不从裁决反推。
         //
         // 原来阶段 2 记的是 `plan.length * 2`，只在成功之后赋值：中途被 429 打断的那次
@@ -670,7 +677,9 @@ export function apply(ctx: Context, config: Config): void {
           summary:
             `挑片风格：${styleText}\n` +
             `模式：${modeText}\n` +
-            `候选 ${res.n_candidates} 张 · 场景组 ${n.n_families} 个（最大 ${n.largest_family} 张）· 耗时 ${res.elapsed_sec}s\n` +
+            // 两个时间分开写：只写排序器的秒数时，agent 把它当成整次运行的用时报给用户（实测 10 分半报成 3.2 秒）。
+            `候选 ${res.n_candidates} 张 · 场景组 ${n.n_families} 个（最大 ${n.largest_family} 张）` +
+            `· 本地排序 ${res.elapsed_sec}s · 本次 rank_photos 总用时 ${formatDuration(Date.now() - startedMs)}\n` +
             // 调用次数必须**算出来**，不能写死。
             //
             // 踩过的坑：这里原本硬编码「付费模型调用 0 次」。VLM 复核默认打开之后，
