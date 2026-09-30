@@ -1,0 +1,21 @@
+name: dsh-release
+on: [push, pull_request]
+jobs:
+  bundle:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm run build && npm run typecheck && npm test
+      - run: node scripts/setup.test.mjs
+      - run: npm pack
+      - run: npm install --prefix "$RUNNER_TEMP/dsh" @deepseek-ai/dsh@0.2.0-rc.2
+      - run: node scripts/verify-dsh-release.mjs "$RUNNER_TEMP/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js" photo-filter-agent-dsh-photo-filter-v4-0.4.0-rc.1.tgz
+      - run: swift build --package-path engine -c release

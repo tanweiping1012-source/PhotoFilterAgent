@@ -181,6 +181,7 @@ export class Ranker {
 
   private run(args: string[], signal?: AbortSignal): Promise<string> {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) { reject(signal.reason ?? new Error('Operation aborted')); return }
       const child = spawn(this.python, ['-m', 'photofilter_rank.cli', ...args], {
         cwd: this.rankerDir,
         env: {
@@ -193,17 +194,32 @@ export class Ranker {
           HF_HUB_OFFLINE: '1',
           TRANSFORMERS_OFFLINE: '1',
         },
-        signal,
       })
       let out = ''
       let err = ''
       child.stdout.on('data', (d) => { out += d })
       child.stderr.on('data', (d) => { err += d })
-      const timer = setTimeout(() => child.kill('SIGKILL'), this.timeoutMs)
-      child.on('error', (e) => { clearTimeout(timer); reject(new RankerError(`排序器无法启动：${e.message}`, err.slice(-2000))) })
+      let failure: unknown
+      let escalation: ReturnType<typeof setTimeout> | undefined
+      const abort = () => {
+        failure = signal?.reason ?? new Error('Operation aborted')
+        child.kill('SIGTERM')
+        escalation = setTimeout(() => child.kill('SIGKILL'), 1000)
+      }
+      signal?.addEventListener('abort', abort, { once: true })
+      if (signal?.aborted) abort()
+      const timer = setTimeout(() => {
+        failure = new RankerError('排序器超时', err.slice(-2000))
+        child.kill('SIGKILL')
+      }, this.timeoutMs)
+      child.on('error', (e) => { failure = new RankerError(`排序器无法启动：${e.message}`, err.slice(-2000)) })
+      // Do not release temporary output files until the child has actually closed.
       child.on('close', (code) => {
         clearTimeout(timer)
-        if (code === 0) resolve(out)
+        clearTimeout(escalation)
+        signal?.removeEventListener('abort', abort)
+        if (failure) reject(failure)
+        else if (code === 0) resolve(out)
         else reject(new RankerError(`排序器退出码 ${code}`, err.slice(-2000) || out.slice(-2000)))
       })
     })
