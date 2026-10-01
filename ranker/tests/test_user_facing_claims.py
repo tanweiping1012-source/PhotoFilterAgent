@@ -45,15 +45,17 @@ def texts():
 
 
 def _yaml_spoken(text: str) -> str:
-    """profile 里会说给用户的文字：人设块（prefix / personaPrefix 的 `|-` 块，含其中的 ## 小标题）与 description 的值。
+    """profile 里会说给用户的文字：人设块（prefix / personaPrefix 的块标量，含其中的 ## 小标题）与 description 的值。
     YAML 注释不会进模型，自然被排除。不用 PyYAML：CI 只装 numpy / Pillow / pytest。"""
-    lines, out, i = text.splitlines(), [], 0
+    lines, out, i, blocks = text.splitlines(), [], 0, 0
     while i < len(lines):
         ln = lines[i]
         m = re.match(r"\s*description:\s*(.+)$", ln)
         if m:
             out.append(m.group(1))
-        if re.fullmatch(r"\s*(prefix|personaPrefix): \|-", ln):
+        # 块标量的所有合法写法（| |- |+ > >- >+）都要认：只认 |- 时，改成 | 再往人设里写错话，守卫照样是绿的。
+        if re.fullmatch(r"\s*(prefix|personaPrefix):\s*[|>][-+]?\s*", ln):
+            blocks += 1
             indent, i = None, i + 1
             while i < len(lines):
                 body = lines[i]
@@ -66,6 +68,8 @@ def _yaml_spoken(text: str) -> str:
                 i += 1
             continue
         i += 1
+    # 一个人设块都没认出来，就等于什么都没查 —— 宁可红，不许空着绿。
+    assert blocks, "profile 里没认出人设块（prefix / personaPrefix 的块标量）：键名或写法变了，要跟着改这里"
     return "\n".join(out)
 
 

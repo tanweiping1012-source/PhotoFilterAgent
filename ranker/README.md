@@ -108,20 +108,24 @@
 
 ### 装环境
 
-需要 Python 3.9+，macOS / Linux 都行（Mac 上会自动用 GPU 加速）。
+需要 Python 3.9+。在 Mac 上用（会自动用 GPU 加速），还要先编译本地分析引擎 —— 看人脸、判断闭眼靠它，用的是苹果的 Vision 框架：
 
 ```bash
+(cd engine && swift build -c release)
 cd ranker
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+下面的命令都带着 `--engine ../engine/.build/release/photofilter`。**别省**：不给它，闭眼的照片挡不掉，人脸质量也退回较弱的指标，
+排序器会打出警告（同一批 309 张挑 20 张，从 6 张掉到 5 张）。Linux 上没有这个引擎，只能这样跑。
 
 第一次运行会自动下载模型（CLIP 约 900MB，其余约 400MB），之后就不用再下了。
 
 ### 最简单的用法：直接挑 20 张
 
 ```bash
-python -m photofilter_rank.cli pick ~/Pictures/冰岛旅行 --target 20
+python -m photofilter_rank.cli pick ~/Pictures/冰岛旅行 --target 20 --engine ../engine/.build/release/photofilter
 ```
 
 输出：
@@ -176,7 +180,7 @@ python -m photofilter_rank.cli pick ~/Pictures/冰岛旅行 --target 20
 
 ```bash
 python -m photofilter_rank.cli eval ~/Pictures/冰岛旅行 \
-    --gold 我的精选.txt --target 20
+    --gold 我的精选.txt --target 20 --engine ../engine/.build/release/photofilter
 ```
 
 ```
@@ -199,7 +203,7 @@ python -m photofilter_rank.cli eval ~/Pictures/冰岛旅行 \
 ### 想知道该标几张
 
 ```bash
-python -m photofilter_rank.cli curve ~/Pictures/冰岛旅行 --gold 我的精选.txt
+python -m photofilter_rank.cli curve ~/Pictures/冰岛旅行 --gold 我的精选.txt --engine ../engine/.build/release/photofilter
 ```
 
 ```
