@@ -104,6 +104,10 @@ bash dsh-v4/doctor.sh
 
 逐层核对：DSH 加载的插件是不是仓库这份、Swift 引擎是不是最新编译的、部署的 profile 和仓库模板对不对得上（只比模板里写了的条目，DSH 或网页设置自己加的条目不算）、锚点照片齐不齐、DSH 启动之后代码有没有再改。
 
+## 复现以前的实验
+
+`ab-experiment/` 里的实验脚本是 DSH 0.1 时期写的。第四轮端到端 A/B 的 `stage3/e2e/make_e2e_profiles.py` 读的是 `~/.dsh-v4` 里 0.1 格式的 `photo-v4`，还要求它的 `stage2Vlm` 是 `true`（第四轮四组第二步全开）；对不上会直接报错停下。所以别把现在的模板装进 `~/.dsh-v4`：现在的模板是 0.2 格式，而且视觉复核默认关。复现时用当时的配置：作者机器上的 `~/.dsh-v4/photo-filter-v4/archive/round4-e2e/` 存着实验期间的 preset 原件（`preset-during-e2e.agent.cordis.yml`），每次改动的 md5 记在同目录的 `preset-md5-log.tsv`。
+
 ## 从 DSH 0.1 迁到 0.2 改了什么
 
 以前按 0.1 装过的，重跑一次 `install.sh`：它装进新的 `DSH_HOME`，不动旧的；`~/deepseek-harness` 还是旧版的话，它会停下来提示你换个目录（`HARNESS=~/dsh-0.2 ./install.sh`）或把那份切到新版本。改动如下，升级 DSH 时可以对照：
