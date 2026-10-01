@@ -44,13 +44,50 @@ def texts():
     return [(p, p.read_text(encoding="utf-8")) for p in USER_FACING if p.is_file()]
 
 
+def _yaml_spoken(text: str) -> str:
+    """profile 里会说给用户的文字：人设块（prefix / personaPrefix 的 `|-` 块，含其中的 ## 小标题）与 description 的值。
+    YAML 注释不会进模型，自然被排除。不用 PyYAML：CI 只装 numpy / Pillow / pytest。"""
+    lines, out, i = text.splitlines(), [], 0
+    while i < len(lines):
+        ln = lines[i]
+        m = re.match(r"\s*description:\s*(.+)$", ln)
+        if m:
+            out.append(m.group(1))
+        if re.fullmatch(r"\s*(prefix|personaPrefix): \|-", ln):
+            indent, i = None, i + 1
+            while i < len(lines):
+                body = lines[i]
+                if body.strip():
+                    cur = len(body) - len(body.lstrip())
+                    indent = cur if indent is None else indent
+                    if cur < indent:
+                        break
+                out.append(body.strip())
+                i += 1
+            continue
+        i += 1
+    return "\n".join(out)
+
+
+def spoken(p: Path, t: str) -> str:
+    """只留会说给用户的文字。按文件类型取：Markdown 没有行注释 —— 以 ** / * / # 开头的是加粗段落、列表、标题，
+    照样是说给用户的（2026-10-01 查出：原来一律按 `*` `#` 开头当注释跳过，README 有 79 行没被检查）。"""
+    if p.suffix == ".md":
+        return t
+    if p.suffix == ".ts":
+        return "\n".join(ln for ln in t.splitlines() if not ln.lstrip().startswith(("//", "/*", "*")))
+    if p.suffix == ".yml":
+        return _yaml_spoken(t)
+    raise AssertionError(f"{p} 的类型没有定义「哪些行会说给用户」")
+
+
 def test_被推翻的位置偏好说法不许再出现():
     """标定实测 72% / 72%，位置偏好不成立。措辞必须跟着证据走。"""
     # 不只查一种说法：人设里「（位置偏好真实存在）」少一个「是」，逐字匹配放过了它，一直留到 2026-09-29。
-    # 注释行不算：代码注释里记着「以前这里错说过什么」，那是写给维护者的，不会说给用户。
+    # 注释不算：代码注释里记着「以前这里错说过什么」，那是写给维护者的，不会说给用户（见 spoken）。
     banned = re.compile(r"位置偏好(是)?真实存在|确实存在.{0,3}偏爱第一张")
     for p, t in texts():
-        said = "\n".join(ln for ln in t.splitlines() if not ln.lstrip().startswith(("//", "*", "/*", "#")))
+        said = spoken(p, t)
         m = banned.search(said)
         assert m is None, (
             f"{p.name} 里还在对用户说「{m.group(0) if m else ''}」，而这个结论已被仪器标定推翻"
@@ -106,6 +143,6 @@ def test_不许说阶段2只比咬得紧的少数几组():
     """
     banned = re.compile(r"咬得很紧|咬得紧|少数几(组|对)")
     for p, t in texts():
-        said = "\n".join(ln for ln in t.splitlines() if not ln.lstrip().startswith(("//", "*", "/*", "#")))
+        said = spoken(p, t)
         m = banned.search(said)
         assert m is None, f"{p.name} 里还在说「{m.group(0) if m else ''}」—— 阶段 2 按组从大到小逐组打，不挑「咬得紧」的组"
