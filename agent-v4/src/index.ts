@@ -165,6 +165,16 @@ function formatDuration(ms: number): string {
   return s < 60 ? `${s} 秒` : `${Math.floor(s / 60)} 分 ${s % 60} 秒`
 }
 
+/**
+ * DSH 审批服务（`@deepseek-ai/dsh-user-approval`，服务名 `approval`）里本插件用到的方法。
+ * 问题由界面直接问用户，不进模型上下文；`allowed-once` 以外的结果一律当作不同意。不依赖那个包：取不到服务就按拒绝处理。
+ */
+interface ApprovalLike {
+  request(req: {
+    agent: unknown; toolName: string; callId?: unknown; reason?: string; signal?: AbortSignal
+  }): Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>
+}
+
 /** 读锚点配置。文件不存在或格式不对就返回 null —— 锚点是增强，不是必需。 */
 function readAnchors(file: string):
   { folder: string; text: string; photos: string[]; labels: Record<string, string> } | null {
@@ -885,11 +895,14 @@ export function apply(ctx: Context, config: Config): void {
       (config.stage2Vlm ? '，在 rank_photos 的阶段 2 复核之外另算。' : '。') +
       '为什么需要它：本地打分测的是拍摄技术质量，看不见表情、眼神、互动 —— ' +
       '而同一瞬间的连拍里，差别恰恰只在这些。实测本地打分的组内排序命中率 65%（随机 47%）。' +
-      '只在用户明确要求「再精细一点」或对边界结果不满意时调用，并且**必须先说明要花多少次调用**。',
+      '只在用户明确要求「再精细一点」或对边界结果不满意时调用。\n' +
+      '**发图之前，DSH 会在界面上直接问用户同不同意**（写明比几对、约几次调用、发哪几张）；' +
+      '用户点同意才发，拒绝或没有审批通道（比如命令行模式）就一张都不发。这个问答你看不到也替用户答不了，' +
+      '工具返回值会告诉你结果。调用之前先跟用户说清要比几对、大约花几次调用。',
     parameters: {
       max_pairs: {
         type: 'number',
-        description: '最多比较几对（默认 12，即 24 次调用）。每对 2 次调用，务必先告知用户。',
+        description: '最多比较几对（默认 12，即约 25 次调用：每对 2 次 + 1 次路由预检）。',
       },
     },
     output: {
@@ -935,7 +948,39 @@ export function apply(ctx: Context, config: Config): void {
           summary: '没有找到值得比较的组内对（每个场景组要么只有一张，要么全入选/全落选）。没有花钱。',
         }
       }
+      // 默认配置下这是唯一会把照片发出去的工具。发图之前经 DSH 的审批服务在界面上直接问用户：
+      // 问题不进模型上下文，模型代答不了；没有审批通道（命令行模式、服务没装）就按拒绝处理。
+      // 这样「默认不发照片」才是代码保证。确认码那一版（79f2de4）做不到：码在工具返回值里，模型自己看得到。
+      const photos = [...new Set(use.flat())]
+      const plan =
+        `比较 ${use.length} 对（${use.map(([a, b]) => `${ids.id(a)} vs ${ids.id(b)}`).join('，')}），` +
+        `约 ${use.length * 2 + 1} 次付费调用，会把 ${photos.length} 张照片（${photos.map((n) => ids.id(n)).join(' ')}）` +
+        '的 512px 整幅小图 + 448px 人脸特写发给视觉模型（剥掉元数据，不带文件名和路径）'
+      const approval = ctx.get('approval') as unknown as ApprovalLike | undefined
+      const agent = (exec as { agent?: unknown }).agent
+      const outcome = approval && agent
+        ? await approval.request({
+          agent, toolName: 'compare_within_groups', callId: (exec as { callId?: unknown }).callId,
+          reason: `照片筛选要${plan}。同意吗？`, signal: exec.signal,
+        })
+        : 'unavailable'
+      if (outcome !== 'allowed-once') {
+        const why = outcome === 'rejected' ? '用户没有同意'
+          : outcome === 'cancelled' ? '审批被撤回'
+          : '当前没有审批通道（比如命令行模式），按规则不发'
+        return {
+          pairs_compared: 0, calls_spent: 0,
+          summary: `${why}，**一张照片都没发**，没有花钱。原计划：${plan}。`,
+        }
+      }
 
+      // 调用账从回调里数（含路由预检），不按对数算：中途失败时也报得出已经花掉的数。
+      const spent = { compares: 0, preflights: 0 }
+      const countCall = (r: { kind: string; sent: boolean }) => {
+        if (!r.sent) return
+        if (r.kind === 'preflight') spent.preflights++
+        else spent.compares++
+      }
       try {
         const names = [...new Set(use.flat())]
         // withFace=true：必须带高清人脸，否则模型在 30 像素的脸上判断表情，
@@ -960,7 +1005,7 @@ export function apply(ctx: Context, config: Config): void {
           // 图上没有烧码。传了码就是要模型去读它看不见的东西。
           // （生产排序那一路 line 360 会烧码，所以它传 codes。）
           undefined,
-          services, exec as unknown as HarnessVisionExecution,
+          services, exec as unknown as HarnessVisionExecution, { onCall: countCall },
         )
 
         const swaps: string[] = []
@@ -991,10 +1036,10 @@ export function apply(ctx: Context, config: Config): void {
         const inconsistent = verdicts.filter((v) => v.winner === 'inconsistent').length
         return {
           pairs_compared: verdicts.length,
-          calls_spent: verdicts.length * 2,
+          calls_spent: spent.compares + spent.preflights,
           summary:
-            `组内成对比较完成：${verdicts.length} 对，**花了 ${verdicts.length * 2} 次付费调用**` +
-            `（每对正反各问一次）。模型路由 ${route}。\n\n` +
+            `组内成对比较完成：${verdicts.length} 对，**花了 ${spent.compares + spent.preflights} 次付费调用**` +
+            `（比较 ${spent.compares} 次 + 路由预检 ${spent.preflights} 次）。模型路由 ${route}。\n\n` +
             lines + `\n\n` +
             `结果：维持原判 ${keeps} 对 · 建议换 ${flips} 对 · 平局 ${ties} 对` +
             `· 两张都不够格 ${neithers} 对 · 正反不一致 ${inconsistent} 对。\n` +
@@ -1012,7 +1057,15 @@ export function apply(ctx: Context, config: Config): void {
               ? `\n建议的调整：${swaps.join('，')}。要不要我按这个改名单？`
               : `\n没有建议调整 —— 本地排序在这些边界上的判断，模型也同意。`),
         }
-      } catch (e) { fail(e) }
+      } catch (e) {
+        const n = spent.compares + spent.preflights
+        if (n) {
+          throw new Error(
+            `组内比较中途失败，失败前已经发出 ${n} 次调用（比较 ${spent.compares} 次 + 路由预检 ${spent.preflights} 次）：` +
+            String((e as Error)?.message ?? e))
+        }
+        fail(e)
+      }
     },
   }))
 

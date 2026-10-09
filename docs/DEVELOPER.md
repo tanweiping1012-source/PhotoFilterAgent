@@ -30,7 +30,7 @@ engine/（Swift，苹果 Vision 框架）  人脸、睁眼程度、头部俯仰�
    2. **阶段 2 视觉复核**（`stage2Vlm`，默认关）：打开后按复核计划逐局请视觉模型当裁判。每张照片生成 512px 整幅小图 + 448px 人脸特写，剥掉元数据、边上烧一个 4 位随机码；同一对照片正着问一次、反着问一次（`compare.ts`，经 DSH 的 `llm` 服务发出，`harness-vision.ts` 是这层适配）。两次说法一致才算数。裁决写成文件交回排序器重放，得到新名单。
    3. **阶段 3 视觉复核**（`stage3Vlm`，默认关）：每个时间段里「最后一个入选的」和「第一个落选的」比一次，候补正反两次都赢才换人（`stage3.ts`）。实测没有收益，所以默认关。
    4. 每次真调了视觉模型，都在 `workdir/runs/<时间>-<随机串>/` 下留运行记录：`calls.jsonl`（每次调用一行，不含图片和模型原话）、`stage2-verdicts.json`、`run.json`（汇总）。摘要里告诉用户这次花了几次调用。
-3. 之后按用户的话调用：`explain_ranking`（为什么选/没选某张）、`set_my_favorites`（只记录，不参与排序——实测没收益）、`evaluate_against_answer`（有人工精选时算命中）、`compare_within_groups`（用户要求时再多比几对）、`export_selection`（把名单**复制**到授权的导出目录，两步确认，原图只读）。
+3. 之后按用户的话调用：`explain_ranking`（为什么选/没选某张）、`set_my_favorites`（只记录，不参与排序——实测没收益）、`evaluate_against_answer`（有人工精选时算命中）、`compare_within_groups`（用户要求时再多比几对；发图前经 DSH 的审批服务 `approval` 在界面上问用户，模型代答不了，没有审批通道就不发）、`export_selection`（把名单**复制**到授权的导出目录，原图只读；确认码对模型可见，两步确认是 agent 遵守的流程）。
 
 ## 目录地图
 

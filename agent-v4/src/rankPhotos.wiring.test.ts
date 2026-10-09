@@ -117,6 +117,8 @@ interface Scen {
   fake?: Record<string, unknown>
   /** 照片目录里建一个 me-pick 子目录（排除清单里配着它）。 */
   mePick?: boolean
+  /** 假的 DSH 审批服务。present=false 时 ctx.get('approval') 取不到；测试中途可以改 outcome。 */
+  approval?: { present: boolean; outcome: string; asked: Array<{ reason: string; sentBefore: number; toolName: string }> }
 }
 
 async function run(s: Scen) {
@@ -155,7 +157,18 @@ async function run(s: Scen) {
   const tools = new Map<string, any>()
   const ctx = {
     tools: { register(t: { name: string }) { tools.set(t.name, t); return () => {} } },
-    get(n: string) { return n === 'llm' ? mock.services.llm : n === 'attachments' ? mock.services.attachments : undefined },
+    get(n: string) {
+      if (n === 'approval') {
+        const a = s.approval
+        return a?.present ? {
+          async request(req: { reason?: string; toolName: string }) {
+            a.asked.push({ reason: req.reason ?? '', sentBefore: mock.calls.length, toolName: req.toolName })
+            return a.outcome
+          },
+        } : undefined
+      }
+      return n === 'llm' ? mock.services.llm : n === 'attachments' ? mock.services.attachments : undefined
+    },
   }
   apply(ctx as never, config as never)
   const exec = { agent: { options: { provider: 'mock', model: 'mock-vision' } } }
@@ -178,7 +191,7 @@ async function run(s: Scen) {
     picks: argv.filter((a: string[]) => a[0] === 'pick'),
     previews: argv.filter((a: string[]) => a[0] === 'preview'),
     workdirFiles: existsSync(config.workdir) ? readdirSync(config.workdir) : [],
-    mock,
+    mock, tools, exec,
   }
 }
 
@@ -381,5 +394,74 @@ for (const s of SCENARIOS) {
   rmSync(r.work, { recursive: true, force: true })
 }
 
+// ── compare_within_groups 的审批闸门 ──────────────────────────────
+// 默认配置下它是唯一会把照片发出去的工具。发图之前必须经 DSH 审批服务问用户（问题不进模型上下文，模型代答不了）；
+// 不同意、撤回、没有审批通道、调用没有 agent，一律一张不发。
+{
+  const n = 'compare-approval'
+  // 三组连拍，每组一张入选（P01/P03/P05）一张落选（P02/P04/P06）：工具才挑得出可比的对子。其余各自成组。
+  const families = Object.fromEntries(Array.from({ length: 12 }, (_, i) => {
+    const name = `P${String(i + 1).padStart(2, '0')}.JPG`
+    return [name, i < 6 ? Math.floor(i / 2) : i]
+  }))
+  const approval = { present: true, outcome: 'rejected', asked: [] as Array<{ reason: string; sentBefore: number; toolName: string }> }
+  const r = await run({ name: n, stage2: false, stage3: false, fake: { families }, approval })
+  const cmp = r.tools.get('compare_within_groups')
+  const sentNow = () => r.mock.calls.length
+  // 每次调用都接住异常、转成检查结果：变异让工具在某一步抛错时，要报成「哪条不成立」，不能让整个测试崩掉。
+  const call = async (args: object, exec: object = r.exec): Promise<{ v: any; e: string | null }> => {
+    try { return { v: await cmp.execute(args, exec), e: null } } catch (e) { return { v: null, e: String((e as Error)?.message ?? e) } }
+  }
+  check(n, 'rank_photos 视觉复核全关：模型 0 次', sentNow() === 0, String(sentNow()))
+  // 'some-future-outcome'：DSH 以后加的结果（比如 allowed-always）也必须按不发处理 —— 只认 allowed-once，不枚举已知的拒绝。
+  for (const outcome of ['rejected', 'cancelled', 'unavailable', 'some-future-outcome']) {
+    approval.outcome = outcome
+    const asked = approval.asked.length
+    const x = await call({ max_pairs: 1 })
+    check(n, `审批结果 ${outcome}：问过用户，一张不发、0 次调用`,
+      approval.asked.length === asked + 1 && sentNow() === 0 && x.v?.calls_spent === 0 && !!x.v?.summary?.includes('一张照片都没发'),
+      x.e ?? x.v?.summary ?? '')
+  }
+  approval.present = false
+  const absent = await call({ max_pairs: 1 })
+  check(n, '没有审批服务（命令行、服务没装）：一张不发', sentNow() === 0 && !!absent.v?.summary?.includes('一张照片都没发'), absent.e ?? absent.v?.summary ?? '')
+  approval.present = true
+  approval.outcome = 'allowed-once'
+  // 状态按 agent 分开存：没有 agent 的调用要先用同一个空上下文扫描、排序，才走得到闸门
+  const bare = {}
+  await r.tools.get('scan_folder').execute({ folder: join(r.work, 'photos') }, bare)
+  await r.tools.get('rank_photos').execute({ target: 4, style: 'quality' }, bare)
+  const askedBefore = approval.asked.length
+  const noAgent = await call({ max_pairs: 1 }, bare)
+  check(n, '调用没有 agent（无处路由审批）：不问、不发',
+    approval.asked.length === askedBefore && sentNow() === 0 && !!noAgent.v?.summary?.includes('一张照片都没发'), noAgent.e ?? noAgent.v?.summary ?? '')
+  const before = approval.asked.length
+  const ok = await call({ max_pairs: 1 })
+  const ask = approval.asked[before]
+  check(n, '用户同意：先问再发（问的时候还是 0 次）', !!ask && ask.sentBefore === 0 && ask.toolName === 'compare_within_groups', JSON.stringify(ask ?? null))
+  check(n, '审批理由写明对数、调用数、发哪几张', !!ask && ask.reason.includes('比较 1 对') && ask.reason.includes('约 3 次') && /2 张照片（p\d{3} p\d{3}）/.test(ask.reason), ask?.reason ?? '')
+  const compares = r.mock.calls.filter((c) => c.kind === 'compare').length
+  check(n, '同意后才发：只比了要求的 1 对（正反 2 次）', ok.v?.pairs_compared === 1 && compares === 2, ok.e ?? `${ok.v?.pairs_compared} 对，compare ${compares} 次`)
+  check(n, '报的调用数 = 实际发出的调用数（含预检）', ok.v?.calls_spent === sentNow() && !!ok.v?.summary?.includes(`花了 ${sentNow()} 次付费调用`), ok.e ?? `${ok.v?.calls_spent} vs ${sentNow()}`)
+  rmSync(r.work, { recursive: true, force: true })
+}
+
+// 中途失败：报错里要带上失败前已经发出的调用数（含预检），与实际发出的一致 —— 钱已经花了，不能报 0。
+{
+  const n = 'compare-fail-midway'
+  const families = Object.fromEntries(Array.from({ length: 12 }, (_, i) => {
+    const name = `P${String(i + 1).padStart(2, '0')}.JPG`
+    return [name, i < 6 ? Math.floor(i / 2) : i]
+  }))
+  const approval = { present: true, outcome: 'allowed-once', asked: [] as Array<{ reason: string; sentBefore: number; toolName: string }> }
+  const r = await run({ name: n, stage2: false, stage3: false, fake: { families }, approval, throwAtCompare: 2 })
+  let err = ''
+  try { await r.tools.get('compare_within_groups').execute({ max_pairs: 2 }, r.exec) } catch (e) { err = String((e as Error)?.message ?? e) }
+  const reported = Number(/失败前已经发出 (\d+) 次调用/.exec(err)?.[1] ?? NaN)
+  check(n, '中途失败：报错带上已发出的次数，且等于实际发出数（> 0）',
+    reported > 0 && reported === r.mock.calls.length, err || '没有报错')
+  rmSync(r.work, { recursive: true, force: true })
+}
+
 assert.ok(failures.length === 0, `rank_photos 接线有 ${failures.length} 条不成立：\n  ${failures.join('\n  ')}`)
-console.log(`rankPhotos.wiring.test.ts: 全部通过（${SCENARIOS.length} 个场景）`)
+console.log(`rankPhotos.wiring.test.ts: 全部通过（${SCENARIOS.length} 个场景 + 比较工具的审批闸门）`)

@@ -106,7 +106,7 @@ def main():
             note["unused"] = sum(1 for k in vmap if k not in keys)
             judge3 = "replay"
         out = {"selected": selected, "ranking": POOL, "scores": {n: 0.5 for n in POOL},
-               "families": {n: i for i, n in enumerate(POOL)}, "mode": "cold", "n_labels": 0,
+               "families": SCEN.get("families") or {n: i for i, n in enumerate(POOL)}, "mode": "cold", "n_labels": 0,
                "fingerprint": "fakefp0000000001", "n_candidates": len(POOL), "elapsed_sec": 0.1,
                "notes": {"tournament_plan": t2, "warnings": [], "n_blocked": 0, "n_families": len(POOL),
                          "largest_family": 1, "cold_strategy": "vision_face", "stage2_judge": judge2,
